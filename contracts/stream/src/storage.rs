@@ -5,15 +5,22 @@ const STREAM_ID_KEY: &str = "next_id";
 const ADMIN_KEY: &str = "admin";
 
 /// Stores the contract admin address.
-pub fn set_admin(env: &Env, admin: &Address) {
+pub fn write_admin(env: &Env, admin: &Address) {
     env.storage()
         .instance()
         .set(&Symbol::new(env, ADMIN_KEY), admin);
 }
 
 /// Loads the contract admin address.
-pub fn get_admin(env: &Env) -> Option<Address> {
+pub fn read_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&Symbol::new(env, ADMIN_KEY))
+}
+
+/// Asserts that the current caller is the admin. Panics otherwise.
+pub fn check_admin(env: &Env) {
+    read_admin(env)
+        .expect("contract not initialized")
+        .require_auth();
 }
 
 /// Returns and increments the global stream ID counter.

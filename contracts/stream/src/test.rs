@@ -320,3 +320,47 @@ fn test_upgrade_rejected_for_non_admin() {
 
     let _ = attacker; // unused, but documents intent
 }
+
+#[test]
+fn test_get_admin_returns_initialized_admin() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin);
+    assert_eq!(c.get_admin(), admin);
+}
+
+#[test]
+fn test_set_admin_transfers_role() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    let new_admin = Address::generate(&t.env);
+    c.initialize(&admin);
+    c.set_admin(&new_admin);
+    assert_eq!(c.get_admin(), new_admin);
+}
+
+#[test]
+fn test_set_admin_rejected_for_non_admin() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    let attacker = Address::generate(&t.env);
+    c.initialize(&admin);
+
+    t.env.set_auths(&[]);
+    let result = c.try_set_admin(&attacker);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_admin_persists_across_calls() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin);
+    // Interleave unrelated contract calls and re-check admin
+    c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    assert_eq!(c.get_admin(), admin);
+}
