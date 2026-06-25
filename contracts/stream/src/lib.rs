@@ -31,10 +31,12 @@ impl SoroStreamContract {
     /// * `token` - The SAC token contract address (e.g. USDC).
     /// * `amount` - Total tokens to stream (in stroops).
     /// * `duration_seconds` - Stream duration in seconds.
+    /// * `cliff_seconds` - Seconds from start before any tokens are claimable (0 = no cliff).
     /// * `auto_renew` - Whether the stream restarts automatically on completion.
     ///
     /// # Returns
     /// The unique stream ID.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_stream(
         env: Env,
         sender: Address,
@@ -42,6 +44,7 @@ impl SoroStreamContract {
         token: Address,
         amount: i128,
         duration_seconds: u64,
+        cliff_seconds: u64,
         auto_renew: bool,
     ) -> Result<u64, StreamError> {
         sender.require_auth();
@@ -52,10 +55,14 @@ impl SoroStreamContract {
         if duration_seconds == 0 {
             return Err(StreamError::InvalidDuration);
         }
+        if cliff_seconds > duration_seconds {
+            return Err(StreamError::InvalidCliff);
+        }
 
         let flow_rate = amount / duration_seconds as i128;
         let now = env.ledger().timestamp();
         let end_time = now + duration_seconds;
+        let cliff_time = now + cliff_seconds;
         let stream_id = next_stream_id(&env);
 
         token::Client::new(&env, &token).transfer(&sender, &env.current_contract_address(), &amount);
@@ -68,6 +75,7 @@ impl SoroStreamContract {
             deposit: amount,
             flow_rate,
             start_time: now,
+            cliff_time,
             end_time,
             last_withdraw_time: now,
             status: StreamStatus::Active,
@@ -105,7 +113,11 @@ impl SoroStreamContract {
 
         let now = env.ledger().timestamp();
         let effective_now = now.min(stream.end_time);
-        let elapsed = effective_now.saturating_sub(stream.last_withdraw_time);
+        let elapsed = if now < stream.cliff_time {
+            0
+        } else {
+            effective_now.saturating_sub(stream.last_withdraw_time)
+        };
         let claimable = stream.flow_rate * elapsed as i128;
 
         if claimable > 0 {
@@ -344,6 +356,10 @@ impl SoroStreamContract {
         }
 
         let now = env.ledger().timestamp();
+        if now < stream.cliff_time {
+            return Ok(0);
+        }
+
         let effective_now = now.min(stream.end_time);
         let elapsed = effective_now.saturating_sub(stream.last_withdraw_time);
         Ok(stream.flow_rate * elapsed as i128)

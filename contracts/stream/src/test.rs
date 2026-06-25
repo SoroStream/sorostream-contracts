@@ -40,7 +40,7 @@ fn test_create_stream_success() {
     let t = setup();
     let c = client(&t);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
     assert_eq!(stream_id, 0);
 
     let stream = c.get_stream(&stream_id);
@@ -55,7 +55,7 @@ fn test_withdraw_partial() {
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
 
     t.env.ledger().set_timestamp(500);
     c.withdraw(&stream_id, &t.recipient);
@@ -70,7 +70,7 @@ fn test_withdraw_full() {
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
 
     t.env.ledger().set_timestamp(1000);
     c.withdraw(&stream_id, &t.recipient);
@@ -88,7 +88,7 @@ fn test_cancel_stream_splits_correctly() {
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
 
     t.env.ledger().set_timestamp(300);
     c.cancel_stream(&stream_id, &t.sender);
@@ -110,7 +110,7 @@ fn test_top_up_extends_duration() {
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
     let stream_before = c.get_stream(&stream_id);
 
     c.top_up(&stream_id, &t.sender, &50_000);
@@ -137,7 +137,7 @@ fn test_auto_renew_restarts_on_completion() {
     let c = SoroStreamContractClient::new(&env, &contract_id);
     env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&sender, &recipient, &token_id, &100_000, &1000, &true);
+    let stream_id = c.create_stream(&sender, &recipient, &token_id, &100_000, &1000, &0, &true);
 
     // Withdraw at end_time — triggers auto-renew re-lock from sender
     env.ledger().set_timestamp(1000);
@@ -155,7 +155,7 @@ fn test_cannot_withdraw_if_not_recipient() {
     let t = setup();
     let c = client(&t);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
     let other = Address::generate(&t.env);
 
     let result = c.try_withdraw(&stream_id, &other);
@@ -167,7 +167,7 @@ fn test_cannot_cancel_if_not_sender() {
     let t = setup();
     let c = client(&t);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
     let other = Address::generate(&t.env);
 
     let result = c.try_cancel_stream(&stream_id, &other);
@@ -179,7 +179,7 @@ fn test_zero_amount_fails() {
     let t = setup();
     let c = client(&t);
 
-    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &0, &1000, &false);
+    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &0, &1000, &0, &false);
     assert!(result.is_err());
 }
 
@@ -189,96 +189,79 @@ fn test_get_claimable_calculates_correctly() {
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &false);
 
     t.env.ledger().set_timestamp(250);
     let claimable = c.get_claimable(&stream_id);
     assert_eq!(claimable, 25_000);
 }
 
-// ── Partial cancellation tests ────────────────────────────────────────────────
+// ── Cliff tests ──────────────────────────────────────────────────────────────
 
-/// At t=200: earned=20_000, remaining=80_000. Cancel 30_000.
-/// New stream deposit=50_000, flow_rate=100, duration=500s.
-/// Sender gets 30_000 back; recipient gets 20_000 earned.
+/// Stream: duration=1000s, cliff=500s, flow_rate=100 stroops/s
+/// At t=499 (pre-cliff) → claimable must be 0.
 #[test]
-fn test_partial_cancel_splits_correctly() {
+fn test_cliff_pre_cliff_returns_zero() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    // flow_rate = 100_000 / 1000 = 100 stroops/s
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    // cliff at t=500, end at t=1000
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &false);
 
-    t.env.ledger().set_timestamp(200);
-    let new_id = c.partial_cancel_stream(&stream_id, &t.sender, &30_000);
-
-    // Original stream is Cancelled.
-    let old = c.get_stream(&stream_id);
-    assert_eq!(old.status, StreamStatus::Cancelled);
-
-    // New stream is Active with correct deposit and flow_rate.
-    let new_s = c.get_stream(&new_id);
-    assert_eq!(new_s.status, StreamStatus::Active);
-    assert_eq!(new_s.deposit, 50_000);
-    assert_eq!(new_s.flow_rate, 100);
-    assert_eq!(new_s.end_time, new_s.start_time + 500);
-
-    // Recipient received their 20_000 earned tokens.
-    let recipient_bal = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
-    assert_eq!(recipient_bal, 20_000);
-
-    // Sender got 30_000 refund; started with 1_000_000, deposited 100_000 → 900_000 + 30_000 = 930_000.
-    let sender_bal = TokenClient::new(&t.env, &t.token_id).balance(&t.sender);
-    assert_eq!(sender_bal, 930_000);
+    t.env.ledger().set_timestamp(499);
+    assert_eq!(c.get_claimable(&stream_id), 0);
 }
 
-/// Recipient can still withdraw from the new stream after partial cancellation.
+/// At the exact cliff timestamp → claimable reflects time from last_withdraw_time.
+/// last_withdraw_time = start = 0, cliff = 500, so elapsed = 500 → 500 * 100 = 50_000.
 #[test]
-fn test_partial_cancel_new_stream_is_withdrawable() {
+fn test_cliff_at_cliff_returns_accrued() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &false);
 
-    t.env.ledger().set_timestamp(200);
-    let new_id = c.partial_cancel_stream(&stream_id, &t.sender, &30_000);
+    t.env.ledger().set_timestamp(500);
+    assert_eq!(c.get_claimable(&stream_id), 50_000);
+}
 
-    // Advance 100s into the new stream → 100 * 100 = 10_000 claimable.
+/// Post-cliff linear: at t=750, elapsed from start = 750 → 75_000 total accrued.
+#[test]
+fn test_cliff_post_cliff_linear() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &false);
+
+    t.env.ledger().set_timestamp(750);
+    assert_eq!(c.get_claimable(&stream_id), 75_000);
+}
+
+/// Withdraw while pre-cliff transfers nothing; balance stays 0.
+#[test]
+fn test_cliff_withdraw_pre_cliff_transfers_nothing() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &false);
+
     t.env.ledger().set_timestamp(300);
-    c.withdraw(&new_id, &t.recipient);
+    c.withdraw(&stream_id, &t.recipient);
 
-    // 20_000 from old stream + 10_000 from new stream.
-    let bal = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
-    assert_eq!(bal, 30_000);
+    let balance = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
+    assert_eq!(balance, 0);
 }
 
-/// cancel_amount >= remaining must fail.
+/// cliff_seconds > duration_seconds must fail with InvalidCliff.
 #[test]
-fn test_partial_cancel_exceeds_remaining_fails() {
+fn test_cliff_exceeds_duration_fails() {
     let t = setup();
     let c = client(&t);
-    t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
-
-    t.env.ledger().set_timestamp(200);
-    // remaining = 80_000; trying to cancel 80_000 (all of it) should fail.
-    let result = c.try_partial_cancel_stream(&stream_id, &t.sender, &80_000);
-    assert!(result.is_err());
-}
-
-/// Non-sender cannot partial-cancel.
-#[test]
-fn test_partial_cancel_wrong_sender_fails() {
-    let t = setup();
-    let c = client(&t);
-    t.env.ledger().set_timestamp(0);
-
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &false);
-    let other = Address::generate(&t.env);
-
-    let result = c.try_partial_cancel_stream(&stream_id, &other, &10_000);
+    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &1001, &false);
     assert!(result.is_err());
 }

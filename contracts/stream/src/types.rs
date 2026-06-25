@@ -30,6 +30,8 @@ pub struct Stream {
     pub flow_rate: i128,
     /// Ledger timestamp when the stream started.
     pub start_time: u64,
+    /// Ledger timestamp before which no tokens are claimable (>= start_time, <= end_time).
+    pub cliff_time: u64,
     /// Ledger timestamp when the stream ends.
     pub end_time: u64,
     /// Ledger timestamp of the last withdrawal.
