@@ -195,3 +195,37 @@ fn test_get_claimable_calculates_correctly() {
     let claimable = c.get_claimable(&stream_id);
     assert_eq!(claimable, 25_000);
 }
+
+// Verify counter+slot index correctly tracks multiple streams per address
+#[test]
+fn test_multiple_streams_per_sender_indexed_correctly() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SoroStreamContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let sender = Address::generate(&env);
+    let recipient1 = Address::generate(&env);
+    let recipient2 = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&sender, &1_000_000);
+
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+
+    let id0 = c.create_stream(&sender, &recipient1, &token_id, &100_000, &1000, &false);
+    let id1 = c.create_stream(&sender, &recipient2, &token_id, &100_000, &1000, &false);
+
+    let by_sender = c.get_streams_by_sender(&sender);
+    assert_eq!(by_sender.len(), 2);
+    assert_eq!(by_sender.get(0).unwrap().id, id0);
+    assert_eq!(by_sender.get(1).unwrap().id, id1);
+
+    let by_r1 = c.get_streams_by_recipient(&recipient1);
+    assert_eq!(by_r1.len(), 1);
+    assert_eq!(by_r1.get(0).unwrap().id, id0);
+
+    let by_r2 = c.get_streams_by_recipient(&recipient2);
+    assert_eq!(by_r2.len(), 1);
+    assert_eq!(by_r2.get(0).unwrap().id, id1);
+}
