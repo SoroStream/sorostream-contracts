@@ -13,10 +13,11 @@ use soroban_sdk::{
     contract, contractimpl, token, Address, Env, Vec,
 };
 use storage::{
-    get_ids_by_recipient, get_ids_by_sender, index_by_recipient, index_by_sender,
-    load_stream, next_stream_id, save_stream,
+    get_current_stream_id, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee, get_treasury,
+    index_by_recipient, index_by_sender, load_stream, next_stream_id, save_stream,
+    set_protocol_fee, set_treasury,
 };
-use types::{Stream, StreamStatus};
+use types::{Stats, Stream, StreamStatus};
 
 #[contract]
 pub struct SoroStreamContract;
@@ -109,8 +110,21 @@ impl SoroStreamContract {
         let claimable = stream.flow_rate * elapsed as i128;
 
         if claimable > 0 {
-            token::Client::new(&env, &stream.token)
-                .transfer(&env.current_contract_address(), &recipient, &claimable);
+            let fee_bps = get_protocol_fee(&env);
+            let fee_amount = if fee_bps > 0 { (claimable * fee_bps as i128) / 10_000 } else { 0 };
+            let recipient_amount = claimable - fee_amount;
+
+            let token_client = token::Client::new(&env, &stream.token);
+
+            if recipient_amount > 0 {
+                token_client.transfer(&env.current_contract_address(), &recipient, &recipient_amount);
+            }
+
+            if fee_amount > 0 {
+                if let Some(treasury) = get_treasury(&env) {
+                    token_client.transfer(&env.current_contract_address(), &treasury, &fee_amount);
+                }
+            }
         }
 
         stream.last_withdraw_time = effective_now;
@@ -273,5 +287,204 @@ impl SoroStreamContract {
             }
         }
         streams
+    }
+
+    /// Creates multiple payment streams in a single transaction.
+    ///
+    /// # Arguments
+    /// * `sender` - The payer who funds all streams.
+    /// * `recipients` - Vector of recipient addresses.
+    /// * `amounts` - Vector of amounts (must match recipients length).
+    /// * `token` - The token contract address.
+    /// * `duration_seconds` - Duration for all streams.
+    /// * `auto_renew` - Whether streams auto-renew.
+    ///
+    /// # Returns
+    /// Vector of created stream IDs.
+    pub fn batch_create_stream(
+        env: Env,
+        sender: Address,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+        token: Address,
+        duration_seconds: u64,
+        auto_renew: bool,
+    ) -> Result<Vec<u64>, StreamError> {
+        sender.require_auth();
+
+        if duration_seconds == 0 {
+            return Err(StreamError::InvalidDuration);
+        }
+
+        let mut stream_ids = Vec::new(&env);
+        let now = env.ledger().timestamp();
+        let end_time = now + duration_seconds;
+
+        let mut total_amount: i128 = 0;
+        for amount in amounts.iter() {
+            if amount <= 0 {
+                return Err(StreamError::ZeroAmount);
+            }
+            total_amount += amount;
+        }
+
+        token::Client::new(&env, &token).transfer(&sender, &env.current_contract_address(), &total_amount);
+
+        for i in 0..recipients.len().min(amounts.len()) {
+            let recipient = recipients.get_unchecked(i);
+            let amount = amounts.get_unchecked(i);
+            let flow_rate = amount / duration_seconds as i128;
+            let stream_id = next_stream_id(&env);
+
+            let stream = Stream {
+                id: stream_id,
+                sender: sender.clone(),
+                recipient: recipient.clone(),
+                token: token.clone(),
+                deposit: amount,
+                flow_rate,
+                start_time: now,
+                end_time,
+                last_withdraw_time: now,
+                status: StreamStatus::Active,
+                auto_renew,
+            };
+
+            save_stream(&env, &stream);
+            index_by_sender(&env, &sender, stream_id);
+            index_by_recipient(&env, &recipient, stream_id);
+
+            stream_ids.push_back(stream_id);
+            events::stream_created(&env, stream_id, &sender, &recipient, amount, flow_rate, end_time);
+        }
+
+        Ok(stream_ids)
+    }
+
+    /// Withdraws from multiple streams in a single transaction.
+    ///
+    /// # Arguments
+    /// * `stream_ids` - Vector of stream IDs to withdraw from.
+    /// * `recipient` - The recipient address (must be the recipient of all streams).
+    pub fn batch_withdraw(
+        env: Env,
+        stream_ids: Vec<u64>,
+        recipient: Address,
+    ) -> Result<Vec<i128>, StreamError> {
+        recipient.require_auth();
+
+        let mut amounts = Vec::new(&env);
+
+        for stream_id in stream_ids.iter() {
+            let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+
+            if stream.recipient != recipient {
+                return Err(StreamError::NotRecipient);
+            }
+            if stream.status != StreamStatus::Active {
+                return Err(StreamError::StreamNotActive);
+            }
+
+            let now = env.ledger().timestamp();
+            let effective_now = now.min(stream.end_time);
+            let elapsed = effective_now.saturating_sub(stream.last_withdraw_time);
+            let claimable = stream.flow_rate * elapsed as i128;
+
+            if claimable > 0 {
+                let fee_bps = get_protocol_fee(&env);
+                let fee_amount = if fee_bps > 0 { (claimable * fee_bps as i128) / 10_000 } else { 0 };
+                let recipient_amount = claimable - fee_amount;
+
+                let token_client = token::Client::new(&env, &stream.token);
+
+                if recipient_amount > 0 {
+                    token_client.transfer(&env.current_contract_address(), &recipient, &recipient_amount);
+                }
+
+                if fee_amount > 0 {
+                    if let Some(treasury) = get_treasury(&env) {
+                        token_client.transfer(&env.current_contract_address(), &treasury, &fee_amount);
+                    }
+                }
+            }
+
+            stream.last_withdraw_time = effective_now;
+
+            // Handle natural completion
+            if now >= stream.end_time {
+                if stream.auto_renew {
+                    let duration = stream.end_time - stream.start_time;
+                    stream.sender.require_auth();
+                    token::Client::new(&env, &stream.token).transfer(
+                        &stream.sender,
+                        &env.current_contract_address(),
+                        &stream.deposit,
+                    );
+                    stream.start_time = stream.end_time;
+                    stream.end_time = stream.start_time + duration;
+                    stream.last_withdraw_time = stream.start_time;
+                } else {
+                    stream.status = StreamStatus::Completed;
+                    events::stream_completed(&env, stream_id);
+                }
+            }
+
+            save_stream(&env, &stream);
+            amounts.push_back(claimable);
+            events::stream_withdrawn(&env, stream_id, &recipient, claimable, now);
+        }
+
+        Ok(amounts)
+    }
+
+    /// Sets the protocol fee in basis points (100 bps = 1%).
+    ///
+    /// # Arguments
+    /// * `fee_bps` - Fee in basis points (0-10000).
+    pub fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError> {
+        if fee_bps > 10_000 {
+            return Err(StreamError::InvalidDuration);
+        }
+        set_protocol_fee(&env, fee_bps);
+        Ok(())
+    }
+
+    /// Sets the treasury address to receive protocol fees.
+    ///
+    /// # Arguments
+    /// * `treasury` - The treasury address.
+    pub fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError> {
+        set_treasury(&env, &treasury);
+        Ok(())
+    }
+
+    /// Returns protocol fee configuration.
+    pub fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>) {
+        (get_protocol_fee(&env), get_treasury(&env))
+    }
+
+    /// Returns aggregate contract statistics.
+    pub fn get_stats(env: Env) -> Stats {
+        let mut total_streams = 0u64;
+        let mut active_streams = 0u64;
+        let mut total_volume: i128 = 0;
+
+        let current_id = get_current_stream_id(&env);
+
+        for i in 0..current_id {
+            if let Some(stream) = load_stream(&env, i) {
+                total_streams += 1;
+                total_volume += stream.deposit;
+                if stream.status == StreamStatus::Active {
+                    active_streams += 1;
+                }
+            }
+        }
+
+        Stats {
+            total_streams,
+            active_streams,
+            total_volume,
+        }
     }
 }

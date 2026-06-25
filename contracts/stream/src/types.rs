@@ -39,3 +39,15 @@ pub struct Stream {
     /// Whether the stream auto-renews on completion.
     pub auto_renew: bool,
 }
+
+/// Aggregate contract statistics.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Stats {
+    /// Total number of streams ever created.
+    pub total_streams: u64,
+    /// Number of currently active streams.
+    pub active_streams: u64,
+    /// Sum of all deposits in stroops.
+    pub total_volume: i128,
+}
