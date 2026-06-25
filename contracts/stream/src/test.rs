@@ -195,3 +195,76 @@ fn test_get_claimable_calculates_correctly() {
     let claimable = c.get_claimable(&stream_id);
     assert_eq!(claimable, 25_000);
 }
+
+#[test]
+fn test_get_streams_by_sender_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SoroStreamContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let sender = Address::generate(&env);
+
+    // Mint enough for 5 streams of 10_000 each
+    StellarAssetClient::new(&env, &token_id).mint(&sender, &50_000);
+
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+
+    // Create 5 streams to different recipients
+    for _ in 0..5u32 {
+        let r = Address::generate(&env);
+        c.create_stream(&sender, &r, &token_id, &10_000, &1000, &false);
+    }
+
+    // Page 1: first 3
+    let page1 = c.get_streams_by_sender(&sender, &0, &3);
+    assert_eq!(page1.len(), 3);
+    assert_eq!(page1.get(0).unwrap().id, 0);
+    assert_eq!(page1.get(2).unwrap().id, 2);
+
+    // Page 2: next 3 (only 2 remain)
+    let page2 = c.get_streams_by_sender(&sender, &3, &3);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0).unwrap().id, 3);
+    assert_eq!(page2.get(1).unwrap().id, 4);
+
+    // Out-of-bounds start returns empty
+    let empty = c.get_streams_by_sender(&sender, &10, &5);
+    assert_eq!(empty.len(), 0);
+
+    // Limit is capped at 20: requesting 100 returns at most 5
+    let all = c.get_streams_by_sender(&sender, &0, &100);
+    assert_eq!(all.len(), 5);
+}
+
+#[test]
+fn test_get_streams_by_recipient_pagination() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(SoroStreamContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let recipient = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&Address::generate(&env), &0);
+
+    // Two different senders each sending to the same recipient
+    let s1 = Address::generate(&env);
+    let s2 = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&s1, &30_000);
+    StellarAssetClient::new(&env, &token_id).mint(&s2, &30_000);
+
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+
+    c.create_stream(&s1, &recipient, &token_id, &10_000, &1000, &false);
+    c.create_stream(&s1, &recipient, &token_id, &10_000, &1000, &false);
+    c.create_stream(&s2, &recipient, &token_id, &10_000, &1000, &false);
+
+    let page = c.get_streams_by_recipient(&recipient, &0, &2);
+    assert_eq!(page.len(), 2);
+
+    let rest = c.get_streams_by_recipient(&recipient, &2, &10);
+    assert_eq!(rest.len(), 1);
+}

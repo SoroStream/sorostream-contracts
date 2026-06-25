@@ -245,30 +245,36 @@ impl SoroStreamContract {
         Ok(stream.flow_rate * elapsed as i128)
     }
 
-    /// Returns all streams created by a sender address.
+    /// Returns a paginated slice of streams created by a sender address.
     ///
     /// # Arguments
     /// * `sender` - The sender address to query.
-    pub fn get_streams_by_sender(env: Env, sender: Address) -> Vec<Stream> {
+    /// * `start` - Zero-based index of the first stream to return.
+    /// * `limit` - Maximum number of streams to return (capped at 20).
+    pub fn get_streams_by_sender(env: Env, sender: Address, start: u32, limit: u32) -> Vec<Stream> {
         let ids = get_ids_by_sender(&env, &sender);
+        let cap = limit.min(20) as usize;
         let mut streams = Vec::new(&env);
-        for id in ids.iter() {
-            if let Some(s) = load_stream(&env, id) {
+        for i in (start as usize)..((start as usize).saturating_add(cap)).min(ids.len() as usize) {
+            if let Some(s) = load_stream(&env, ids.get(i as u32).unwrap()) {
                 streams.push_back(s);
             }
         }
         streams
     }
 
-    /// Returns all streams targeting a recipient address.
+    /// Returns a paginated slice of streams targeting a recipient address.
     ///
     /// # Arguments
     /// * `recipient` - The recipient address to query.
-    pub fn get_streams_by_recipient(env: Env, recipient: Address) -> Vec<Stream> {
+    /// * `start` - Zero-based index of the first stream to return.
+    /// * `limit` - Maximum number of streams to return (capped at 20).
+    pub fn get_streams_by_recipient(env: Env, recipient: Address, start: u32, limit: u32) -> Vec<Stream> {
         let ids = get_ids_by_recipient(&env, &recipient);
+        let cap = limit.min(20) as usize;
         let mut streams = Vec::new(&env);
-        for id in ids.iter() {
-            if let Some(s) = load_stream(&env, id) {
+        for i in (start as usize)..((start as usize).saturating_add(cap)).min(ids.len() as usize) {
+            if let Some(s) = load_stream(&env, ids.get(i as u32).unwrap()) {
                 streams.push_back(s);
             }
         }
