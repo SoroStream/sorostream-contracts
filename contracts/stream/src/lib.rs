@@ -431,6 +431,27 @@ impl SoroStreamContract {
         load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)
     }
 
+    /// Returns a paginated list of all stream IDs that have ever been created.
+    ///
+    /// # Arguments
+    /// * `start` - Zero-based index of the first stream ID to return.
+    /// * `limit` - Maximum number of stream IDs to return (capped at 20).
+    pub fn get_all_stream_ids(env: Env, start: u32, limit: u32) -> Vec<u64> {
+        let current_id = get_current_stream_id(&env) as usize;
+        let cap = limit.min(20) as usize;
+        let start = start as usize;
+        let end = start.saturating_add(cap).min(current_id);
+        let mut ids = Vec::new(&env);
+
+        for stream_id in start..end {
+            if load_stream(&env, stream_id as u64).is_some() {
+                ids.push_back(stream_id as u64);
+            }
+        }
+
+        ids
+    }
+
     /// Returns the amount of tokens currently claimable by the recipient.
     ///
     /// # Arguments

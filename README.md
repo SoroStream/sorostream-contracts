@@ -56,6 +56,7 @@ stellar contract build
 | `cancel_stream(stream_id, sender)` | Cancels stream, splits balance |
 | `top_up(stream_id, sender, amount)` | Adds tokens, extends duration |
 | `get_stream(stream_id)` | Returns full `Stream` struct |
+| `get_all_stream_ids(start, limit)` | Returns a paginated list of all stream IDs ever created |
 | `get_claimable(stream_id)` | Returns currently claimable amount |
 | `get_streams_by_sender(sender)` | Returns all streams for a sender |
 | `get_streams_by_recipient(recipient)` | Returns all streams for a recipient |
