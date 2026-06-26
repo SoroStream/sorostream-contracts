@@ -434,15 +434,775 @@ fn test_zero_duration_fails() {
     assert!(result.is_err());
 }
 
+// ── Event snapshot tests (issue #105) ────────────────────────────────────────
+//
+// These tests capture the exact event format emitted by each contract
+// instruction. If the event topic structure, field types, or values change,
+// these tests will fail — ensuring SDK and indexer consumers are notified
+// of format changes.
+
+use soroban_sdk::testutils::Events;
+use soroban_sdk::{IntoVal, Val, Symbol, vec as soroban_vec};
+
+#[test]
+fn snapshot_event_stream_created() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(100);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    let events = t.env.events().all();
+    let create_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = topics.clone();
+        if topic_vec.len() >= 1 {
+            let first: Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == Symbol::new(&t.env, "StreamCreated")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(create_events.len(), 1, "Expected exactly one StreamCreated event");
+
+    let (contract_id, topics, data) = &create_events[0];
+    assert_eq!(*contract_id, t.contract_id);
+
+    // Topics: (Symbol("StreamCreated"), stream_id: u64)
+    let topics_vec: soroban_sdk::Vec<Val> = topics.clone();
+    assert_eq!(topics_vec.len(), 2);
+    let topic_name: Symbol = topics_vec.get(0).unwrap().into_val(&t.env);
+    assert_eq!(topic_name, Symbol::new(&t.env, "StreamCreated"));
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (sender: Address, recipient: Address, amount: i128, flow_rate: i128, end_time: u64)
+    let data_tuple: (Address, Address, i128, i128, u64) = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple.0, t.sender);
+    assert_eq!(data_tuple.1, t.recipient);
+    assert_eq!(data_tuple.2, 100_000i128);
+    assert_eq!(data_tuple.3, 100i128);       // flow_rate = 100_000 / 1000
+    assert_eq!(data_tuple.4, 100 + 1000);    // end_time = start + duration
+}
+
+#[test]
+fn snapshot_event_stream_withdrawn() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    t.env.ledger().set_timestamp(500);
+    c.withdraw(&stream_id, &t.recipient);
+
+    let events = t.env.events().all();
+    let withdraw_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = topics.clone();
+        if topic_vec.len() >= 1 {
+            let first: Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == Symbol::new(&t.env, "StreamWithdrawn")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(withdraw_events.len(), 1, "Expected exactly one StreamWithdrawn event");
+
+    let (contract_id, topics, data) = &withdraw_events[0];
+    assert_eq!(*contract_id, t.contract_id);
+
+    // Topics: (Symbol("StreamWithdrawn"), stream_id: u64)
+    let topics_vec: soroban_sdk::Vec<Val> = topics.clone();
+    assert_eq!(topics_vec.len(), 2);
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (recipient: Address, amount: i128, timestamp: u64)
+    let data_tuple: (Address, i128, u64) = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple.0, t.recipient);
+    assert_eq!(data_tuple.1, 50_000i128);     // 500s * 100 stroops/s
+    assert_eq!(data_tuple.2, 500u64);
+}
+
+#[test]
+fn snapshot_event_stream_cancelled() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    t.env.ledger().set_timestamp(300);
+    c.cancel_stream(&stream_id, &t.sender);
+
+    let events = t.env.events().all();
+    let cancel_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = topics.clone();
+        if topic_vec.len() >= 1 {
+            let first: Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == Symbol::new(&t.env, "StreamCancelled")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(cancel_events.len(), 1, "Expected exactly one StreamCancelled event");
+
+    let (contract_id, topics, data) = &cancel_events[0];
+    assert_eq!(*contract_id, t.contract_id);
+
+    // Topics: (Symbol("StreamCancelled"), stream_id: u64)
+    let topics_vec: soroban_sdk::Vec<Val> = topics.clone();
+    assert_eq!(topics_vec.len(), 2);
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (sender: Address, refund_amount: i128, recipient_amount: i128)
+    let data_tuple: (Address, i128, i128) = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple.0, t.sender);
+    assert_eq!(data_tuple.1, 70_000i128);    // refund: 100_000 - 300*100
+    assert_eq!(data_tuple.2, 30_000i128);    // recipient earned: 300*100
+}
+
+#[test]
+fn snapshot_event_stream_topped_up() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    c.top_up(&stream_id, &t.sender, &t.token_id, &50_000);
+
+    let events = t.env.events().all();
+    let topup_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = topics.clone();
+        if topic_vec.len() >= 1 {
+            let first: Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == Symbol::new(&t.env, "StreamToppedUp")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(topup_events.len(), 1, "Expected exactly one StreamToppedUp event");
+
+    let (contract_id, topics, data) = &topup_events[0];
+    assert_eq!(*contract_id, t.contract_id);
+
+    // Topics: (Symbol("StreamToppedUp"), stream_id: u64)
+    let topics_vec: soroban_sdk::Vec<Val> = topics.clone();
+    assert_eq!(topics_vec.len(), 2);
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (added_amount: i128, new_end_time: u64)
+    let data_tuple: (i128, u64) = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple.0, 50_000i128);    // added amount
+    assert_eq!(data_tuple.1, 1500u64);       // 1000 + 50_000/100
+}
+
+#[test]
+fn snapshot_event_stream_completed() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    t.env.ledger().set_timestamp(1000);
+    c.withdraw(&stream_id, &t.recipient);
+
+    let events = t.env.events().all();
+    let completed_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = topics.clone();
+        if topic_vec.len() >= 1 {
+            let first: Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == Symbol::new(&t.env, "StreamCompleted")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(completed_events.len(), 1, "Expected exactly one StreamCompleted event");
+
+    let (contract_id, topics, data) = &completed_events[0];
+    assert_eq!(*contract_id, t.contract_id);
+
+    // Topics: (Symbol("StreamCompleted"), stream_id: u64)
+    let topics_vec: soroban_sdk::Vec<Val> = topics.clone();
+    assert_eq!(topics_vec.len(), 2);
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: () — empty tuple
+    let data_tuple: () = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple, ());
+}
+
+#[test]
+fn snapshot_event_stream_partial_cancelled() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    // At t=200: streamed = 200*100 = 20_000; remaining = 80_000.
+    // Cancel 30_000 → new deposit = 50_000.
+    t.env.ledger().set_timestamp(200);
+    let new_stream_id = c.partial_cancel_stream(&stream_id, &t.sender, &30_000);
+
+    let events = t.env.events().all();
+    let partial_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = topics.clone();
+        if topic_vec.len() >= 1 {
+            let first: Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == Symbol::new(&t.env, "StreamPartialCancelled")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(partial_events.len(), 1, "Expected exactly one StreamPartialCancelled event");
+
+    let (contract_id, topics, data) = &partial_events[0];
+    assert_eq!(*contract_id, t.contract_id);
+
+    // Topics: (Symbol("StreamPartialCancelled"), old_stream_id: u64)
+    let topics_vec: soroban_sdk::Vec<Val> = topics.clone();
+    assert_eq!(topics_vec.len(), 2);
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (new_stream_id: u64, sender: Address, refund_amount: i128, new_deposit: i128)
+    let data_tuple: (u64, Address, i128, i128) = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple.0, new_stream_id);
+    assert_eq!(data_tuple.1, t.sender);
+    assert_eq!(data_tuple.2, 30_000i128);    // refund amount
+    assert_eq!(data_tuple.3, 50_000i128);    // new deposit
+}
+
+#[test]
+fn snapshot_event_auto_renew_failed() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+
+    let contract_id = env.register(SoroStreamContract, ());
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    // Mint only enough for the initial stream — not enough for auto-renew.
+    StellarAssetClient::new(&env, &token_id).mint(&sender, &100_000);
+
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+    env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &sender, &recipient, &token_id, &100_000, &1000, &0, &0u64, &true,
+    );
+
+    env.ledger().set_timestamp(1000);
+    c.withdraw(&stream_id, &recipient);
+
+    let events = env.events().all();
+    let renew_fail_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<Val> = topics.clone();
+        if topic_vec.len() >= 1 {
+            let first: Symbol = topic_vec.get(0).unwrap().into_val(&env);
+            first == Symbol::new(&env, "AutoRenewFailed")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(renew_fail_events.len(), 1, "Expected exactly one AutoRenewFailed event");
+
+    let (emitter, topics, data) = &renew_fail_events[0];
+    assert_eq!(*emitter, contract_id);
+
+    // Topics: (Symbol("AutoRenewFailed"), stream_id: u64)
+    let topics_vec: soroban_sdk::Vec<Val> = topics.clone();
+    assert_eq!(topics_vec.len(), 2);
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (sender: Address, required: i128)
+    let data_tuple: (Address, i128) = data.clone().into_val(&env);
+    assert_eq!(data_tuple.0, sender);
+    assert_eq!(data_tuple.1, 100_000i128);
+}
+
+// ── Error variant coverage tests (issue #106) ────────────────────────────────
+//
+// Every variant in StreamError has at least one test that triggers it and
+// verifies the exact error variant returned.
+//
+// Dead code variants (never returned by any code path):
+//   - InsufficientBalance (7): No code path returns this error. It exists as
+//     a placeholder for future balance-check logic. The contract relies on
+//     token::Client::transfer to panic on insufficient balance instead.
+//   - InvalidStartTime (12): No code path returns this error. Stream start
+//     times are always set to env.ledger().timestamp(), never user-supplied.
+
+#[test]
+fn error_stream_not_found() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_get_stream(&999);
+    assert!(matches!(result, Err(Ok(StreamError::StreamNotFound))));
+}
+
+#[test]
+fn error_stream_not_found_on_withdraw() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_withdraw(&999, &t.recipient);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotFound)));
+}
+
+#[test]
+fn error_stream_not_found_on_cancel() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_cancel_stream(&999, &t.sender);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotFound)));
+}
+
+#[test]
+fn error_stream_not_found_on_top_up() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_top_up(&999, &t.sender, &t.token_id, &10_000);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotFound)));
+}
+
+#[test]
+fn error_stream_not_found_on_partial_cancel() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_partial_cancel_stream(&999, &t.sender, &10_000);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotFound)));
+}
+
+#[test]
+fn error_not_recipient() {
+    let t = setup();
+    let c = client(&t);
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    let other = Address::generate(&t.env);
+
+    let result = c.try_withdraw(&stream_id, &other);
+    assert_eq!(result, Err(Ok(StreamError::NotRecipient)));
+}
+
+#[test]
+fn error_not_sender_on_cancel() {
+    let t = setup();
+    let c = client(&t);
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    let other = Address::generate(&t.env);
+
+    let result = c.try_cancel_stream(&stream_id, &other);
+    assert_eq!(result, Err(Ok(StreamError::NotSender)));
+}
+
+#[test]
+fn error_not_sender_on_top_up() {
+    let t = setup();
+    let c = client(&t);
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    let other = Address::generate(&t.env);
+
+    let result = c.try_top_up(&stream_id, &other, &t.token_id, &10_000);
+    assert_eq!(result, Err(Ok(StreamError::NotSender)));
+}
+
+#[test]
+fn error_not_sender_on_partial_cancel() {
+    let t = setup();
+    let c = client(&t);
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    let other = Address::generate(&t.env);
+
+    let result = c.try_partial_cancel_stream(&stream_id, &other, &10_000);
+    assert_eq!(result, Err(Ok(StreamError::NotSender)));
+}
+
+#[test]
+fn error_stream_not_active_on_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    // Cancel the stream first
+    c.cancel_stream(&stream_id, &t.sender);
+
+    let result = c.try_withdraw(&stream_id, &t.recipient);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotActive)));
+}
+
+#[test]
+fn error_stream_not_active_on_cancel() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    c.cancel_stream(&stream_id, &t.sender);
+
+    let result = c.try_cancel_stream(&stream_id, &t.sender);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotActive)));
+}
+
+#[test]
+fn error_stream_not_active_on_top_up() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    c.cancel_stream(&stream_id, &t.sender);
+
+    let result = c.try_top_up(&stream_id, &t.sender, &t.token_id, &10_000);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotActive)));
+}
+
+#[test]
+fn error_stream_not_active_on_partial_cancel() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    c.cancel_stream(&stream_id, &t.sender);
+
+    let result = c.try_partial_cancel_stream(&stream_id, &t.sender, &10_000);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotActive)));
+}
+
+#[test]
+fn error_zero_amount_on_create() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &0, &1000, &0, &0u64, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::ZeroAmount)));
+}
+
+#[test]
+fn error_zero_amount_negative_on_create() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &-100, &1000, &0, &0u64, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::ZeroAmount)));
+}
+
+#[test]
+fn error_zero_amount_on_top_up() {
+    let t = setup();
+    let c = client(&t);
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    let result = c.try_top_up(&stream_id, &t.sender, &t.token_id, &0);
+    assert_eq!(result, Err(Ok(StreamError::ZeroAmount)));
+}
+
+#[test]
+fn error_zero_amount_on_partial_cancel() {
+    let t = setup();
+    let c = client(&t);
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    let result = c.try_partial_cancel_stream(&stream_id, &t.sender, &0);
+    assert_eq!(result, Err(Ok(StreamError::ZeroAmount)));
+}
+
+#[test]
+fn error_invalid_duration_on_batch_create() {
+    let t = setup();
+    let c = client(&t);
+
+    let recipients = soroban_vec![&t.env, t.recipient.clone()];
+    let amounts = soroban_vec![&t.env, 10_000i128];
+
+    // duration_seconds = 0 causes end_time overflow check to fail
+    let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &t.token_id, &0, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::InvalidDuration)));
+}
+
+#[test]
+fn error_invalid_cliff() {
+    let t = setup();
+    let c = client(&t);
+
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &1001, &0u64, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::InvalidCliff)));
+}
+
+#[test]
+fn error_already_initialized() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin);
+
+    let result = c.try_initialize(&admin);
+    assert_eq!(result, Err(Ok(StreamError::AlreadyInitialized)));
+}
+
+#[test]
+fn error_not_initialized_on_get_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(SoroStreamContract, ());
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+
+    let result = c.try_get_admin();
+    assert_eq!(result, Err(Ok(StreamError::NotInitialized)));
+}
+
+#[test]
+fn error_not_initialized_on_upgrade() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(SoroStreamContract, ());
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+
+    let fake_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let result = c.try_upgrade(&fake_hash);
+    assert_eq!(result, Err(Ok(StreamError::NotInitialized)));
+}
+
+#[test]
+fn error_duplicate_stream() {
+    let t = setup();
+    let c = client(&t);
+
+    c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::DuplicateStream)));
+}
+
+#[test]
+fn error_invalid_partial_cancel_exceeds_remainder() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    // At t=0: remaining = 100_000. cancel_amount = 100_000 exceeds remainder
+    // (must be strictly less than remaining).
+    let result = c.try_partial_cancel_stream(&stream_id, &t.sender, &100_000);
+    assert_eq!(result, Err(Ok(StreamError::InvalidPartialCancel)));
+}
+
+#[test]
+fn error_invalid_partial_cancel_leaves_too_little() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    // flow_rate = 100_000 / 1000 = 100
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    // remaining = 100_000. Cancel 99_950 → new_deposit = 50 < flow_rate (100).
+    let result = c.try_partial_cancel_stream(&stream_id, &t.sender, &99_950);
+    assert_eq!(result, Err(Ok(StreamError::InvalidPartialCancel)));
+}
+
+#[test]
+fn error_contract_paused() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin);
+    c.pause();
+
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn error_zero_flow_rate() {
+    let t = setup();
+    let c = client(&t);
+
+    // amount=1, duration=1000 → flow_rate = 1/1000 = 0 (integer division)
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &1, &1000, &0, &0u64, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::ZeroFlowRate)));
+}
+
+#[test]
+fn error_zero_flow_rate_in_batch() {
+    let t = setup();
+    let c = client(&t);
+
+    let recipients = soroban_vec![&t.env, t.recipient.clone()];
+    let amounts = soroban_vec![&t.env, 1i128]; // 1 / 1000 = 0 flow rate
+
+    let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::ZeroFlowRate)));
+}
+
+#[test]
+fn error_token_mismatch() {
+    let t = setup();
+    let c = client(&t);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+
+    // Create a different token
+    let other_token_admin = Address::generate(&t.env);
+    let other_token = t.env
+        .register_stellar_asset_contract_v2(other_token_admin)
+        .address();
+
+    let result = c.try_top_up(&stream_id, &t.sender, &other_token, &10_000);
+    assert_eq!(result, Err(Ok(StreamError::TokenMismatch)));
+}
+
+#[test]
+fn error_batch_length_mismatch() {
+    let t = setup();
+    let c = client(&t);
+
+    let recipients = soroban_vec![&t.env, t.recipient.clone()];
+    let amounts = soroban_vec![&t.env, 10_000i128, 20_000i128]; // 2 amounts for 1 recipient
+
+    let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::BatchLengthMismatch)));
+}
+
+#[test]
+fn error_zero_amount_in_batch() {
+    let t = setup();
+    let c = client(&t);
+
+    let recipients = soroban_vec![&t.env, t.recipient.clone()];
+    let amounts = soroban_vec![&t.env, 0i128];
+
+    let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false,
+    );
+    assert_eq!(result, Err(Ok(StreamError::ZeroAmount)));
+}
+
+#[test]
+fn error_not_recipient_in_batch_withdraw() {
+    let t = setup();
+    let c = client(&t);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false,
+    );
+    let other = Address::generate(&t.env);
+
+    let result = c.try_batch_withdraw(&soroban_vec![&t.env, stream_id], &other);
+    assert_eq!(result, Err(Ok(StreamError::NotRecipient)));
+}
+
+#[test]
+fn error_invalid_duration_fee_too_high() {
+    let t = setup();
+    let c = client(&t);
+
+    // set_protocol_fee reuses InvalidDuration for fee > 10_000
+    let result = c.try_set_protocol_fee(&10_001u32);
+    assert_eq!(result, Err(Ok(StreamError::InvalidDuration)));
+}
+
+// Dead code documentation:
+// - InsufficientBalance (7): Never returned. Token transfers panic via
+//   token::Client::transfer on insufficient balance. No contract code path
+//   returns this variant. Kept for potential future use with explicit
+//   balance checks.
+// - InvalidStartTime (12): Never returned. Stream start times are always
+//   set to env.ledger().timestamp(), not user-supplied. No code path
+//   returns this variant. Kept for potential future use with scheduled
+//   stream starts.
+
 pub fn fanout_create_stream(
-    env: Env,
-    sender: Address,
-    recipients: Vec<Address>,
-    weights: Vec<u32>,
-    token: Address,
-    total_amount: i128,
-    duration_seconds: u64,
-    cliff_seconds: u64,
-    nonce: u64,
-    auto_renew: bool,
-) -> Result<Vec<u64>, StreamError>
+    _env: Env,
+    _sender: Address,
+    _recipients: Vec<Address>,
+    _weights: Vec<u32>,
+    _token: Address,
+    _total_amount: i128,
+    _duration_seconds: u64,
+    _cliff_seconds: u64,
+    _nonce: u64,
+    _auto_renew: bool,
+) -> Result<Vec<u64>, StreamError> {
+    todo!("fanout_create_stream not yet implemented")
+}

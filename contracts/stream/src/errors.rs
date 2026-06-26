@@ -35,4 +35,8 @@ pub enum StreamError {
     ContractPaused = 14,
     /// Amount is too small relative to duration: would produce a zero flow rate.
     ZeroFlowRate = 15,
+    /// Top-up token address does not match the stream's token.
+    TokenMismatch = 16,
+    /// Batch recipients and amounts vectors have different lengths.
+    BatchLengthMismatch = 17,
 }
