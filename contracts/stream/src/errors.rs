@@ -33,4 +33,8 @@ pub enum StreamError {
     InvalidPartialCancel = 13,
     /// Operation is not allowed while the contract is paused.
     ContractPaused = 14,
+    /// A numeric operation overflowed or produced an out-of-range value.
+    /// This is returned instead of panicking when user-controllable inputs
+    /// (e.g. very large amounts or durations) would cause integer overflow.
+    Overflow = 15,
 }

@@ -412,3 +412,117 @@ fn test_zero_duration_fails() {
     let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &0, &0, &0u64, &false);
     assert!(result.is_err());
 }
+
+// ── Overflow / checked-arithmetic tests ──────────────────────────────────────
+
+/// `create_stream` with `now + duration_seconds` overflowing u64 must return
+/// `StreamError::Overflow` instead of panicking.
+#[test]
+fn test_create_stream_end_time_overflow() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(u64::MAX - 10);
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id,
+        &100_000, &1000, &0, &0u64, &false,
+    );
+    assert!(result.is_err());
+}
+
+/// `create_stream` with `now + cliff_seconds` overflowing u64 must return an error.
+#[test]
+fn test_create_stream_cliff_time_overflow() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(u64::MAX - 5);
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id,
+        &100_000, &100, &10, &0u64, &false,
+    );
+    assert!(result.is_err());
+}
+
+/// Direct unit test of `checked_flow_amount`: a product that overflows i128
+/// returns `StreamError::Overflow` rather than panicking.
+///
+/// Via normal contract usage `flow_rate * elapsed ≤ deposit ≤ i128::MAX` (SAC
+/// bound), so this guard is defense-in-depth for future code paths.
+#[test]
+fn test_checked_flow_amount_overflow() {
+    // 10^19 * u64::MAX ≈ 1.844e38 > i128::MAX ≈ 1.701e38 → overflow.
+    let result = checked_flow_amount(10_000_000_000_000_000_000_i128, u64::MAX);
+    assert_eq!(result, Err(StreamError::Overflow));
+}
+
+/// `checked_flow_amount` returns the correct product when there is no overflow.
+#[test]
+fn test_checked_flow_amount_ok() {
+    let result = checked_flow_amount(100, 500);
+    assert_eq!(result, Ok(50_000));
+}
+
+/// `top_up` where `extra_seconds = top_up / flow_rate` overflows u64 must
+/// return an error. flow_rate = 1; top_up = u64::MAX + 1 tokens.
+#[test]
+fn test_top_up_extra_seconds_overflow() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    use soroban_sdk::token::StellarAssetClient;
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id,
+        &1_000, &1000, &0, &0u64, &false,
+    );
+    let huge: i128 = (u64::MAX as i128) + 1;
+    StellarAssetClient::new(&t.env, &t.token_id).mint(&t.sender, &huge);
+    let result = c.try_top_up(&stream_id, &t.sender, &huge);
+    assert!(result.is_err());
+}
+
+/// `top_up` where `end_time + extra_seconds` overflows u64 must return an error.
+/// end_time = u64::MAX exactly; top_up of 1 token adds 1 second → overflow.
+#[test]
+fn test_top_up_end_time_overflow() {
+    let t = setup();
+    let c = client(&t);
+    // now + duration = (u64::MAX - 1000) + 1000 = u64::MAX; flow_rate = 1.
+    t.env.ledger().set_timestamp(u64::MAX - 1_000);
+
+    use soroban_sdk::token::StellarAssetClient;
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id,
+        &1_000, &1000, &0, &0u64, &false,
+    );
+    StellarAssetClient::new(&t.env, &t.token_id).mint(&t.sender, &1);
+    let result = c.try_top_up(&stream_id, &t.sender, &1);
+    assert!(result.is_err());
+}
+
+/// `batch_create_stream` where accumulating amounts overflows i128 must return
+/// an error. Two amounts of 9×10^37 each sum to 1.8×10^38 > i128::MAX.
+/// Each is individually mintable; the overflow is caught in our accumulator.
+#[test]
+fn test_batch_create_total_amount_overflow() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    use soroban_sdk::{token::StellarAssetClient, Vec};
+
+    let a: i128 = 90_000_000_000_000_000_000_000_000_000_000_000_000_i128;
+    let b: i128 = 90_000_000_000_000_000_000_000_000_000_000_000_000_i128;
+
+    let mut recipients = Vec::new(&t.env);
+    let mut amounts: Vec<i128> = Vec::new(&t.env);
+    recipients.push_back(Address::generate(&t.env));
+    recipients.push_back(Address::generate(&t.env));
+    amounts.push_back(a);
+    amounts.push_back(b);
+
+    StellarAssetClient::new(&t.env, &t.token_id).mint(&t.sender, &a);
+    let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false,
+    );
+    assert!(result.is_err());
+}

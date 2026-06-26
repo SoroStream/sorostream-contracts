@@ -35,15 +35,20 @@ pub fn get_current_stream_id(env: &Env) -> u64 {
 }
 
 /// Returns and increments the global stream ID counter.
+///
+/// # Panics
+/// Panics if the stream ID counter would overflow `u64::MAX` — this requires
+/// 2^64 streams to have been created and is not reachable in practice.
 pub fn next_stream_id(env: &Env) -> u64 {
     let id: u64 = env
         .storage()
         .instance()
         .get(&Symbol::new(env, STREAM_ID_KEY))
         .unwrap_or(0u64);
+    let next = id.checked_add(1).expect("stream id counter overflow");
     env.storage()
         .instance()
-        .set(&Symbol::new(env, STREAM_ID_KEY), &(id + 1));
+        .set(&Symbol::new(env, STREAM_ID_KEY), &next);
     id
 }
 
@@ -76,19 +81,28 @@ fn recipient_slot_key(env: &Env, addr: &Address, idx: u32) -> (Symbol, Address, 
 }
 
 /// Appends a stream ID to the sender's index using counter+slot keys.
+///
+/// # Panics
+/// Panics if the per-sender index slot counter would overflow `u32::MAX`
+/// — this requires 4 billion streams from one sender and is not reachable.
 pub fn index_by_sender(env: &Env, sender: &Address, stream_id: u64) {
     let cnt_key = sender_count_key(env, sender);
     let idx: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0u32);
     env.storage().persistent().set(&sender_slot_key(env, sender, idx), &stream_id);
-    env.storage().persistent().set(&cnt_key, &(idx + 1));
+    let next = idx.checked_add(1).expect("sender index overflow");
+    env.storage().persistent().set(&cnt_key, &next);
 }
 
 /// Appends a stream ID to the recipient's index using counter+slot keys.
+///
+/// # Panics
+/// Panics if the per-recipient index slot counter would overflow `u32::MAX`.
 pub fn index_by_recipient(env: &Env, recipient: &Address, stream_id: u64) {
     let cnt_key = recipient_count_key(env, recipient);
     let idx: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0u32);
     env.storage().persistent().set(&recipient_slot_key(env, recipient, idx), &stream_id);
-    env.storage().persistent().set(&cnt_key, &(idx + 1));
+    let next = idx.checked_add(1).expect("recipient index overflow");
+    env.storage().persistent().set(&cnt_key, &next);
 }
 
 /// Returns all stream IDs for a sender by iterating over slots.
