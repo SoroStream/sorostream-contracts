@@ -4,6 +4,8 @@ use soroban_sdk::{Address, Env, Symbol, Vec};
 const STREAM_ID_KEY: &str = "next_id";
 const ADMIN_KEY: &str = "admin";
 const PAUSED_KEY: &str = "paused";
+const PROTOCOL_FEE_KEY: &str = "fee_bps";
+const TREASURY_KEY: &str = "treasury";
 
 /// Stores the contract admin address.
 pub fn write_admin(env: &Env, admin: &Address) {
@@ -22,6 +24,14 @@ pub fn check_admin(env: &Env) {
     read_admin(env)
         .expect("contract not initialized")
         .require_auth();
+}
+
+/// Returns the current stream ID counter without incrementing it.
+pub fn get_current_stream_id(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, STREAM_ID_KEY))
+        .unwrap_or(0u64)
 }
 
 /// Returns and increments the global stream ID counter.

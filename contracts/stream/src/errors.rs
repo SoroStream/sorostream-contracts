@@ -21,4 +21,16 @@ pub enum StreamError {
     InsufficientBalance = 7,
     /// cliff_time must be >= start_time and <= end_time.
     InvalidCliff = 8,
+    /// Contract has already been initialized.
+    AlreadyInitialized = 9,
+    /// Contract has not been initialized.
+    NotInitialized = 10,
+    /// A stream with this sender+nonce already exists.
+    DuplicateStream = 11,
+    /// Provided start_time is in the past.
+    InvalidStartTime = 12,
+    /// Partial cancel amount is invalid (exceeds remainder or leaves too little).
+    InvalidPartialCancel = 13,
+    /// Operation is not allowed while the contract is paused.
+    ContractPaused = 14,
 }

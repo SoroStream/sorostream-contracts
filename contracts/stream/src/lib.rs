@@ -11,8 +11,10 @@ mod test;
 use errors::StreamError;
 use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, Vec};
 use storage::{
-    get_ids_by_recipient, get_ids_by_sender, index_by_recipient, index_by_sender,
-    load_stream, mark_nonce_used, next_stream_id, nonce_used, save_stream,
+    check_admin, get_current_stream_id, get_ids_by_recipient, get_ids_by_sender,
+    get_protocol_fee, get_treasury, index_by_recipient, index_by_sender, is_paused,
+    load_stream, mark_nonce_used, next_stream_id, nonce_used, read_admin, save_stream,
+    set_paused, set_protocol_fee, set_treasury, write_admin,
 };
 use types::{Stats, Stream, StreamStatus};
 
@@ -93,9 +95,14 @@ impl SoroStreamContract {
         amount: i128,
         duration_seconds: u64,
         cliff_seconds: u64,
+        nonce: u64,
         auto_renew: bool,
     ) -> Result<u64, StreamError> {
         sender.require_auth();
+
+        if is_paused(&env) {
+            return Err(StreamError::ContractPaused);
+        }
 
         if nonce_used(&env, &sender, nonce) {
             return Err(StreamError::DuplicateStream);
@@ -112,12 +119,8 @@ impl SoroStreamContract {
 
         mark_nonce_used(&env, &sender, nonce);
 
-        if start_time < env.ledger().timestamp() {
-            return Err(StreamError::InvalidStartTime);
-        }
-
-        let flow_rate = amount / duration_seconds as i128;
         let now = env.ledger().timestamp();
+        let flow_rate = amount / duration_seconds as i128;
         let end_time = now + duration_seconds;
         let cliff_time = now + cliff_seconds;
         let stream_id = next_stream_id(&env);
@@ -138,7 +141,7 @@ impl SoroStreamContract {
             start_time: now,
             cliff_time,
             end_time,
-            last_withdraw_time: start_time,
+            last_withdraw_time: now,
             status: StreamStatus::Active,
             auto_renew,
         };
@@ -348,6 +351,7 @@ impl SoroStreamContract {
             deposit: new_deposit,
             flow_rate: stream.flow_rate,
             start_time: now,
+            cliff_time: now,
             end_time: new_end_time,
             last_withdraw_time: now,
             status: StreamStatus::Active,
@@ -566,6 +570,7 @@ impl SoroStreamContract {
                 deposit: amount,
                 flow_rate,
                 start_time: now,
+                cliff_time: now,
                 end_time,
                 last_withdraw_time: now,
                 status: StreamStatus::Active,
