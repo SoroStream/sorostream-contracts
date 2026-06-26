@@ -1,1 +1,14 @@
+# Rust build output
 /target
+
+# Soroban / stellar-cli artifacts
+.stellar/
+
+# editor & OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# misc
+*.log
