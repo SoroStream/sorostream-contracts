@@ -33,6 +33,20 @@ pub enum StreamError {
     InvalidPartialCancel = 13,
     /// Operation is not allowed while the contract is paused.
     ContractPaused = 14,
+    /// A numeric operation overflowed or produced an out-of-range value.
+    /// This is returned instead of panicking when user-controllable inputs
+    /// (e.g. very large amounts or durations) would cause integer overflow.
+    Overflow = 15,
+    /// Amount is too small relative to duration: would produce a zero flow rate.
+    ZeroFlowRate = 16,
+    /// Batch recipients and amounts vectors have different lengths.
+    BatchLengthMismatch = 17,
+    /// Token address does not match the stream's token.
+    TokenMismatch = 18,
+    /// Stream is locked and cannot be withdrawn from yet.
+    StreamLocked = 19,
+    /// Caller is not authorized.
+    NotAuthorized = 20,
     /// Amount is too small relative to duration: would produce a zero flow rate.
     ZeroFlowRate = 15,
     /// Batch recipients and amounts vectors have different lengths.

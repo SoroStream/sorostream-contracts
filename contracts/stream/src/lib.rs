@@ -37,7 +37,7 @@ use storage::{
     get_protocol_fee, get_treasury, index_by_recipient, index_by_sender, is_paused,
     load_stream, mark_nonce_used, next_stream_id, nonce_used, read_admin, remove_stream,
     save_stream, set_paused, set_protocol_fee, set_treasury, unindex_by_recipient,
-    unindex_by_sender, write_admin,
+    unindex_by_sender, write_admin, set_delegate, get_delegate, remove_delegate,
 };
 use types::{Stats, Stream, StreamStatus};
 
@@ -345,18 +345,22 @@ impl SoroStreamContract {
     ///
     /// # Errors
     /// Returns [`StreamError::Overflow`] if any intermediate multiplication overflows.
-    pub fn cancel_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError> {
-        sender.require_auth();
+    pub fn cancel_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError> {
+        caller.require_auth();
 
         let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
 
-        if stream.sender != sender {
-            return Err(StreamError::NotSender);
+        let is_sender = stream.sender == caller;
+        let is_delegate = Some(caller.clone()) == get_delegate(&env, stream_id);
+        if !is_sender && !is_delegate {
+            return Err(StreamError::NotAuthorized);
         }
         if stream.status != StreamStatus::Active && stream.status != StreamStatus::Paused {
             return Err(StreamError::StreamNotActive);
         }
 
+        let now = env.ledger().timestamp();
+        let effective_now = now.min(stream.end_time);
         let now = if stream.status == StreamStatus::Paused {
             stream.last_pause_time
         } else {
@@ -396,14 +400,14 @@ impl SoroStreamContract {
             );
         }
         if refund_amount > 0 {
-            token_client.transfer(&env.current_contract_address(), &sender, &refund_amount);
+            token_client.transfer(&env.current_contract_address(), &stream.sender, &refund_amount);
         }
 
         remove_stream(&env, stream_id);
         unindex_by_sender(&env, &stream.sender, stream_id);
         unindex_by_recipient(&env, &stream.recipient, stream_id);
 
-        events::stream_cancelled(&env, stream_id, &sender, refund_amount, recipient_amount);
+        events::stream_cancelled(&env, stream_id, &stream.sender, refund_amount, recipient_amount);
 
         Ok(())
     }
@@ -419,15 +423,17 @@ impl SoroStreamContract {
     pub fn partial_cancel_stream(
         env: Env,
         stream_id: u64,
-        sender: Address,
+        caller: Address,
         cancel_amount: i128,
     ) -> Result<u64, StreamError> {
-        sender.require_auth();
+        caller.require_auth();
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
 
-        if stream.sender != sender {
-            return Err(StreamError::NotSender);
+        let is_sender = stream.sender == caller;
+        let is_delegate = Some(caller.clone()) == get_delegate(&env, stream_id);
+        if !is_sender && !is_delegate {
+            return Err(StreamError::NotAuthorized);
         }
         if stream.status != StreamStatus::Active && stream.status != StreamStatus::Paused {
             return Err(StreamError::StreamNotActive);
@@ -435,6 +441,9 @@ impl SoroStreamContract {
         if cancel_amount <= 0 {
             return Err(StreamError::ZeroAmount);
         }
+
+        let now = env.ledger().timestamp();
+        let effective_now = now.min(stream.end_time);
 
         let now = if stream.status == StreamStatus::Paused {
             stream.last_pause_time
@@ -483,11 +492,11 @@ impl SoroStreamContract {
         if earned > 0 {
             token_client.transfer(&env.current_contract_address(), &stream.recipient, &earned);
         }
-        token_client.transfer(&env.current_contract_address(), &sender, &cancel_amount);
+        token_client.transfer(&env.current_contract_address(), &stream.sender, &cancel_amount);
 
         stream.status = StreamStatus::Cancelled;
         save_stream(&env, &stream);
-        events::stream_cancelled(&env, stream_id, &sender, cancel_amount, earned);
+        events::stream_cancelled(&env, stream_id, &stream.sender, cancel_amount, earned);
 
         let new_stream_id = next_stream_id(&env);
         let new_stream = Stream {
@@ -508,14 +517,14 @@ impl SoroStreamContract {
         };
 
         save_stream(&env, &new_stream);
-        index_by_sender(&env, &sender, new_stream_id);
+        index_by_sender(&env, &stream.sender, new_stream_id);
         index_by_recipient(&env, &stream.recipient, new_stream_id);
 
         events::stream_partial_cancelled(
             &env,
             stream_id,
             new_stream_id,
-            &sender,
+            &stream.sender,
             cancel_amount,
             new_deposit,
         );
@@ -530,19 +539,21 @@ impl SoroStreamContract {
     pub fn top_up(
         env: Env,
         stream_id: u64,
-        sender: Address,
+        caller: Address,
         token: Address,
         amount: i128,
     ) -> Result<(), StreamError> {
         if is_paused(&env) {
             return Err(StreamError::ContractPaused);
         }
-        sender.require_auth();
+        caller.require_auth();
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
 
-        if stream.sender != sender {
-            return Err(StreamError::NotSender);
+        let is_sender = stream.sender == caller;
+        let is_delegate = Some(caller.clone()) == get_delegate(&env, stream_id);
+        if !is_sender && !is_delegate {
+            return Err(StreamError::NotAuthorized);
         }
         if stream.token != token {
             return Err(StreamError::TokenMismatch);
@@ -569,7 +580,7 @@ impl SoroStreamContract {
         }
 
         token::Client::new(&env, &stream.token)
-            .transfer(&sender, &env.current_contract_address(), &effective_amount);
+            .transfer(&caller, &env.current_contract_address(), &effective_amount);
 
         // Checked cast: extra_seconds = effective_amount / flow_rate.
         // With a 1-stroop flow_rate and i128::MAX deposit this is ~1.7e38 seconds — overflows u64.
@@ -594,6 +605,28 @@ impl SoroStreamContract {
 
         events::stream_topped_up(&env, stream_id, effective_amount, new_end_time);
 
+        Ok(())
+    }
+
+    /// Delegates management of a stream to another address.
+    pub fn delegate(env: Env, sender: Address, stream_id: u64, operator: Address) -> Result<(), StreamError> {
+        sender.require_auth();
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        if stream.sender != sender {
+            return Err(StreamError::NotSender);
+        }
+        set_delegate(&env, stream_id, &operator);
+        Ok(())
+    }
+
+    /// Revokes management of a stream from the current delegate.
+    pub fn revoke_delegate(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError> {
+        sender.require_auth();
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        if stream.sender != sender {
+            return Err(StreamError::NotSender);
+        }
+        remove_delegate(&env, stream_id);
         Ok(())
     }
 

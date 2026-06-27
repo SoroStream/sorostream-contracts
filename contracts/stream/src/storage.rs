@@ -222,3 +222,24 @@ pub fn get_treasury(env: &Env) -> Option<Address> {
 pub fn set_treasury(env: &Env, treasury: &Address) {
     env.storage().instance().set(&Symbol::new(env, TREASURY_KEY), treasury);
 }
+
+// --- Delegate helpers ---
+
+fn delegate_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "del"), stream_id)
+}
+
+/// Gets the authorized delegate for a stream.
+pub fn get_delegate(env: &Env, stream_id: u64) -> Option<Address> {
+    env.storage().persistent().get(&delegate_key(env, stream_id))
+}
+
+/// Sets the authorized delegate for a stream.
+pub fn set_delegate(env: &Env, stream_id: u64, delegate: &Address) {
+    env.storage().persistent().set(&delegate_key(env, stream_id), delegate);
+}
+
+/// Removes the authorized delegate for a stream.
+pub fn remove_delegate(env: &Env, stream_id: u64) {
+    env.storage().persistent().remove(&delegate_key(env, stream_id));
+}

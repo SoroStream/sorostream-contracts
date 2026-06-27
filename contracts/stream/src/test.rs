@@ -1322,14 +1322,74 @@ fn test_batch_create_total_amount_overflow() {
     amounts.push_back(a);
     amounts.push_back(b);
 
+    let mut lock_untils: Vec<u64> = Vec::new(&t.env);
+    lock_untils.push_back(0);
+    lock_untils.push_back(0);
+
     StellarAssetClient::new(&t.env, &t.token_id).mint(&t.sender, &a);
     let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false, &lock_untils,
         &t.sender, &recipients, &amounts, &t.token_id, &1000, &false, &soroban_sdk::vec![&t.env, 0u64],
     );
     assert!(result.is_err());
 }
 
 #[test]
+fn test_delegate_can_top_up_and_cancel() {
+    let t = setup();
+    let c = client(&t);
+    let operator = Address::generate(&t.env);
+
+    StellarAssetClient::new(&t.env, &t.token_id).mint(&operator, &1_000_000);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
+
+    c.delegate(&t.sender, &stream_id, &operator);
+
+    // Operator tops up
+    c.top_up(&stream_id, &operator, &t.token_id, &50_000);
+    let stream_after = c.get_stream(&stream_id);
+    assert_eq!(stream_after.deposit, 150_000);
+
+    // Operator cancels
+    c.cancel_stream(&stream_id, &operator);
+    let result = c.try_get_stream(&stream_id);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_delegate_cannot_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let operator = Address::generate(&t.env);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
+
+    c.delegate(&t.sender, &stream_id, &operator);
+
+    t.env.ledger().set_timestamp(500);
+
+    // Operator tries to withdraw
+    let result = c.try_withdraw(&stream_id, &operator);
+    assert_eq!(result, Err(Ok(StreamError::NotRecipient)));
+}
+
+#[test]
+fn test_revoke_delegate_strips_capabilities() {
+    let t = setup();
+    let c = client(&t);
+    let operator = Address::generate(&t.env);
+
+    StellarAssetClient::new(&t.env, &t.token_id).mint(&operator, &1_000_000);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
+
+    c.delegate(&t.sender, &stream_id, &operator);
+    c.revoke_delegate(&t.sender, &stream_id);
+
+    // Operator tries to top up
+    let result = c.try_top_up(&stream_id, &operator, &t.token_id, &50_000);
+    assert_eq!(result, Err(Ok(StreamError::NotAuthorized)));
 fn test_pause_resume() {
     let t = setup();
     let c = client(&t);
