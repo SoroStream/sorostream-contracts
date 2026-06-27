@@ -28,15 +28,6 @@ use storage::{
 };
 use types::{Stats, Stream, StreamStatus};
 
-/// Multiply `flow_rate * elapsed_seconds` with overflow protection.
-/// Both operands are user-influenced, so a panic here would be a DoS vector.
-#[inline]
-fn checked_flow_amount(flow_rate: i128, elapsed_seconds: u64) -> Result<i128, StreamError> {
-    flow_rate
-        .checked_mul(elapsed_seconds as i128)
-        .ok_or(StreamError::Overflow)
-}
-
 #[contract]
 pub struct SoroStreamContract;
 
@@ -240,13 +231,9 @@ impl SoroStreamContract {
         }
         
         let effective_now = now.min(stream.end_time);
-        let elapsed = if now < stream.cliff_time {
-            0u64
-        } else {
-            effective_now.saturating_sub(stream.last_withdraw_time)
-        };
-        // Checked: flow_rate * elapsed can overflow with large user-supplied values.
-        let claimable = checked_flow_amount(stream.flow_rate, elapsed)?;
+        let claimable = vesting_math::compute_claimable(
+            stream.flow_rate, now, stream.cliff_time, stream.end_time, stream.last_withdraw_time,
+        ).ok_or(StreamError::Overflow)?;
 
         if claimable > 0 {
             token::Client::new(&env, &stream.token).transfer(
@@ -333,29 +320,14 @@ impl SoroStreamContract {
         }
 
         let now = env.ledger().timestamp();
+
         let recipient_amount = vesting_math::compute_earned(
-            stream.flow_rate,
-            now,
-            stream.end_time,
-            stream.last_withdraw_time,
-        );
-        let refund_amount = vesting_math::compute_refund(
-            stream.deposit,
-            stream.flow_rate,
-            now,
-            stream.end_time,
-            stream.start_time,
-        );
-        let effective_now = now.min(stream.end_time);
+            stream.flow_rate, now, stream.end_time, stream.last_withdraw_time,
+        ).ok_or(StreamError::Overflow)?;
 
-        // elapsed since last withdrawal — used for recipient payout.
-        let elapsed_since_withdraw = effective_now.saturating_sub(stream.last_withdraw_time);
-        // Checked multiply: flow_rate * elapsed can overflow with extreme inputs.
-        let recipient_amount = checked_flow_amount(stream.flow_rate, elapsed_since_withdraw)?;
-
-        // Total streamed from stream start — used to compute sender refund.
-        let elapsed_since_start = effective_now.saturating_sub(stream.start_time);
-        let total_streamed = checked_flow_amount(stream.flow_rate, elapsed_since_start)?;
+        let total_streamed = vesting_math::compute_total_streamed(
+            stream.flow_rate, now, stream.end_time, stream.start_time,
+        ).ok_or(StreamError::Overflow)?;
         let refund_amount = stream.deposit.saturating_sub(total_streamed);
 
         let token_client = token::Client::new(&env, &stream.token);
@@ -410,28 +382,13 @@ impl SoroStreamContract {
 
         let now = env.ledger().timestamp();
 
-        // Tokens already earned by the recipient (since last withdrawal).
         let earned = vesting_math::compute_earned(
-            stream.flow_rate,
-            now,
-            stream.end_time,
-            stream.last_withdraw_time,
-        );
+            stream.flow_rate, now, stream.end_time, stream.last_withdraw_time,
+        ).ok_or(StreamError::Overflow)?;
 
-        // Total streamed so far from start (already paid out in previous withdrawals + earned now).
         let total_streamed = vesting_math::compute_total_streamed(
-            stream.flow_rate,
-            now,
-            stream.end_time,
-            stream.start_time,
-        );
-        // Tokens earned since last withdrawal.
-        let elapsed_since_withdraw = effective_now.saturating_sub(stream.last_withdraw_time);
-        let earned = checked_flow_amount(stream.flow_rate, elapsed_since_withdraw)?;
-
-        // Total streamed from start.
-        let elapsed_since_start = effective_now.saturating_sub(stream.start_time);
-        let total_streamed = checked_flow_amount(stream.flow_rate, elapsed_since_start)?;
+            stream.flow_rate, now, stream.end_time, stream.start_time,
+        ).ok_or(StreamError::Overflow)?;
 
         // Remaining unstreamed deposit.
         let remaining = stream.deposit.saturating_sub(total_streamed);
@@ -602,20 +559,9 @@ impl SoroStreamContract {
         }
 
         let now = env.ledger().timestamp();
-        Ok(vesting_math::compute_claimable(
-            stream.flow_rate,
-            now,
-            stream.cliff_time,
-            stream.end_time,
-            stream.last_withdraw_time,
-        ))
-        if now < stream.cliff_time {
-            return Ok(0);
-        }
-
-        let effective_now = now.min(stream.end_time);
-        let elapsed = effective_now.saturating_sub(stream.last_withdraw_time);
-        checked_flow_amount(stream.flow_rate, elapsed)
+        vesting_math::compute_claimable(
+            stream.flow_rate, now, stream.cliff_time, stream.end_time, stream.last_withdraw_time,
+        ).ok_or(StreamError::Overflow)
     }
 
     /// Returns true if `address` is either the sender or recipient of the given stream.
@@ -809,14 +755,8 @@ impl SoroStreamContract {
 
             let effective_now = now.min(stream.end_time);
             let claimable = vesting_math::compute_earned(
-                stream.flow_rate,
-                now,
-                stream.end_time,
-                stream.last_withdraw_time,
-            );
-            let elapsed = effective_now.saturating_sub(stream.last_withdraw_time);
-            // Checked: flow_rate * elapsed can overflow with large inputs.
-            let claimable = checked_flow_amount(stream.flow_rate, elapsed)?;
+                stream.flow_rate, now, stream.end_time, stream.last_withdraw_time,
+            ).ok_or(StreamError::Overflow)?;
 
             if claimable > 0 {
                 let fee_bps = get_protocol_fee(&env);
