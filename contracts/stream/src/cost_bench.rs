@@ -308,7 +308,7 @@ fn bench_top_up() {
         &100_000, &1000, &0, &0u64, &false,
     );
 
-    c.top_up(&stream_id, &b.sender, &50_000);
+    c.top_up(&stream_id, &b.sender, &b.token_id, &50_000);
     assert_within_limits(&b.env, "top_up");
 }
 

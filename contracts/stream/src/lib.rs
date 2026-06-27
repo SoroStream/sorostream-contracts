@@ -37,17 +37,19 @@ fn checked_flow_amount(flow_rate: i128, elapsed_seconds: u64) -> Result<i128, St
 pub struct SoroStreamContract;
 
 pub fn fanout_create_stream(
-    env: Env,
-    sender: Address,
-    recipients: Vec<Address>,
-    weights: Vec<u32>,
-    token: Address,
-    total_amount: i128,
-    duration_seconds: u64,
-    cliff_seconds: u64,
-    nonce: u64,
-    auto_renew: bool,
-) -> Result<Vec<u64>, StreamError>
+    _env: Env,
+    _sender: Address,
+    _recipients: Vec<Address>,
+    _weights: Vec<u32>,
+    _token: Address,
+    _total_amount: i128,
+    _duration_seconds: u64,
+    _cliff_seconds: u64,
+    _nonce: u64,
+    _auto_renew: bool,
+) -> Result<Vec<u64>, StreamError> {
+    todo!("fanout_create_stream not yet implemented")
+}
 
 #[contractimpl]
 impl SoroStreamContract {
