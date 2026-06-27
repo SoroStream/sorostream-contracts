@@ -588,3 +588,95 @@ fn integration_fee_with_treasury_set() {
     assert_eq!(fee, 1000);
     assert_eq!(treas, Some(treasury));
 }
+
+#[test]
+fn integration_treasury_contract_balance_tracking() {
+    let ie = setup_integration();
+    let c = client(&ie);
+    let admin = Address::generate(&ie.env);
+    ie.env.ledger().set_timestamp(0);
+    mint(&ie, &ie.sender, &1_000_000);
+
+    // Deploy treasury contract
+    let treasury_id = ie.env.register(sorostream_treasury::TreasuryContract, ());
+    let treasury_client = sorostream_treasury::TreasuryContractClient::new(&ie.env, &treasury_id);
+    treasury_client.initialize(&admin);
+
+    c.initialize(&admin);
+    c.set_protocol_fee(&500u32); // 5%
+    c.set_treasury_address(&treasury_id);
+
+    let stream_id = c.create_stream(
+        &ie.sender,
+        &ie.recipient,
+        &ie.token,
+        &1_000_000,
+        &1000,
+        &0,
+        &0u64,
+        &false,
+    );
+
+    ie.env.ledger().set_timestamp(500);
+
+    // Before withdrawal, treasury balance is 0
+    assert_eq!(treasury_client.get_balance(&ie.token), 0);
+
+    let stream_ids = soroban_sdk::vec![&ie.env, stream_id];
+    c.batch_withdraw(&stream_ids, &ie.recipient);
+
+    // Claimable = 500 * 1000 = 500_000
+    // Fee = 500_000 * 500 / 10_000 = 25_000
+    let fee = 500_000_i128 * 500 / 10_000;
+    assert_eq!(fee, 25_000);
+
+    // Treasury contract's tracked balance should equal the fee
+    assert_eq!(treasury_client.get_balance(&ie.token), fee);
+
+    // Treasury contract's actual token balance should also equal the fee
+    let treasury_token_balance = TokenClient::new(&ie.env, &ie.token).balance(&treasury_id);
+    assert_eq!(treasury_token_balance, fee);
+}
+
+#[test]
+fn integration_treasury_contract_withdraw() {
+    let ie = setup_integration();
+    let c = client(&ie);
+    let admin = Address::generate(&ie.env);
+    let destination = Address::generate(&ie.env);
+    ie.env.ledger().set_timestamp(0);
+    mint(&ie, &ie.sender, &1_000_000);
+
+    let treasury_id = ie.env.register(sorostream_treasury::TreasuryContract, ());
+    let treasury_client = sorostream_treasury::TreasuryContractClient::new(&ie.env, &treasury_id);
+    treasury_client.initialize(&admin);
+
+    c.initialize(&admin);
+    c.set_protocol_fee(&500u32);
+    c.set_treasury_address(&treasury_id);
+
+    let stream_id = c.create_stream(
+        &ie.sender,
+        &ie.recipient,
+        &ie.token,
+        &1_000_000,
+        &1000,
+        &0,
+        &0u64,
+        &false,
+    );
+
+    ie.env.ledger().set_timestamp(500);
+    let stream_ids = soroban_sdk::vec![&ie.env, stream_id];
+    c.batch_withdraw(&stream_ids, &ie.recipient);
+
+    let fee = 500_000_i128 * 500 / 10_000;
+    assert_eq!(treasury_client.get_balance(&ie.token), fee);
+
+    // Admin withdraws from treasury via main contract
+    c.withdraw_treasury(&ie.token, &fee, &destination);
+
+    let dest_balance = TokenClient::new(&ie.env, &ie.token).balance(&destination);
+    assert_eq!(dest_balance, fee);
+    assert_eq!(treasury_client.get_balance(&ie.token), 0);
+}

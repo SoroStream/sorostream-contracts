@@ -39,6 +39,12 @@ pub enum StreamError {
     BatchLengthMismatch = 16,
     /// Token address does not match the stream's token.
     TokenMismatch = 17,
+    /// A withdrawal was attempted before the stream's lock_until timestamp.
+    StreamLocked = 18,
+    /// A numeric operation overflowed or produced an out-of-range value.
+    /// This is returned instead of panicking when user-controllable inputs
+    /// (e.g. very large amounts or durations) would cause integer overflow.
+    Overflow = 19,
     /// A numeric operation overflowed or produced an out-of-range value.
     /// This is returned instead of panicking when user-controllable inputs
     /// (e.g. very large amounts or durations) would cause integer overflow.
