@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, String, Symbol};
+use soroban_sdk::{Address, Bytes, Env, String, Symbol};
 
 /// Emitted when a new stream is created.
 pub fn stream_created(
@@ -137,5 +137,27 @@ pub fn fee_collected(
     env.events().publish(
         (Symbol::new(env, "FeeCollected"), stream_id),
         (amount, treasury.clone()),
+    );
+}
+
+/// Emitted when a recipient terminates a stream early.
+pub fn stream_terminated_by_recipient(
+    env: &Env,
+    stream_id: u64,
+    recipient: &Address,
+    recipient_amount: i128,
+    refund_amount: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "StreamTerminatedByRecipient"), stream_id),
+        (recipient.clone(), recipient_amount, refund_amount),
+    );
+}
+
+/// Emitted when stream metadata is updated by the sender.
+pub fn metadata_updated(env: &Env, stream_id: u64, sender: &Address, metadata: &Bytes) {
+    env.events().publish(
+        (Symbol::new(env, "MetadataUpdated"), stream_id),
+        (sender.clone(), metadata.clone()),
     );
 }

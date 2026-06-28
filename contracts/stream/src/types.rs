@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Bytes};
 
 /// Status of a payment stream.
 #[contracttype]
@@ -48,6 +48,10 @@ pub struct Stream {
     pub last_pause_time: u64,
     /// Total amount withdrawn from this stream so far.
     pub total_withdrawn: i128,
+    /// Whether the recipient is allowed to terminate this stream early.
+    pub allow_recipient_termination: bool,
+    /// Optional metadata blob attached at creation (max 64 bytes).
+    pub metadata: Bytes,
 }
 
 /// Aggregate contract statistics.

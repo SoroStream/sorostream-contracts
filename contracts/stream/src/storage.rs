@@ -354,3 +354,71 @@ pub fn set_sender_limit(env: &Env, sender: &Address, limit: u32) {
 pub fn effective_sender_limit(env: &Env, sender: &Address) -> u32 {
     get_sender_limit(env, sender).unwrap_or_else(|| get_max_streams_per_sender(env))
 }
+
+// --- Whitelist helpers ---
+
+const WHITELIST_ENABLED_KEY: &str = "wl_en";
+
+fn whitelist_key(env: &Env, addr: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "wl"), addr.clone())
+}
+
+/// Returns true if the recipient whitelist feature is enabled.
+pub fn is_whitelist_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, WHITELIST_ENABLED_KEY))
+        .unwrap_or(false)
+}
+
+/// Enables or disables the recipient whitelist globally.
+pub fn set_whitelist_enabled(env: &Env, enabled: bool) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, WHITELIST_ENABLED_KEY), &enabled);
+}
+
+/// Returns true if the given address is on the whitelist.
+pub fn is_whitelisted(env: &Env, addr: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&whitelist_key(env, addr))
+        .unwrap_or(false)
+}
+
+/// Adds an address to the whitelist.
+pub fn add_to_whitelist(env: &Env, addr: &Address) {
+    env.storage()
+        .persistent()
+        .set(&whitelist_key(env, addr), &true);
+}
+
+/// Removes an address from the whitelist.
+pub fn remove_from_whitelist(env: &Env, addr: &Address) {
+    env.storage().persistent().remove(&whitelist_key(env, addr));
+}
+
+// --- Metadata helpers ---
+
+fn metadata_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "meta"), stream_id)
+}
+
+/// Saves metadata for a stream.
+pub fn save_metadata(env: &Env, stream_id: u64, metadata: &Bytes) {
+    env.storage()
+        .persistent()
+        .set(&metadata_key(env, stream_id), metadata);
+}
+
+/// Loads metadata for a stream.
+pub fn load_metadata(env: &Env, stream_id: u64) -> Option<Bytes> {
+    env.storage().persistent().get(&metadata_key(env, stream_id))
+}
+
+/// Removes metadata for a stream.
+pub fn remove_metadata(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&metadata_key(env, stream_id));
+}

@@ -34,7 +34,7 @@
 //! }
 //! ```
 
-use soroban_sdk::{contractclient, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contractclient, Address, Bytes, BytesN, Env, String, Vec};
 
 use crate::errors::StreamError;
 use crate::types::{Stats, Stream};
@@ -162,6 +162,8 @@ pub trait SoroStreamInterface {
     /// * `nonce` - Caller-supplied deduplication nonce (unique per sender).
     /// * `auto_renew` - Whether the stream restarts automatically upon completion.
     /// * `lock_until` - Ledger timestamp before which withdrawals are not permitted.
+    /// * `allow_recipient_termination` - Whether the recipient may terminate this stream early.
+    /// * `metadata` - Optional metadata blob (max 64 bytes).
     ///
     /// # Returns
     /// The unique stream ID (u64) of the newly created stream.
@@ -172,6 +174,8 @@ pub trait SoroStreamInterface {
     /// * `StreamError::ZeroAmount` if `amount <= 0`.
     /// * `StreamError::InvalidCliff` if `cliff_seconds > duration_seconds`.
     /// * `StreamError::ZeroFlowRate` if `amount / duration_seconds` rounds down to 0.
+    /// * `StreamError::MetadataTooLong` if `metadata` exceeds 64 bytes.
+    /// * `StreamError::RecipientNotWhitelisted` if whitelist is enabled and recipient is not on it.
     /// * `StreamError::Overflow` if `now + duration_seconds` or `now + cliff_seconds` overflows u64.
     fn create_stream(
         env: Env,
@@ -184,6 +188,8 @@ pub trait SoroStreamInterface {
         nonce: u64,
         auto_renew: bool,
         lock_until: u64,
+        allow_recipient_termination: bool,
+        metadata: Bytes,
     ) -> Result<u64, StreamError>;
 
     /// Allows the recipient to withdraw all earned tokens since last withdrawal.
@@ -523,4 +529,35 @@ pub trait SoroStreamInterface {
     /// Sets the minimum stream duration in seconds.
     /// Only the admin may call this.
     fn set_min_duration(env: Env, admin: Address, seconds: u64);
+
+    /// Allows the recipient to terminate a stream early if `allow_recipient_termination` is set.
+    /// Recipient receives all earned tokens; sender receives the remaining balance.
+    ///
+    /// # Errors
+    /// * `StreamError::StreamNotFound` if no stream with this ID exists.
+    /// * `StreamError::NotRecipient` if the caller is not the stream recipient.
+    /// * `StreamError::RecipientTerminationNotAllowed` if the flag was not set at creation.
+    /// * `StreamError::StreamNotActive` if the stream is not active or paused.
+    fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+
+    /// Enables or disables the recipient whitelist globally. Only admin may call this.
+    fn set_whitelist_enabled(env: Env, enabled: bool) -> Result<(), StreamError>;
+
+    /// Adds a recipient address to the whitelist. Only admin may call this.
+    fn add_to_whitelist(env: Env, recipient: Address) -> Result<(), StreamError>;
+
+    /// Removes a recipient address from the whitelist. Only admin may call this.
+    fn remove_from_whitelist(env: Env, recipient: Address) -> Result<(), StreamError>;
+
+    /// Returns whether the recipient whitelist feature is enabled.
+    fn is_whitelist_enabled(env: Env) -> bool;
+
+    /// Updates the metadata blob on an existing stream. Only the sender may call this.
+    /// Metadata must be at most 64 bytes. Emits `MetadataUpdated`.
+    ///
+    /// # Errors
+    /// * `StreamError::StreamNotFound` if no stream with this ID exists.
+    /// * `StreamError::NotSender` if the caller is not the stream sender.
+    /// * `StreamError::MetadataTooLong` if `metadata` exceeds 64 bytes.
+    fn update_metadata(env: Env, stream_id: u64, sender: Address, metadata: Bytes) -> Result<(), StreamError>;
 }

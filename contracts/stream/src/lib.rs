@@ -32,7 +32,7 @@ mod integration_tests;
 #[cfg(test)]
 mod testnet_integration_tests;
 
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String, Vec, Symbol, IntoVal};
+use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal};
 use storage::{
     check_admin, derive_stream_id, effective_sender_limit, get_global_stream_at,
     get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
@@ -42,6 +42,8 @@ use storage::{
     set_paused, set_protocol_fee, set_sender_limit, set_treasury, stream_exists,
     unindex_by_recipient, unindex_by_sender, write_admin, write_min_duration, write_version,
     set_delegate, get_delegate, remove_delegate,
+    is_whitelist_enabled, set_whitelist_enabled, is_whitelisted, add_to_whitelist, remove_from_whitelist,
+    save_metadata, load_metadata, remove_metadata,
 };
 
 fn checked_flow_amount(flow_rate: i128, elapsed: u64) -> Result<i128, StreamError> {
@@ -150,6 +152,8 @@ impl SoroStreamContract {
         nonce: u64,
         auto_renew: bool,
         lock_until: u64,
+        allow_recipient_termination: bool,
+        metadata: Bytes,
     ) -> Result<u64, StreamError> {
         sender.require_auth();
 
@@ -169,6 +173,15 @@ impl SoroStreamContract {
         let min_dur = read_min_duration(&env);
         if duration_seconds < min_dur {
             return Err(StreamError::StreamDurationTooShort);
+        }
+
+        if metadata.len() > 64 {
+            return Err(StreamError::MetadataTooLong);
+        }
+
+        // Whitelist check: if enabled, recipient must be whitelisted.
+        if is_whitelist_enabled(&env) && !is_whitelisted(&env, &recipient) {
+            return Err(StreamError::RecipientNotWhitelisted);
         }
 
         let flow_rate = amount / duration_seconds as i128;
@@ -220,6 +233,8 @@ impl SoroStreamContract {
             auto_renew,
             last_pause_time: 0,
             total_withdrawn: 0,
+            allow_recipient_termination,
+            metadata: metadata.clone(),
         };
 
         save_stream(&env, &stream);
@@ -535,6 +550,8 @@ impl SoroStreamContract {
             auto_renew: stream.auto_renew,
             last_pause_time: 0,
             total_withdrawn: 0,
+            allow_recipient_termination: stream.allow_recipient_termination,
+            metadata: stream.metadata.clone(),
         };
 
         save_stream(&env, &new_stream);
@@ -640,6 +657,121 @@ impl SoroStreamContract {
             return Err(StreamError::NotSender);
         }
         remove_delegate(&env, stream_id);
+        Ok(())
+    }
+
+    /// Allows the recipient to terminate a stream early if `allow_recipient_termination` was set.
+    /// Recipient receives all earned tokens; sender receives the remainder.
+    pub fn recipient_terminate(
+        env: Env,
+        stream_id: u64,
+        recipient: Address,
+    ) -> Result<(), StreamError> {
+        if is_paused(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+        recipient.require_auth();
+
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+
+        if stream.recipient != recipient {
+            return Err(StreamError::NotRecipient);
+        }
+        if !stream.allow_recipient_termination {
+            return Err(StreamError::RecipientTerminationNotAllowed);
+        }
+        if stream.status != StreamStatus::Active && stream.status != StreamStatus::Paused {
+            return Err(StreamError::StreamNotActive);
+        }
+
+        let now = if stream.status == StreamStatus::Paused {
+            stream.last_pause_time
+        } else {
+            env.ledger().timestamp()
+        };
+
+        let recipient_amount = vesting_math::compute_earned(
+            stream.flow_rate, now, stream.end_time, stream.last_withdraw_time,
+        ).ok_or(StreamError::Overflow)?;
+
+        let refund_amount = stream.deposit
+            .saturating_sub(stream.total_withdrawn)
+            .saturating_sub(recipient_amount);
+
+        let token_client = token::Client::new(&env, &stream.token);
+
+        if recipient_amount > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &stream.recipient,
+                &recipient_amount,
+            );
+        }
+        if refund_amount > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &stream.sender,
+                &refund_amount,
+            );
+        }
+
+        remove_stream(&env, stream_id);
+        unindex_by_sender(&env, &stream.sender, stream_id);
+        unindex_by_recipient(&env, &stream.recipient, stream_id);
+        remove_metadata(&env, stream_id);
+
+        events::stream_terminated_by_recipient(
+            &env, stream_id, &recipient, recipient_amount, refund_amount,
+        );
+
+        Ok(())
+    }
+
+    /// Enables or disables the recipient whitelist globally. Only admin may call this.
+    pub fn set_whitelist_enabled(env: Env, enabled: bool) -> Result<(), StreamError> {
+        check_admin(&env);
+        set_whitelist_enabled(&env, enabled);
+        Ok(())
+    }
+
+    /// Adds a recipient address to the whitelist. Only admin may call this.
+    pub fn add_to_whitelist(env: Env, recipient: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        add_to_whitelist(&env, &recipient);
+        Ok(())
+    }
+
+    /// Removes a recipient address from the whitelist. Only admin may call this.
+    pub fn remove_from_whitelist(env: Env, recipient: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        remove_from_whitelist(&env, &recipient);
+        Ok(())
+    }
+
+    /// Returns whether the recipient whitelist is currently enabled.
+    pub fn is_whitelist_enabled(env: Env) -> bool {
+        is_whitelist_enabled(&env)
+    }
+
+    /// Updates the metadata attached to a stream. Only the sender may call this.
+    /// Max 64 bytes. Emits `MetadataUpdated`.
+    pub fn update_metadata(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        metadata: Bytes,
+    ) -> Result<(), StreamError> {
+        sender.require_auth();
+        if metadata.len() > 64 {
+            return Err(StreamError::MetadataTooLong);
+        }
+        let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        if stream.sender != sender {
+            return Err(StreamError::NotSender);
+        }
+        stream.metadata = metadata.clone();
+        save_stream(&env, &stream);
+        events::metadata_updated(&env, stream_id, &sender, &metadata);
         Ok(())
     }
 
@@ -886,6 +1018,8 @@ impl SoroStreamContract {
                 auto_renew,
                 last_pause_time: 0,
                 total_withdrawn: 0,
+                allow_recipient_termination: false,
+                metadata: Bytes::new(&env),
             };
 
             save_stream(&env, &stream);
@@ -1231,6 +1365,8 @@ impl SoroStreamInterface for SoroStreamContract {
         nonce: u64,
         auto_renew: bool,
         lock_until: u64,
+        allow_recipient_termination: bool,
+        metadata: Bytes,
     ) -> Result<u64, StreamError> {
         Self::create_stream(
             env,
@@ -1243,6 +1379,8 @@ impl SoroStreamInterface for SoroStreamContract {
             nonce,
             auto_renew,
             lock_until,
+            allow_recipient_termination,
+            metadata,
         )
     }
 
@@ -1366,5 +1504,29 @@ impl SoroStreamInterface for SoroStreamContract {
 
     fn set_min_duration(env: Env, admin: Address, seconds: u64) {
         Self::set_min_duration(env, admin, seconds)
+    }
+
+    fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError> {
+        Self::recipient_terminate(env, stream_id, recipient)
+    }
+
+    fn set_whitelist_enabled(env: Env, enabled: bool) -> Result<(), StreamError> {
+        Self::set_whitelist_enabled(env, enabled)
+    }
+
+    fn add_to_whitelist(env: Env, recipient: Address) -> Result<(), StreamError> {
+        Self::add_to_whitelist(env, recipient)
+    }
+
+    fn remove_from_whitelist(env: Env, recipient: Address) -> Result<(), StreamError> {
+        Self::remove_from_whitelist(env, recipient)
+    }
+
+    fn is_whitelist_enabled(env: Env) -> bool {
+        Self::is_whitelist_enabled(env)
+    }
+
+    fn update_metadata(env: Env, stream_id: u64, sender: Address, metadata: Bytes) -> Result<(), StreamError> {
+        Self::update_metadata(env, stream_id, sender, metadata)
     }
 }

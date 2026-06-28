@@ -29,4 +29,7 @@ pub enum StreamError {
     StreamDurationTooShort = 22,
     StreamIdConflict = 23,
     SenderStreamLimitExceeded = 24,
+    RecipientTerminationNotAllowed = 25,
+    RecipientNotWhitelisted = 26,
+    MetadataTooLong = 27,
 }
