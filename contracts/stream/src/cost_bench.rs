@@ -233,7 +233,7 @@ fn bench_create_stream() {
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
 
-    c.create_stream(
+    let _stream_id = c.create_stream(
         &b.sender, &b.recipient, &b.token_id,
         &100_000, &1000, &0, &0u64, &false, &0u64,
     );
@@ -340,7 +340,7 @@ fn bench_get_streams_by_sender_n1() {
     let b = setup_bench();
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
-    c.create_stream(
+    let _stream_id = c.create_stream(
         &b.sender, &b.recipient, &b.token_id,
         &100_000, &1000, &0, &0u64, &false, &0u64,
     );
@@ -363,7 +363,7 @@ fn bench_get_streams_by_sender_n20_limit_violation() {
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
     for nonce in 0u64..20 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -380,7 +380,7 @@ fn bench_get_streams_by_sender_n15() {
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
     for nonce in 0u64..15 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -396,7 +396,7 @@ fn bench_get_streams_by_recipient_n1() {
     let b = setup_bench();
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
-    c.create_stream(
+    let _stream_id = c.create_stream(
         &b.sender, &b.recipient, &b.token_id,
         &100_000, &1000, &0, &0u64, &false, &0u64,
     );
@@ -416,7 +416,7 @@ fn bench_get_streams_by_recipient_n20_limit_violation() {
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
     for nonce in 0u64..20 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -433,7 +433,7 @@ fn bench_get_streams_by_recipient_n15() {
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
     for nonce in 0u64..15 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -452,7 +452,7 @@ fn bench_get_active_streams_by_sender_mixed() {
 
     // Create 10 streams; cancel the first 5.
     for nonce in 0u64..10 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -473,7 +473,7 @@ fn bench_get_active_streams_by_recipient_mixed() {
     b.env.ledger().set_timestamp(0);
 
     for nonce in 0u64..10 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -505,7 +505,9 @@ fn bench_batch_create_stream_n5() {
         lock_untils.push_back(0);
     }
 
-    c.batch_create_stream(&b.sender, &recipients, &amounts, &b.token_id, &1000, &false, &lock_untils);
+    let mut tokens = soroban_sdk::Vec::new(&b.env);
+    for _ in 0..recipients.len() { tokens.push_back(b.token_id.clone()); }
+    c.batch_create_stream(&b.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils);
     assert_within_limits(&b.env, "batch_create_stream (N=5)");
 }
 
@@ -534,7 +536,9 @@ fn bench_batch_create_stream_n20_limit_violation() {
     // Mint enough for all 20 streams.
     StellarAssetClient::new(&b.env, &b.token_id).mint(&b.sender, &10_000_000);
 
-    c.batch_create_stream(&b.sender, &recipients, &amounts, &b.token_id, &1000, &false, &lock_untils);
+    let mut tokens = soroban_sdk::Vec::new(&b.env);
+    for _ in 0..recipients.len() { tokens.push_back(b.token_id.clone()); }
+    c.batch_create_stream(&b.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils);
     assert_within_limits(&b.env, "batch_create_stream (N=20)");
 }
 
@@ -659,7 +663,7 @@ fn bench_get_stats_n10() {
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
     for nonce in 0u64..10 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -686,7 +690,7 @@ fn bench_get_stats_n50_limit_violation() {
     StellarAssetClient::new(&b.env, &b.token_id).mint(&b.sender, &10_000_000);
 
     for nonce in 0u64..50 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -707,7 +711,7 @@ fn bench_get_stats_n30() {
     StellarAssetClient::new(&b.env, &b.token_id).mint(&b.sender, &10_000_000);
 
     for nonce in 0u64..30 {
-        c.create_stream(
+        let _stream_id = c.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &10_000, &1000, &0, &nonce, &false, &0u64,
         );
@@ -754,7 +758,7 @@ fn cost_regression_create_stream() {
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
 
-    c.create_stream(
+    let _stream_id = c.create_stream(
         &b.sender, &b.recipient, &b.token_id,
         &100_000, &1000, &0, &0u64, &false, &0u64,
     );
@@ -766,13 +770,13 @@ fn cost_regression_withdraw() {
     let b = setup_bench();
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
-    c.create_stream(
+    let stream_id = c.create_stream(
         &b.sender, &b.recipient, &b.token_id,
         &100_000, &1000, &0, &0u64, &false, &0u64,
     );
     b.env.ledger().set_timestamp(500);
 
-    c.withdraw(&0, &b.recipient);
+    c.withdraw(&stream_id, &b.recipient);
     assert_no_regression(&b.env, "withdraw", BASELINE_WITHDRAW);
 }
 
@@ -781,12 +785,12 @@ fn cost_regression_top_up() {
     let b = setup_bench();
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
-    c.create_stream(
+    let stream_id = c.create_stream(
         &b.sender, &b.recipient, &b.token_id,
         &100_000, &1000, &0, &0u64, &false, &0u64,
     );
 
-    c.top_up(&0, &b.sender, &b.token_id, &50_000);
+    c.top_up(&stream_id, &b.sender, &b.token_id, &50_000);
     assert_no_regression(&b.env, "top_up", BASELINE_TOP_UP);
 }
 
@@ -795,12 +799,12 @@ fn cost_regression_cancel_stream() {
     let b = setup_bench();
     let c = client(&b);
     b.env.ledger().set_timestamp(0);
-    c.create_stream(
+    let stream_id = c.create_stream(
         &b.sender, &b.recipient, &b.token_id,
         &100_000, &1000, &0, &0u64, &false, &0u64,
     );
     b.env.ledger().set_timestamp(300);
 
-    c.cancel_stream(&0, &b.sender);
+    c.cancel_stream(&stream_id, &b.sender);
     assert_no_regression(&b.env, "cancel_stream", BASELINE_CANCEL_STREAM);
 }

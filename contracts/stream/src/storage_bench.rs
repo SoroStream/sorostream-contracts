@@ -85,7 +85,7 @@ fn generate_storage_baseline() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let _stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
@@ -97,12 +97,12 @@ fn generate_storage_baseline() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(500);
-        cl.withdraw(&0u64, &b.recipient);
+        cl.withdraw(&stream_id, &b.recipient);
         results.push(measure(&b.env, "withdraw"));
     }
 
@@ -111,11 +111,11 @@ fn generate_storage_baseline() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
-        cl.top_up(&0u64, &b.sender, &b.token_id, &50_000);
+        cl.top_up(&stream_id, &b.sender, &b.token_id, &50_000);
         results.push(measure(&b.env, "top_up"));
     }
 
@@ -124,12 +124,12 @@ fn generate_storage_baseline() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(300);
-        cl.cancel_stream(&0u64, &b.sender);
+        cl.cancel_stream(&stream_id, &b.sender);
         results.push(measure(&b.env, "cancel_stream"));
     }
 
@@ -138,12 +138,12 @@ fn generate_storage_baseline() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(200);
-        cl.partial_cancel_stream(&0u64, &b.sender, &30_000);
+        cl.partial_cancel_stream(&stream_id, &b.sender, &30_000);
         results.push(measure(&b.env, "partial_cancel_stream"));
     }
 
@@ -160,8 +160,10 @@ fn generate_storage_baseline() {
             amounts.push_back(10_000i128);
         }
         let lock_untils = soroban_sdk::vec![&b.env, 0u64, 0u64, 0u64, 0u64, 0u64];
+        let mut tokens = soroban_sdk::Vec::new(&b.env);
+        for _ in 0..recipients.len() { tokens.push_back(b.token_id.clone()); }
         cl.batch_create_stream(
-            &b.sender, &recipients, &amounts, &b.token_id, &1000, &false, &lock_untils,
+            &b.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils,
         );
         results.push(measure(&b.env, "batch_create_stream_n5"));
     }
@@ -190,11 +192,11 @@ fn generate_storage_baseline() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let _stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
-        cl.get_stream(&0u64);
+        std::println!("stream_id: {}", _stream_id); cl.get_stream(&_stream_id);
         results.push(measure(&b.env, "get_stream"));
     }
 
@@ -203,12 +205,12 @@ fn generate_storage_baseline() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let _stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(500);
-        cl.get_claimable(&0u64);
+        cl.get_claimable(&_stream_id);
         results.push(measure(&b.env, "get_claimable"));
     }
 
@@ -246,7 +248,7 @@ fn check_storage_baseline_regression() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let _stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
@@ -258,12 +260,12 @@ fn check_storage_baseline_regression() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(500);
-        cl.withdraw(&0u64, &b.recipient);
+        cl.withdraw(&stream_id, &b.recipient);
         current.push(("withdraw", measure(&b.env, "withdraw")));
     }
 
@@ -272,11 +274,11 @@ fn check_storage_baseline_regression() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
-        cl.top_up(&0u64, &b.sender, &b.token_id, &50_000);
+        cl.top_up(&stream_id, &b.sender, &b.token_id, &50_000);
         current.push(("top_up", measure(&b.env, "top_up")));
     }
 
@@ -285,12 +287,12 @@ fn check_storage_baseline_regression() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(300);
-        cl.cancel_stream(&0u64, &b.sender);
+        cl.cancel_stream(&stream_id, &b.sender);
         current.push(("cancel_stream", measure(&b.env, "cancel_stream")));
     }
 
@@ -299,12 +301,12 @@ fn check_storage_baseline_regression() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(200);
-        cl.partial_cancel_stream(&0u64, &b.sender, &30_000);
+        cl.partial_cancel_stream(&stream_id, &b.sender, &30_000);
         current.push(("partial_cancel_stream", measure(&b.env, "partial_cancel_stream")));
     }
 
@@ -320,8 +322,10 @@ fn check_storage_baseline_regression() {
             amounts.push_back(10_000i128);
         }
         let lock_untils = soroban_sdk::vec![&b.env, 0u64, 0u64, 0u64, 0u64, 0u64];
+        let mut tokens = soroban_sdk::Vec::new(&b.env);
+        for _ in 0..recipients.len() { tokens.push_back(b.token_id.clone()); }
         cl.batch_create_stream(
-            &b.sender, &recipients, &amounts, &b.token_id, &1000, &false, &lock_untils,
+            &b.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils,
         );
         current.push(("batch_create_stream_n5", measure(&b.env, "batch_create_stream_n5")));
     }
@@ -349,11 +353,11 @@ fn check_storage_baseline_regression() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let _stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
-        cl.get_stream(&0u64);
+        std::println!("stream_id: {}", _stream_id); cl.get_stream(&_stream_id);
         current.push(("get_stream", measure(&b.env, "get_stream")));
     }
 
@@ -362,12 +366,12 @@ fn check_storage_baseline_regression() {
         let b = setup();
         let cl = c(&b);
         b.env.ledger().set_timestamp(0);
-        cl.create_stream(
+        let _stream_id = cl.create_stream(
             &b.sender, &b.recipient, &b.token_id,
             &100_000, &1000, &0, &0u64, &false, &0u64,
         );
         b.env.ledger().set_timestamp(500);
-        cl.get_claimable(&0u64);
+        cl.get_claimable(&_stream_id);
         current.push(("get_claimable", measure(&b.env, "get_claimable")));
     }
 

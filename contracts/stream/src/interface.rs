@@ -228,6 +228,20 @@ pub trait SoroStreamInterface {
     /// * `StreamError::Overflow` if `flow_rate * elapsed` multiplication overflows i128.
     fn cancel_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
 
+    /// Transfers claim rights of a stream to a new recipient.
+    ///
+    /// Only the current recipient can call this function. Accumulated unwithdrawn tokens
+    /// are withdrawn to the current recipient before the transfer.
+    ///
+    /// # Parameters
+    /// * `stream_id` - The ID of the stream to transfer.
+    /// * `current_recipient` - The current recipient (must sign the transaction).
+    /// * `new_recipient` - The new recipient address.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` on success.
+    fn transfer_recipient(env: Env, stream_id: u64, current_recipient: Address, new_recipient: Address) -> Result<(), StreamError>;
+
     /// Partially cancels a stream by reclaiming tokens from the unstreamed remainder.
     ///
     /// The recipient receives all currently earned tokens. A new stream is created with the
@@ -385,6 +399,26 @@ pub trait SoroStreamInterface {
     /// A vector of active `Stream` structs targeting the recipient.
     fn get_active_streams_by_recipient(env: Env, recipient: Address) -> Vec<Stream>;
 
+    /// Pauses an active stream.
+    ///
+    /// # Parameters
+    /// * `stream_id` - The ID of the stream to pause.
+    /// * `sender` - The sender address.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` on success.
+    fn pause_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
+
+    /// Resumes a paused stream, pushing back the end time.
+    ///
+    /// # Parameters
+    /// * `stream_id` - The ID of the stream to resume.
+    /// * `sender` - The sender address.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` on success.
+    fn resume_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
+
     /// Creates multiple payment streams in a single transaction.
     ///
     /// All streams share the same token, duration, and auto-renew flag. The sender funds all
@@ -392,9 +426,9 @@ pub trait SoroStreamInterface {
     ///
     /// # Parameters
     /// * `sender` - The payer (must sign the transaction).
-    /// * `recipients` - Vector of recipient addresses (length must match `amounts` and `lock_untils`).
+    /// * `recipients` - Vector of recipient addresses (length must match `amounts`, `tokens`, and `lock_untils`).
     /// * `amounts` - Vector of amounts per stream (in stroops).
-    /// * `token` - The token contract address for all streams.
+    /// * `tokens` - Vector of token contract addresses for each stream.
     /// * `duration_seconds` - Duration for all streams.
     /// * `auto_renew` - Whether all streams auto-renew on completion.
     /// * `lock_untils` - Vector of lock timestamps per stream.
@@ -414,7 +448,7 @@ pub trait SoroStreamInterface {
         sender: Address,
         recipients: Vec<Address>,
         amounts: Vec<i128>,
-        token: Address,
+        tokens: Vec<Address>,
         duration_seconds: u64,
         auto_renew: bool,
         lock_untils: Vec<u64>,
@@ -479,6 +513,24 @@ pub trait SoroStreamInterface {
     /// # Errors
     /// Returns `StreamError::InvalidDuration` if `fee_bps > 10_000` (reused error code).
     fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError>;
+
+    /// Proposes a change to the protocol fee, initiating a 7-day timelock.
+    ///
+    /// Only the admin may call this function.
+    ///
+    /// # Parameters
+    /// * `admin` - The admin address (must sign the transaction).
+    /// * `new_fee_bps` - Proposed fee in basis points (must be <= 10,000).
+    ///
+    /// # Returns
+    /// Returns `Ok(())` on success.
+    fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError>;
+
+    /// Executes a pending fee proposal if its 7-day timelock has passed.
+    ///
+    /// # Returns
+    /// Returns `Ok(())` on success.
+    fn execute_fee_change(env: Env) -> Result<(), StreamError>;
 
     /// Sets the treasury address to receive protocol fees.
     ///

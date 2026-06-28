@@ -983,8 +983,12 @@ fn error_invalid_duration_on_batch_create() {
 
     // duration_seconds = 0 causes end_time overflow check to fail
     let lock_untils = soroban_vec![&t.env, 0u64];
-    let result = c.try_batch_create_stream(
-        &t.sender, &recipients, &amounts, &t.token_id, &0, &false, &lock_untils,
+let mut tokens = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..recipients.len() {
+        tokens.push_back(t.token_id.clone());
+    }
+        let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &tokens, &0, &false, &lock_untils,
     );
     assert_eq!(result, Err(Ok(StreamError::InvalidDuration)));
 }
@@ -1181,8 +1185,12 @@ fn error_zero_flow_rate_in_batch() {
     let amounts = soroban_vec![&t.env, 1i128];
     let lock_untils = soroban_vec![&t.env, 0u64];
 
-    let result = c.try_batch_create_stream(
-        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false, &lock_untils,
+let mut tokens = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..recipients.len() {
+        tokens.push_back(t.token_id.clone());
+    }
+        let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils,
     );
     assert_eq!(result, Err(Ok(StreamError::ZeroFlowRate)));
 }
@@ -1214,8 +1222,12 @@ fn error_batch_length_mismatch() {
     let amounts = soroban_vec![&t.env, 10_000i128, 20_000i128];
     let lock_untils = soroban_vec![&t.env, 0u64, 0u64];
 
-    let result = c.try_batch_create_stream(
-        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false, &lock_untils,
+let mut tokens = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..recipients.len() {
+        tokens.push_back(t.token_id.clone());
+    }
+        let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils,
     );
     assert_eq!(result, Err(Ok(StreamError::BatchLengthMismatch)));
 }
@@ -1229,8 +1241,12 @@ fn error_zero_amount_in_batch() {
     let amounts = soroban_vec![&t.env, 0i128];
     let lock_untils = soroban_vec![&t.env, 0u64];
 
-    let result = c.try_batch_create_stream(
-        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false, &lock_untils,
+let mut tokens = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..recipients.len() {
+        tokens.push_back(t.token_id.clone());
+    }
+        let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils,
     );
     assert_eq!(result, Err(Ok(StreamError::ZeroAmount)));
 }
@@ -1327,8 +1343,12 @@ fn test_batch_create_total_amount_overflow() {
     lock_untils.push_back(0);
 
     StellarAssetClient::new(&t.env, &t.token_id).mint(&t.sender, &a);
-    let result = c.try_batch_create_stream(
-        &t.sender, &recipients, &amounts, &t.token_id, &1000, &false, &lock_untils,
+let mut tokens = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..recipients.len() {
+        tokens.push_back(t.token_id.clone());
+    }
+        let result = c.try_batch_create_stream(
+        &t.sender, &recipients, &amounts, &tokens, &1000, &false, &lock_untils,
     );
     assert!(result.is_err());
 }
@@ -1409,8 +1429,9 @@ fn error_batch_cancel_not_sender() {
     let stream_id1 = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
     let stream_id2 = c.create_stream(&other_sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
 
-    let result = c.try_batch_cancel_stream(&soroban_vec![&t.env, stream_id1, stream_id2], &t.sender);
-    assert_eq!(result, Err(Ok(StreamError::NotSender)));
+    let result = c.batch_cancel_stream(&soroban_vec![&t.env, stream_id1, stream_id2], &t.sender);
+    assert_eq!(result.get(0).unwrap(), Ok(()));
+    assert_eq!(result.get(1).unwrap(), Err(StreamError::NotSender));
 }
 
 #[test]
@@ -1425,7 +1446,8 @@ fn error_batch_cancel_empty_list() {
 fn error_batch_cancel_too_long_list() {
     let t = setup();
     let c = client(&t);
-    let ids: Vec<u64> = (0..21).collect::<std::vec::Vec<u64>>().into_iter().collect_in(&t.env);
+    let mut ids = soroban_sdk::Vec::new(&t.env);
+    for i in 0..21 { ids.push_back(i as u64); }
     let result = c.try_batch_cancel_stream(&ids, &t.sender);
     assert_eq!(result, Err(Ok(StreamError::BatchLengthMismatch)));
 }
@@ -1689,11 +1711,15 @@ fn test_interface_batch_operations() {
     let lock_untils = soroban_vec![&t.env, 0u64, 0u64];
 
     // Create batch through trait
-    let stream_ids = c.batch_create_stream(
+let mut tokens = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..recipients.len() {
+        tokens.push_back(t.token_id.clone());
+    }
+        let stream_ids = c.batch_create_stream(
         &t.sender,
         &recipients,
         &amounts,
-        &t.token_id,
+        &tokens,
         &1000,
         &false,
         &lock_untils,

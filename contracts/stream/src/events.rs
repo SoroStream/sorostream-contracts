@@ -139,3 +139,32 @@ pub fn fee_collected(
         (amount, treasury.clone()),
     );
 }
+
+/// Emitted when a fee change is proposed.
+pub fn fee_change_proposed(env: &Env, new_fee: u32, unlock_time: u64) {
+    env.events().publish(
+        (Symbol::new(env, "FeeChangeProposed"),),
+        (new_fee, unlock_time),
+    );
+}
+
+/// Emitted when a fee change is executed.
+pub fn fee_change_executed(env: &Env, new_fee: u32) {
+    env.events().publish(
+        (Symbol::new(env, "FeeChangeExecuted"),),
+        (new_fee,),
+    );
+}
+
+/// Emitted when a stream recipient transfers their rights to a new recipient.
+pub fn recipient_transferred(
+    env: &Env,
+    stream_id: u64,
+    old_recipient: &Address,
+    new_recipient: &Address,
+) {
+    env.events().publish(
+        (Symbol::new(env, "RecipientTransferred"), stream_id),
+        (old_recipient.clone(), new_recipient.clone()),
+    );
+}

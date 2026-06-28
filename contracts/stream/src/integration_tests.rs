@@ -311,11 +311,13 @@ fn integration_batch_create_withdraw_lifecycle() {
     let amounts = soroban_sdk::vec![&ie.env, 1_000_000_i128, 2_000_000_i128];
 
     let lock_untils = soroban_sdk::vec![&ie.env, 0u64, 0u64];
+    let mut tokens = soroban_sdk::Vec::new(&ie.env);
+    for _ in 0..recipients.len() { tokens.push_back(ie.token.clone()); }
     let stream_ids = c.batch_create_stream(
         &ie.sender,
         &recipients,
         &amounts,
-        &ie.token,
+        &tokens,
         &1000,
         &false,
         &lock_untils,

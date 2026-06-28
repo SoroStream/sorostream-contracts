@@ -9,6 +9,7 @@ const MIN_DURATION_KEY: &str = "min_dur";
 const VERSION_KEY: &str = "version";
 const MAX_STREAMS_KEY: &str = "max_str";
 const STREAM_COUNT_KEY: &str = "str_cnt";
+const PENDING_FEE_KEY: &str = "pnd_fee";
 
 /// Stores the contract admin address.
 pub fn write_admin(env: &Env, admin: &Address) {
@@ -251,6 +252,21 @@ pub fn get_protocol_fee(env: &Env) -> u32 {
 /// Sets the protocol fee in basis points.
 pub fn set_protocol_fee(env: &Env, fee_bps: u32) {
     env.storage().instance().set(&Symbol::new(env, PROTOCOL_FEE_KEY), &fee_bps);
+}
+
+/// Reads the pending fee proposal (new_fee_bps, unlock_time) if any.
+pub fn read_pending_fee_proposal(env: &Env) -> Option<(u32, u64)> {
+    env.storage().instance().get(&Symbol::new(env, PENDING_FEE_KEY))
+}
+
+/// Writes a pending fee proposal.
+pub fn write_pending_fee_proposal(env: &Env, new_fee_bps: u32, unlock_time: u64) {
+    env.storage().instance().set(&Symbol::new(env, PENDING_FEE_KEY), &(new_fee_bps, unlock_time));
+}
+
+/// Clears the pending fee proposal.
+pub fn clear_pending_fee_proposal(env: &Env) {
+    env.storage().instance().remove(&Symbol::new(env, PENDING_FEE_KEY));
 }
 
 /// Gets the treasury address for protocol fees.
