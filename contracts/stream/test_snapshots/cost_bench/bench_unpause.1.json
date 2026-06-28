@@ -220,6 +220,14 @@
                         "val": {
                           "bool": false
                         }
+                      },
+                      {
+                        "key": {
+                          "symbol": "version"
+                        },
+                        "val": {
+                          "string": "0.2.0"
+                        }
                       }
                     ]
                   }

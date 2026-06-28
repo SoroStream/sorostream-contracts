@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{Address, Env, String, Symbol};
 
 /// Emitted when a new stream is created.
 pub fn stream_created(
@@ -69,6 +69,14 @@ pub fn auto_renew_failed(env: &Env, stream_id: u64, sender: &Address, required: 
     env.events().publish(
         (Symbol::new(env, "AutoRenewFailed"), stream_id),
         (sender.clone(), required),
+    );
+}
+
+/// Emitted when the contract is initialized with a version.
+pub fn contract_deployed(env: &Env, version: &String, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "ContractDeployed"),),
+        (version.clone(), admin.clone()),
     );
 }
 

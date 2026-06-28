@@ -74,3 +74,28 @@ jobs:
         run: cargo test
       - name: Storage baseline regression check
         run: cargo test --package sorostream-stream -- storage_bench::check_storage_baseline_regression --nocapture
+      - name: Build size-optimized WASM
+        run: cargo build --target wasm32v1-none --profile release-size
+      - name: Record WASM binary size
+        id: wasm_size
+        run: |
+          SIZE=$(wc -c < target/wasm32v1-none/release/sorostream_stream.wasm)
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "WASM binary size: $SIZE bytes"
+      - name: Check WASM size regression
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main
+          git checkout origin/main -- wasm-size.log 2>/dev/null || echo "0" > wasm-size.log
+          BASELINE=$(cat wasm-size.log | tr -d '[:space:]')
+          CURRENT=${{ steps.wasm_size.outputs.size }}
+          if [ "$BASELINE" -gt 0 ] 2>/dev/null; then
+            GROWTH=$(( (CURRENT - BASELINE) * 100 / BASELINE ))
+            echo "Baseline: $BASELINE bytes, Current: $CURRENT bytes, Growth: ${GROWTH}%"
+            if [ "$GROWTH" -gt 5 ]; then
+              echo "::error::WASM binary grew by ${GROWTH}% (>${BASELINE} -> ${CURRENT}), exceeding the 5% threshold"
+              exit 1
+            fi
+          else
+            echo "No baseline size found, skipping regression check"
+          fi

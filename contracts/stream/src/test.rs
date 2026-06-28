@@ -51,7 +51,6 @@ fn test_create_stream_success() {
     let c = client(&t);
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
-    assert_eq!(stream_id, 0);
 
     let stream = c.get_stream(&stream_id);
     assert_eq!(stream.deposit, 100_000);
@@ -312,7 +311,7 @@ fn test_get_admin_returns_initialized_admin() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     assert_eq!(c.get_admin(), admin);
 }
 
@@ -322,7 +321,7 @@ fn test_set_admin_transfers_role() {
     let c = client(&t);
     let admin = Address::generate(&t.env);
     let new_admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     c.set_admin(&new_admin);
     assert_eq!(c.get_admin(), new_admin);
 }
@@ -333,7 +332,7 @@ fn test_set_admin_rejected_for_non_admin() {
     let c = client(&t);
     let admin = Address::generate(&t.env);
     let attacker = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
 
     t.env.set_auths(&[]);
     let result = c.try_set_admin(&attacker);
@@ -345,7 +344,7 @@ fn test_admin_persists_across_calls() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     // Interleave unrelated contract calls and re-check admin
     c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
     assert_eq!(c.get_admin(), admin);
@@ -356,7 +355,7 @@ fn test_admin_can_pause_and_unpause() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     assert!(!c.is_paused());
     c.emergency_pause();
     assert!(c.is_paused());
@@ -369,7 +368,7 @@ fn test_create_stream_blocked_when_paused() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     c.emergency_pause();
     let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
     assert!(result.is_err());
@@ -380,11 +379,10 @@ fn test_create_stream_works_after_unpause() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     c.emergency_pause();
     c.emergency_resume();
-    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
-    assert_eq!(stream_id, 0);
+    let _stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64);
 }
 
 #[test]
@@ -392,7 +390,7 @@ fn test_pause_rejected_for_non_admin() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     t.env.set_auths(&[]);
     assert!(c.try_emergency_pause().is_err());
     assert!(c.try_emergency_resume().is_err());
@@ -1007,9 +1005,9 @@ fn error_already_initialized() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
 
-    let result = c.try_initialize(&admin);
+    let result = c.try_initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     assert_eq!(result, Err(Ok(StreamError::AlreadyInitialized)));
 }
 
@@ -1154,7 +1152,7 @@ fn error_contract_paused() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
     c.emergency_pause();
 
     let result = c.try_create_stream(
@@ -1613,7 +1611,7 @@ fn test_interface_protocol_fee() {
     let t = setup();
     let c = client(&t);
     let admin = Address::generate(&t.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
 
     // Set protocol fee through trait
     c.set_protocol_fee(&100); // 1% = 100 bps
@@ -1716,7 +1714,7 @@ fn test_interface_admin_operations() {
     let admin = Address::generate(&t.env);
 
     // Initialize through trait
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
 
     // Get admin through trait
     assert_eq!(c.get_admin(), admin);

@@ -23,14 +23,10 @@ pub enum StreamError {
     ZeroFlowRate = 16,
     BatchLengthMismatch = 17,
     TokenMismatch = 18,
-    /// Caller is not authorized.
-    NotAuthorized = 20,
-    /// Stream is not paused.
-    StreamNotPaused = 21,
-    /// Stream is locked until the lock_until timestamp.
-    StreamLocked = 19,
     StreamLocked = 19,
     NotAuthorized = 20,
     StreamNotPaused = 21,
     StreamDurationTooShort = 22,
+    StreamIdConflict = 23,
+    SenderStreamLimitExceeded = 24,
 }

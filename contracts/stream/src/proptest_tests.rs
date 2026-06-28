@@ -284,7 +284,7 @@ proptest! {
         let (env, contract_id, token_id, sender, recipient) = setup_env();
         let c = SoroStreamContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        c.initialize(&admin);
+        c.initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
 
         prop_assert!(!c.is_paused());
 

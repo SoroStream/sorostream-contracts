@@ -1,12 +1,14 @@
 use crate::types::Stream;
-use soroban_sdk::{Address, Env, Symbol, Vec};
+use soroban_sdk::{Address, Bytes, Env, Symbol, Vec, xdr::ToXdr};
 
-const STREAM_ID_KEY: &str = "next_id";
 const ADMIN_KEY: &str = "admin";
 const PAUSED_KEY: &str = "paused";
 const PROTOCOL_FEE_KEY: &str = "fee_bps";
 const TREASURY_KEY: &str = "treasury";
 const MIN_DURATION_KEY: &str = "min_dur";
+const VERSION_KEY: &str = "version";
+const MAX_STREAMS_KEY: &str = "max_str";
+const STREAM_COUNT_KEY: &str = "str_cnt";
 
 /// Stores the contract admin address.
 pub fn write_admin(env: &Env, admin: &Address) {
@@ -27,30 +29,59 @@ pub fn check_admin(env: &Env) {
         .require_auth();
 }
 
-/// Returns the current stream ID counter without incrementing it.
-pub fn get_current_stream_id(env: &Env) -> u64 {
-    env.storage()
-        .instance()
-        .get(&Symbol::new(env, STREAM_ID_KEY))
-        .unwrap_or(0u64)
+/// Derives a deterministic stream ID from sender, recipient, start_time, and nonce.
+pub fn derive_stream_id(
+    env: &Env,
+    sender: &Address,
+    recipient: &Address,
+    start_time: u64,
+    nonce: u64,
+) -> u64 {
+    let mut buf = Bytes::new(env);
+    buf.append(&sender.to_xdr(env));
+    buf.append(&recipient.to_xdr(env));
+    buf.append(&Bytes::from_array(env, &start_time.to_be_bytes()));
+    buf.append(&Bytes::from_array(env, &nonce.to_be_bytes()));
+    let hash = env.crypto().sha256(&buf);
+    let hash_bytes = hash.to_array();
+    u64::from_be_bytes([
+        hash_bytes[0],
+        hash_bytes[1],
+        hash_bytes[2],
+        hash_bytes[3],
+        hash_bytes[4],
+        hash_bytes[5],
+        hash_bytes[6],
+        hash_bytes[7],
+    ])
 }
 
-/// Returns and increments the global stream ID counter.
-///
-/// # Panics
-/// Panics if the stream ID counter would overflow `u64::MAX` — this requires
-/// 2^64 streams to have been created and is not reachable in practice.
-pub fn next_stream_id(env: &Env) -> u64 {
-    let id: u64 = env
-        .storage()
-        .instance()
-        .get(&Symbol::new(env, STREAM_ID_KEY))
-        .unwrap_or(0u64);
-    let next = id.checked_add(1).expect("stream id counter overflow");
+/// Returns true if a stream with the given ID already exists.
+pub fn stream_exists(env: &Env, stream_id: u64) -> bool {
+    env.storage().persistent().has(&stream_id)
+}
+
+/// Indexes a stream ID in the global enumeration list.
+pub fn index_global_stream(env: &Env, stream_id: u64) {
+    let cnt_key = Symbol::new(env, STREAM_COUNT_KEY);
+    let idx: u32 = env.storage().instance().get(&cnt_key).unwrap_or(0u32);
+    let slot_key = (Symbol::new(env, "gi"), idx);
+    env.storage().persistent().set(&slot_key, &stream_id);
+    env.storage().instance().set(&cnt_key, &(idx + 1));
+}
+
+/// Returns the total number of streams in the global index.
+pub fn get_global_stream_count(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, STREAM_ID_KEY), &next);
-    id
+        .get(&Symbol::new(env, STREAM_COUNT_KEY))
+        .unwrap_or(0u32)
+}
+
+/// Returns the stream ID at a given position in the global index.
+pub fn get_global_stream_at(env: &Env, idx: u32) -> Option<u64> {
+    let slot_key = (Symbol::new(env, "gi"), idx);
+    env.storage().persistent().get(&slot_key)
 }
 
 /// Persists a stream to storage.
@@ -151,6 +182,14 @@ pub fn unindex_by_recipient(env: &Env, recipient: &Address, stream_id: u64) {
             }
         }
     }
+}
+
+/// Returns the number of streams created by a sender (including cancelled/expired).
+pub fn get_sender_stream_count(env: &Env, sender: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&sender_count_key(env, sender))
+        .unwrap_or(0u32)
 }
 
 /// Returns all stream IDs for a sender by iterating over slots.
@@ -258,4 +297,60 @@ pub fn set_delegate(env: &Env, stream_id: u64, delegate: &Address) {
 /// Removes the authorized delegate for a stream.
 pub fn remove_delegate(env: &Env, stream_id: u64) {
     env.storage().persistent().remove(&delegate_key(env, stream_id));
+}
+
+// --- Version tracking ---
+
+/// Stores the contract version string.
+pub fn write_version(env: &Env, version: &soroban_sdk::String) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, VERSION_KEY), version);
+}
+
+/// Reads the contract version string.
+pub fn read_version(env: &Env) -> Option<soroban_sdk::String> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, VERSION_KEY))
+}
+
+// --- Rate limiting ---
+
+/// Gets the global maximum streams per sender (default: 1000).
+pub fn get_max_streams_per_sender(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, MAX_STREAMS_KEY))
+        .unwrap_or(1000u32)
+}
+
+/// Sets the global maximum streams per sender.
+pub fn set_max_streams_per_sender(env: &Env, max_streams: u32) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, MAX_STREAMS_KEY), &max_streams);
+}
+
+fn sender_limit_key(env: &Env, sender: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "sl"), sender.clone())
+}
+
+/// Gets the per-sender stream limit override, if set.
+pub fn get_sender_limit(env: &Env, sender: &Address) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&sender_limit_key(env, sender))
+}
+
+/// Sets a per-sender stream limit override.
+pub fn set_sender_limit(env: &Env, sender: &Address, limit: u32) {
+    env.storage()
+        .persistent()
+        .set(&sender_limit_key(env, sender), &limit);
+}
+
+/// Returns the effective stream limit for a sender (per-sender override or global default).
+pub fn effective_sender_limit(env: &Env, sender: &Address) -> u32 {
+    get_sender_limit(env, sender).unwrap_or_else(|| get_max_streams_per_sender(env))
 }

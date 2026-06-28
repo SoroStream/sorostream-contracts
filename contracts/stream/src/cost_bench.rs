@@ -170,7 +170,7 @@ fn bench_initialize() {
     let b = setup_bench();
     let c = client(&b);
 
-    c.initialize(&b.admin);
+    c.initialize(&b.admin, &soroban_sdk::String::from_str(&b.env, "1.0.0"));
     assert_within_limits(&b.env, "initialize");
 }
 
@@ -178,7 +178,7 @@ fn bench_initialize() {
 fn bench_get_admin() {
     let b = setup_bench();
     let c = client(&b);
-    c.initialize(&b.admin);
+    c.initialize(&b.admin, &soroban_sdk::String::from_str(&b.env, "1.0.0"));
 
     c.get_admin();
     assert_within_limits(&b.env, "get_admin");
@@ -188,7 +188,7 @@ fn bench_get_admin() {
 fn bench_set_admin() {
     let b = setup_bench();
     let c = client(&b);
-    c.initialize(&b.admin);
+    c.initialize(&b.admin, &soroban_sdk::String::from_str(&b.env, "1.0.0"));
     let new_admin = Address::generate(&b.env);
 
     c.set_admin(&new_admin);
@@ -199,7 +199,7 @@ fn bench_set_admin() {
 fn bench_pause() {
     let b = setup_bench();
     let c = client(&b);
-    c.initialize(&b.admin);
+    c.initialize(&b.admin, &soroban_sdk::String::from_str(&b.env, "1.0.0"));
 
     c.emergency_pause();
     assert_within_limits(&b.env, "pause");
@@ -209,7 +209,7 @@ fn bench_pause() {
 fn bench_unpause() {
     let b = setup_bench();
     let c = client(&b);
-    c.initialize(&b.admin);
+    c.initialize(&b.admin, &soroban_sdk::String::from_str(&b.env, "1.0.0"));
     c.emergency_pause();
 
     c.emergency_resume();

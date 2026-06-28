@@ -233,7 +233,7 @@ fn integration_treasury_fees_on_batch_withdraw() {
     ie.env.ledger().set_timestamp(0);
     mint(&ie, &ie.sender, &1_000_000);
 
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     c.set_protocol_fee(&500u32); // 5% fee (500 bps)
     c.set_treasury_address(&treasury);
 
@@ -274,7 +274,7 @@ fn integration_zero_fee_no_treasury_deduction() {
     ie.env.ledger().set_timestamp(0);
     mint(&ie, &ie.sender, &1_000_000);
 
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     // fee is 0 by default
 
     let stream_id = c.create_stream(
@@ -572,7 +572,7 @@ fn integration_max_fee_boundary() {
     let ie = setup_integration();
     let c = client(&ie);
     let admin = Address::generate(&ie.env);
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
 
     // Max valid fee: 10_000 bps = 100%
     c.set_protocol_fee(&10_000u32);
@@ -591,7 +591,7 @@ fn integration_fee_with_treasury_set() {
     let admin = Address::generate(&ie.env);
     let treasury = Address::generate(&ie.env);
 
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     c.set_protocol_fee(&1000u32); // 10%
     c.set_treasury_address(&treasury);
 
@@ -613,7 +613,7 @@ fn integration_treasury_contract_balance_tracking() {
     let treasury_client = sorostream_treasury::TreasuryContractClient::new(&ie.env, &treasury_id);
     treasury_client.initialize(&admin);
 
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     c.set_protocol_fee(&500u32); // 5%
     c.set_treasury_address(&treasury_id);
 
@@ -663,7 +663,7 @@ fn integration_treasury_contract_withdraw() {
     let treasury_client = sorostream_treasury::TreasuryContractClient::new(&ie.env, &treasury_id);
     treasury_client.initialize(&admin);
 
-    c.initialize(&admin);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     c.set_protocol_fee(&500u32);
     c.set_treasury_address(&treasury_id);
 

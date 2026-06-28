@@ -34,7 +34,7 @@
 //! }
 //! ```
 
-use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
+use soroban_sdk::{contractclient, Address, BytesN, Env, String, Vec};
 
 use crate::errors::StreamError;
 use crate::types::{Stats, Stream};
@@ -56,7 +56,7 @@ pub trait SoroStreamInterface {
     ///
     /// # Errors
     /// Returns `StreamError::AlreadyInitialized` if the contract has been initialized previously.
-    fn initialize(env: Env, admin: Address) -> Result<(), StreamError>;
+    fn initialize(env: Env, admin: Address, version: String) -> Result<(), StreamError>;
 
     /// Returns the current admin address.
     ///
@@ -69,6 +69,9 @@ pub trait SoroStreamInterface {
     /// # Errors
     /// Returns `StreamError::NotInitialized` if the contract has not been initialized.
     fn get_admin(env: Env) -> Result<Address, StreamError>;
+
+    /// Returns the contract version string.
+    fn get_version(env: Env) -> Result<String, StreamError>;
 
     /// Transfers the admin role to a new address.
     ///
@@ -137,6 +140,12 @@ pub trait SoroStreamInterface {
     /// # Errors
     /// Panics if the caller is not the current admin (fails `require_auth()`).
     fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), StreamError>;
+
+    /// Sets the global maximum streams per sender. Only the admin may call this.
+    fn set_max_streams(env: Env, max_streams: u32) -> Result<(), StreamError>;
+
+    /// Sets a per-sender stream limit override. Only the admin may call this.
+    fn set_sender_stream_limit(env: Env, sender: Address, limit: u32) -> Result<(), StreamError>;
 
     /// Creates a new payment stream.
     ///
@@ -454,7 +463,7 @@ pub trait SoroStreamInterface {
     /// * `StreamError::StreamNotActive` if any stream is not in Active status.
     /// * `StreamError::Overflow` if any intermediate calculation overflows.
     /// * `StreamError::BatchLengthMismatch` if `stream_ids` is empty or exceeds 20.
-    fn batch_cancel_stream(env: Env, stream_ids: Vec<u64>, sender: Address) -> Result<(), StreamError>;
+    fn batch_cancel_stream(env: Env, stream_ids: Vec<u64>, sender: Address) -> Result<Vec<Result<(), StreamError>>, StreamError>;
 
     /// Sets the protocol fee in basis points (100 bps = 1%).
     ///
