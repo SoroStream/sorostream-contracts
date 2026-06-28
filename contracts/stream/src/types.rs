@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, String};
 
 /// Status of a payment stream.
 #[contracttype]
@@ -60,4 +60,18 @@ pub struct Stats {
     pub active_streams: u64,
     /// Sum of all deposits in stroops.
     pub total_volume: i128,
+}
+
+/// A single admin audit log entry.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AuditEntry {
+    /// Name of the admin instruction (e.g. "emergency_pause").
+    pub instruction: String,
+    /// Admin address that performed the action.
+    pub admin: Address,
+    /// Ledger timestamp of the action.
+    pub timestamp: u64,
+    /// Serialised parameters (JSON-style string for human readability).
+    pub params: String,
 }

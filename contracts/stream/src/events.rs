@@ -168,3 +168,33 @@ pub fn recipient_transferred(
         (old_recipient.clone(), new_recipient.clone()),
     );
 }
+
+/// Emitted when a migration is successfully applied.
+pub fn contract_migrated(env: &Env, from_version: &String, to_version: &String, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "ContractMigrated"),),
+        (from_version.clone(), to_version.clone(), admin.clone()),
+    );
+}
+
+/// Emitted when an admin action is logged.
+pub fn admin_action(env: &Env, instruction: &String, admin: &Address, timestamp: u64) {
+    env.events().publish(
+        (Symbol::new(env, "AdminAction"),),
+        (instruction.clone(), admin.clone(), timestamp),
+    );
+}
+
+/// Emitted when a stream is archived after full settlement.
+pub fn stream_archived(
+    env: &Env,
+    stream_id: u64,
+    sender: &Address,
+    recipient: &Address,
+    total_amount: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "StreamArchived"), stream_id),
+        (sender.clone(), recipient.clone(), total_amount),
+    );
+}

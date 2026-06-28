@@ -1,4 +1,4 @@
-use crate::types::Stream;
+use crate::types::{AuditEntry, Stream};
 use soroban_sdk::{Address, Bytes, Env, Symbol, Vec, xdr::ToXdr};
 
 const ADMIN_KEY: &str = "admin";
@@ -369,4 +369,62 @@ pub fn set_sender_limit(env: &Env, sender: &Address, limit: u32) {
 /// Returns the effective stream limit for a sender (per-sender override or global default).
 pub fn effective_sender_limit(env: &Env, sender: &Address) -> u32 {
     get_sender_limit(env, sender).unwrap_or_else(|| get_max_streams_per_sender(env))
+}
+
+// --- Audit log helpers (circular buffer, capacity = 20) ---
+
+const AUDIT_HEAD_KEY: &str = "al_head";
+const AUDIT_LEN_KEY: &str = "al_len";
+const AUDIT_CAP: u32 = 20;
+
+fn audit_slot_key(env: &Env, idx: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "al"), idx)
+}
+
+/// Appends an audit entry to the circular buffer.
+pub fn append_audit_entry(env: &Env, entry: &AuditEntry) {
+    let head: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_HEAD_KEY)).unwrap_or(0u32);
+    let len: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_LEN_KEY)).unwrap_or(0u32);
+
+    let write_idx = head % AUDIT_CAP;
+    env.storage().instance().set(&audit_slot_key(env, write_idx), entry);
+
+    let new_head = (head + 1) % AUDIT_CAP;
+    let new_len = (len + 1).min(AUDIT_CAP);
+    env.storage().instance().set(&Symbol::new(env, AUDIT_HEAD_KEY), &new_head);
+    env.storage().instance().set(&Symbol::new(env, AUDIT_LEN_KEY), &new_len);
+}
+
+/// Returns all audit entries in chronological order (oldest first).
+pub fn read_audit_log(env: &Env) -> Vec<AuditEntry> {
+    let head: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_HEAD_KEY)).unwrap_or(0u32);
+    let len: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_LEN_KEY)).unwrap_or(0u32);
+    let mut result = Vec::new(env);
+    for i in 0..len {
+        // oldest entry is at (head - len + i) mod CAP
+        let idx = (head + AUDIT_CAP - len + i) % AUDIT_CAP;
+        if let Some(entry) = env.storage().instance().get::<(Symbol, u32), AuditEntry>(&audit_slot_key(env, idx)) {
+            result.push_back(entry);
+        }
+    }
+    result
+}
+
+// --- Migration helpers ---
+
+const APPLIED_MIGRATIONS_KEY: &str = "migrations";
+
+/// Returns the set of applied migration version strings.
+pub fn read_applied_migrations(env: &Env) -> Vec<soroban_sdk::String> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, APPLIED_MIGRATIONS_KEY))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Records a migration as applied.
+pub fn record_migration(env: &Env, version: &soroban_sdk::String) {
+    let mut applied = read_applied_migrations(env);
+    applied.push_back(version.clone());
+    env.storage().instance().set(&Symbol::new(env, APPLIED_MIGRATIONS_KEY), &applied);
 }

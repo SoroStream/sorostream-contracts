@@ -19,7 +19,7 @@ pub mod vesting_math;
 pub use interface::SoroStreamInterface;
 
 pub use errors::StreamError;
-pub use types::{Stream, Stats, StreamStatus};
+pub use types::{AuditEntry, Stream, Stats, StreamStatus};
 
 #[cfg(test)]
 mod test;
@@ -34,14 +34,15 @@ mod testnet_integration_tests;
 
 use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String, Vec, Symbol, IntoVal};
 use storage::{
-    check_admin, derive_stream_id, effective_sender_limit, get_global_stream_at,
+    append_audit_entry, check_admin, derive_stream_id, effective_sender_limit, get_global_stream_at,
     get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
     get_sender_stream_count, get_treasury, index_by_recipient, index_by_sender,
     index_global_stream, is_paused, load_stream, mark_nonce_used, nonce_used, read_admin,
-    read_min_duration, read_version, remove_stream, save_stream, set_max_streams_per_sender,
-    set_paused, set_protocol_fee, set_sender_limit, set_treasury, stream_exists,
-    unindex_by_recipient, unindex_by_sender, write_admin, write_min_duration, write_version,
-    set_delegate, get_delegate, remove_delegate, read_pending_fee_proposal, write_pending_fee_proposal, clear_pending_fee_proposal,
+    read_applied_migrations, read_audit_log, read_min_duration, read_version, record_migration,
+    remove_stream, save_stream, set_max_streams_per_sender, set_paused, set_protocol_fee,
+    set_sender_limit, set_treasury, stream_exists, unindex_by_recipient, unindex_by_sender,
+    write_admin, write_min_duration, write_version, set_delegate, get_delegate, remove_delegate,
+    read_pending_fee_proposal, write_pending_fee_proposal, clear_pending_fee_proposal,
 };
 
 fn checked_flow_amount(flow_rate: i128, elapsed: u64) -> Result<i128, StreamError> {
@@ -92,6 +93,15 @@ impl SoroStreamContract {
         set_paused(&env, true);
         let admin = read_admin(&env).unwrap();
         events::contract_paused(&env, &admin, env.ledger().timestamp());
+        let ts = env.ledger().timestamp();
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "emergency_pause"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &admin, ts);
         Ok(())
     }
 
@@ -101,6 +111,15 @@ impl SoroStreamContract {
         set_paused(&env, false);
         let admin = read_admin(&env).unwrap();
         events::contract_resumed(&env, &admin, env.ledger().timestamp());
+        let ts = env.ledger().timestamp();
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "emergency_resume"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &admin, ts);
         Ok(())
     }
 
@@ -132,6 +151,68 @@ impl SoroStreamContract {
     ) -> Result<(), StreamError> {
         check_admin(&env);
         set_sender_limit(&env, &sender, limit);
+        Ok(())
+    }
+
+    /// Runs a one-time migration step after a WASM upgrade. Admin-gated and idempotent.
+    ///
+    /// Updates the stored contract version from `from_version` to `to_version`.
+    /// Emits `ContractMigrated` on success. Returns an error if this migration has
+    /// already been applied (idempotency guard).
+    pub fn migrate(
+        env: Env,
+        from_version: String,
+        to_version: String,
+    ) -> Result<(), StreamError> {
+        check_admin(&env);
+        let applied = read_applied_migrations(&env);
+        if applied.contains(&to_version) {
+            return Err(StreamError::MigrationAlreadyApplied);
+        }
+        write_version(&env, &to_version);
+        record_migration(&env, &to_version);
+        let admin = read_admin(&env).unwrap();
+        events::contract_migrated(&env, &from_version, &to_version, &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "migrate"),
+            admin: admin.clone(),
+            timestamp: env.ledger().timestamp(),
+            params: to_version.clone(),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &admin, entry.timestamp);
+        Ok(())
+    }
+
+    /// Returns the last 20 admin actions stored in the circular audit buffer.
+    pub fn get_admin_log(env: Env) -> Vec<AuditEntry> {
+        read_audit_log(&env)
+    }
+
+    /// Archives a fully settled stream, deleting its storage entry.
+    ///
+    /// Callable by sender or recipient once `total_withdrawn == deposit`.
+    /// Deletes the stream and all associated index entries, then emits `StreamArchived`.
+    pub fn archive_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError> {
+        caller.require_auth();
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        if stream.sender != caller && stream.recipient != caller {
+            return Err(StreamError::NotAuthorized);
+        }
+        // Only archive when fully settled: all tokens accounted for
+        // (withdrawn + any dust == deposit).
+        let duration = stream.end_time.saturating_sub(stream.start_time);
+        let dust = stream.deposit.saturating_sub(stream.flow_rate.saturating_mul(duration as i128));
+        if stream.total_withdrawn.saturating_add(dust) < stream.deposit {
+            return Err(StreamError::StreamNotSettled);
+        }
+        remove_stream(&env, stream_id);
+        unindex_by_sender(&env, &stream.sender, stream_id);
+        unindex_by_recipient(&env, &stream.recipient, stream_id);
+        if get_delegate(&env, stream_id).is_some() {
+            remove_delegate(&env, stream_id);
+        }
+        events::stream_archived(&env, stream_id, &stream.sender, &stream.recipient, stream.deposit);
         Ok(())
     }
 

@@ -29,4 +29,6 @@ pub enum StreamError {
     StreamDurationTooShort = 22,
     StreamIdConflict = 23,
     SenderStreamLimitExceeded = 24,
+    MigrationAlreadyApplied = 25,
+    StreamNotSettled = 26,
 }

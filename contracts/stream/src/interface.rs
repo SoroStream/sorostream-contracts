@@ -37,7 +37,7 @@
 use soroban_sdk::{contractclient, Address, BytesN, Env, String, Vec};
 
 use crate::errors::StreamError;
-use crate::types::{Stats, Stream};
+use crate::types::{AuditEntry, Stats, Stream};
 
 /// Formal interface for SoroStream payment streaming contract.
 ///
@@ -575,4 +575,13 @@ pub trait SoroStreamInterface {
     /// Sets the minimum stream duration in seconds.
     /// Only the admin may call this.
     fn set_min_duration(env: Env, admin: Address, seconds: u64);
+
+    /// Runs a one-time migration step after a WASM upgrade. Admin-gated and idempotent.
+    fn migrate(env: Env, from_version: String, to_version: String) -> Result<(), StreamError>;
+
+    /// Returns the last 20 admin actions from the circular audit log.
+    fn get_admin_log(env: Env) -> Vec<AuditEntry>;
+
+    /// Archives a fully settled stream (total_withdrawn == deposit), deleting its storage entry.
+    fn archive_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
 }
