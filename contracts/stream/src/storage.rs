@@ -12,6 +12,11 @@ const STREAM_COUNT_KEY: &str = "str_cnt";
 const PENDING_FEE_KEY: &str = "pnd_fee";
 const WITHDRAWAL_COOLDOWN_KEY: &str = "wd_cd";
 const WHITELIST_ENABLED_KEY: &str = "wl_en";
+const GUARDIAN_KEY: &str = "guardian";
+const GOVERNANCE_KEY: &str = "governance";
+const PAUSE_EXPIRES_KEY: &str = "p_exp";
+/// Maximum pause duration in seconds (72 hours). After this the contract auto-unpauses.
+pub const MAX_PAUSE_DURATION: u64 = 72 * 60 * 60;
 const CREATION_FEE_XLM_KEY: &str = "cf_xlm";
 
 /// Stores the contract admin address.
@@ -258,6 +263,69 @@ pub fn set_paused(env: &Env, paused: bool) {
         .set(&Symbol::new(env, PAUSED_KEY), &paused);
 }
 
+/// Sets the timestamp at which the contract auto-unpauses (0 = no expiry).
+pub fn set_pause_expiry(env: &Env, expiry: u64) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, PAUSE_EXPIRES_KEY), &expiry);
+}
+
+/// Returns the pause expiry timestamp (0 if not set).
+pub fn get_pause_expiry(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, PAUSE_EXPIRES_KEY))
+        .unwrap_or(0u64)
+}
+
+/// Returns whether the contract is currently paused, auto-unpausing if the
+/// maximum pause duration has elapsed.
+pub fn is_paused_or_auto_unpause(env: &Env) -> bool {
+    let paused: bool = env.storage()
+        .instance()
+        .get(&Symbol::new(env, PAUSED_KEY))
+        .unwrap_or(false);
+    if !paused {
+        return false;
+    }
+    let expiry = get_pause_expiry(env);
+    if expiry > 0 && env.ledger().timestamp() >= expiry {
+        // Auto-unpause: clear flags without emitting an event (event is emitted by caller)
+        env.storage()
+            .instance()
+            .set(&Symbol::new(env, PAUSED_KEY), &false);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(env, PAUSE_EXPIRES_KEY), &0u64);
+        return false;
+    }
+    true
+}
+
+/// Stores the guardian address (can call `pause`).
+pub fn write_guardian(env: &Env, guardian: &Address) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, GUARDIAN_KEY), guardian);
+}
+
+/// Returns the guardian address, if set.
+pub fn read_guardian(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&Symbol::new(env, GUARDIAN_KEY))
+}
+
+/// Stores the governance address (can call `unpause`).
+pub fn write_governance(env: &Env, governance: &Address) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, GOVERNANCE_KEY), governance);
+}
+
+/// Returns the governance address, if set.
+pub fn read_governance(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&Symbol::new(env, GOVERNANCE_KEY))
+}
+
 /// Gets the protocol fee in basis points (0 = no fee).
 pub fn get_protocol_fee(env: &Env) -> u32 {
     env.storage().instance().get(&Symbol::new(env, PROTOCOL_FEE_KEY)).unwrap_or(0u32)
@@ -409,6 +477,27 @@ pub fn add_to_whitelist(env: &Env, recipient: &Address) {
 /// Removes a recipient from the whitelist.
 pub fn remove_from_whitelist(env: &Env, recipient: &Address) {
     env.storage().persistent().remove(&whitelist_key(env, recipient));
+}
+
+// --- Fee exemption list ---
+
+fn fee_exempt_key(env: &Env, addr: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "fe"), addr.clone())
+}
+
+/// Returns whether `addr` is exempt from the protocol fee.
+pub fn is_fee_exempt(env: &Env, addr: &Address) -> bool {
+    env.storage().persistent().get(&fee_exempt_key(env, addr)).unwrap_or(false)
+}
+
+/// Adds `addr` to the fee exemption list.
+pub fn add_fee_exempt(env: &Env, addr: &Address) {
+    env.storage().persistent().set(&fee_exempt_key(env, addr), &true);
+}
+
+/// Removes `addr` from the fee exemption list.
+pub fn remove_fee_exempt(env: &Env, addr: &Address) {
+    env.storage().persistent().remove(&fee_exempt_key(env, addr));
 }
 
 fn sender_limit_key(env: &Env, sender: &Address) -> (Symbol, Address) {

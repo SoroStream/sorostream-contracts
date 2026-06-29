@@ -1958,6 +1958,72 @@ fn test_interface_is_participant() {
     assert!(!c.is_participant(&stream_id, &other));
 }
 
+// ── Issue #187: cancel_stream with zero withdrawals ───────────────────────────
+
+/// create stream → immediately cancel (no time passes, no withdrawal made).
+/// Asserts: full deposit refunded to sender, claimable is 0, stream entry removed,
+/// and StreamCancelled event emitted with correct refund amount.
+#[test]
+fn test_cancel_stream_with_zero_withdrawals() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let initial_sender_bal = TokenClient::new(&t.env, &t.token_id).balance(&t.sender);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
+        &false, &Bytes::new(&t.env),
+    );
+
+    // Verify claimable is 0 immediately after creation (t=0, no time has elapsed)
+    let claimable_before = c.get_claimable(&stream_id);
+    assert_eq!(claimable_before, 0, "claimable must be 0 before any time passes");
+
+    // Cancel immediately — no time advances, no withdrawals made
+    c.cancel_stream(&stream_id, &t.sender);
+
+    // Sender receives full deposit back
+    let sender_bal_after = TokenClient::new(&t.env, &t.token_id).balance(&t.sender);
+    assert_eq!(
+        sender_bal_after, initial_sender_bal,
+        "sender must receive full deposit refund",
+    );
+
+    // Recipient received nothing
+    let recipient_bal = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
+    assert_eq!(recipient_bal, 0, "recipient must receive 0 when cancelled before cliff");
+
+    // Stream storage entry must be removed
+    assert!(
+        c.try_get_stream(&stream_id).is_err(),
+        "stream entry must be removed after cancel",
+    );
+
+    // StreamCancelled event with refund_amount = 100_000, recipient_amount = 0
+    let events = t.env.events().all();
+    let cancel_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
+        if !topic_vec.is_empty() {
+            let first: soroban_sdk::Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == soroban_sdk::Symbol::new(&t.env, "StreamCancelled")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(cancel_events.len(), 1, "Expected exactly one StreamCancelled event");
+
+    let (_, topics, data) = &cancel_events[0];
+    let topics_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (sender: Address, refund_amount: i128, recipient_amount: i128)
+    let data_tuple: (Address, i128, i128) = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple.0, t.sender);
+    assert_eq!(data_tuple.1, 100_000i128, "refund_amount must equal full deposit");
+    assert_eq!(data_tuple.2, 0i128, "recipient_amount must be 0");
 // --- #186: Emergency pause blocks create_stream and withdraw ---
 
 #[test]
