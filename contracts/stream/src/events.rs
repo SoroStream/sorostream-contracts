@@ -210,6 +210,8 @@ pub fn stream_archived(
     env.events().publish(
         (Symbol::new(env, "StreamArchived"), stream_id),
         (sender.clone(), recipient.clone(), total_amount),
+    );
+}
 /// Emitted when metadata is updated for a stream.
 pub fn metadata_updated(env: &Env, stream_id: u64, metadata: &Bytes) {
     env.events().publish(

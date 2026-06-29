@@ -1,11 +1,30 @@
 #![no_std]
+//! # SoroStream Treasury Contract
+//!
+//! Holds accumulated protocol fees and provides configurable distribution
+//! between a treasury wallet and an LP reward pool.
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol};
 
 const ADMIN_KEY: &str = "admin";
+const LP_POOL_KEY: &str = "lp_pool";
+const TREASURY_SPLIT_BPS_KEY: &str = "t_split";
 
 fn read_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&Symbol::new(env, ADMIN_KEY))
+}
+
+fn read_lp_pool(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&Symbol::new(env, LP_POOL_KEY))
+}
+
+/// Returns the treasury split in basis points (100 bps = 1%).
+/// The remainder (10_000 - treasury_bps) goes to the LP reward pool.
+fn read_treasury_split_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, TREASURY_SPLIT_BPS_KEY))
+        .unwrap_or(10_000u32) // default: 100% to treasury, 0% to LP
 }
 
 fn check_admin(env: &Env) {
@@ -86,6 +105,87 @@ impl TreasuryContract {
             );
         }
         current
+    }
+
+    /// Sets the LP reward pool address. Only admin may call this.
+    pub fn set_lp_pool(env: Env, lp_pool: Address) {
+        check_admin(&env);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, LP_POOL_KEY), &lp_pool);
+    }
+
+    /// Returns the LP reward pool address, if set.
+    pub fn get_lp_pool(env: Env) -> Option<Address> {
+        read_lp_pool(&env)
+    }
+
+    /// Sets the treasury-to-LP split in basis points.
+    ///
+    /// `treasury_bps` is the fraction (in bps, 0–10_000) that goes to the treasury.
+    /// The remaining `10_000 - treasury_bps` goes to the LP reward pool.
+    /// Only admin may call this.
+    pub fn set_treasury_split(env: Env, treasury_bps: u32) {
+        check_admin(&env);
+        if treasury_bps > 10_000 {
+            panic!("treasury_bps exceeds 10_000");
+        }
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, TREASURY_SPLIT_BPS_KEY), &treasury_bps);
+    }
+
+    /// Returns the configured treasury split in basis points.
+    pub fn get_treasury_split(env: Env) -> u32 {
+        read_treasury_split_bps(&env)
+    }
+
+    /// Distributes all accumulated fees for `token` between the treasury wallet
+    /// (`destination`) and the LP reward pool according to the configured split.
+    ///
+    /// - `treasury_bps` of `total` goes to `destination`.
+    /// - The remainder goes to the LP pool (must be configured via `set_lp_pool`).
+    ///
+    /// Emits `FeeDistributed` with `(token, treasury_amount, lp_amount)`.
+    pub fn distribute(env: Env, token: Address, destination: Address) -> (i128, i128) {
+        check_admin(&env);
+        let key = balance_key(&env, &token);
+        let total: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        if total == 0 {
+            return (0, 0);
+        }
+
+        let treasury_bps = read_treasury_split_bps(&env);
+        let treasury_amount = total * treasury_bps as i128 / 10_000;
+        let lp_amount = total - treasury_amount;
+
+        // Clear the balance before transfers (checks-effects-interactions)
+        env.storage().persistent().remove(&key);
+
+        let token_client = token::Client::new(&env, &token);
+
+        if treasury_amount > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &destination,
+                &treasury_amount,
+            );
+        }
+        if lp_amount > 0 {
+            let lp_pool = read_lp_pool(&env).expect("lp_pool not configured");
+            token_client.transfer(
+                &env.current_contract_address(),
+                &lp_pool,
+                &lp_amount,
+            );
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "FeeDistributed"),),
+            (token, treasury_amount, lp_amount),
+        );
+
+        (treasury_amount, lp_amount)
     }
 }
 
