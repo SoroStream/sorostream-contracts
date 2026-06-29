@@ -616,4 +616,10 @@ pub trait SoroStreamInterface {
 
     /// Archives a fully settled stream (total_withdrawn == deposit), deleting its storage entry.
     fn archive_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
+
+    /// Sets the flat XLM creation fee (in stroops) and the XLM SAC token address. Admin-only.
+    fn set_creation_fee(env: Env, fee: i128, xlm_token: Address) -> Result<(), StreamError>;
+
+    /// Returns the current XLM creation fee in stroops (0 = disabled).
+    fn get_creation_fee(env: Env) -> i128;
 }

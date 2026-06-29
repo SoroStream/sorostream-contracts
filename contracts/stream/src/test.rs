@@ -1957,3 +1957,152 @@ fn test_interface_is_participant() {
     let other = Address::generate(&t.env);
     assert!(!c.is_participant(&stream_id, &other));
 }
+
+// --- #186: Emergency pause blocks create_stream and withdraw ---
+
+#[test]
+fn test_emergency_pause_blocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    // Pause the contract
+    c.emergency_pause();
+
+    // create_stream must return ContractPaused
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    c.emergency_pause();
+    c.emergency_resume();
+
+    // create_stream must succeed after resume
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    let stream = c.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Active);
+}
+
+#[test]
+fn test_emergency_pause_blocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    // Create stream while unpaused
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    // Advance time so tokens are claimable
+    t.env.ledger().set_timestamp(500);
+
+    // Pause the contract
+    c.emergency_pause();
+
+    // withdraw must return ContractPaused
+    let result = c.try_withdraw(&stream_id, &t.recipient);
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    t.env.ledger().set_timestamp(500);
+    c.emergency_pause();
+    c.emergency_resume();
+
+    // withdraw must succeed after resume
+    c.withdraw(&stream_id, &t.recipient);
+}
+
+// --- #186: Emergency pause blocks create_stream and withdraw ---
+
+#[test]
+fn test_emergency_pause_blocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    c.emergency_pause();
+
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    c.emergency_pause();
+    c.emergency_resume();
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    let stream = c.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Active);
+}
+
+#[test]
+fn test_emergency_pause_blocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    t.env.ledger().set_timestamp(500);
+    c.emergency_pause();
+
+    let result = c.try_withdraw(&stream_id, &t.recipient);
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    t.env.ledger().set_timestamp(500);
+    c.emergency_pause();
+    c.emergency_resume();
+
+    c.withdraw(&stream_id, &t.recipient);
+}

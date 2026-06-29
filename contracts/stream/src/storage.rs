@@ -12,6 +12,7 @@ const STREAM_COUNT_KEY: &str = "str_cnt";
 const PENDING_FEE_KEY: &str = "pnd_fee";
 const WITHDRAWAL_COOLDOWN_KEY: &str = "wd_cd";
 const WHITELIST_ENABLED_KEY: &str = "wl_en";
+const CREATION_FEE_XLM_KEY: &str = "cf_xlm";
 
 /// Stores the contract admin address.
 pub fn write_admin(env: &Env, admin: &Address) {
@@ -470,6 +471,37 @@ pub fn read_audit_log(env: &Env) -> Vec<AuditEntry> {
         }
     }
     result
+}
+
+/// Gets the flat XLM creation fee in stroops (default: 0).
+pub fn get_creation_fee_xlm(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, CREATION_FEE_XLM_KEY))
+        .unwrap_or(0i128)
+}
+
+/// Sets the flat XLM creation fee in stroops.
+pub fn set_creation_fee_xlm(env: &Env, fee: i128) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, CREATION_FEE_XLM_KEY), &fee);
+}
+
+const XLM_TOKEN_KEY: &str = "xlm_tok";
+
+/// Gets the XLM SAC token contract address used for creation fee collection.
+pub fn get_xlm_token(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, XLM_TOKEN_KEY))
+}
+
+/// Sets the XLM SAC token contract address.
+pub fn set_xlm_token(env: &Env, xlm_token: &Address) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, XLM_TOKEN_KEY), xlm_token);
 }
 
 // --- Migration helpers ---

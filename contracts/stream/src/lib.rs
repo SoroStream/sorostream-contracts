@@ -34,33 +34,19 @@ mod testnet_integration_tests;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal};
 use storage::{
-    check_admin, derive_stream_id, effective_sender_limit, get_batch_nonce, get_global_stream_at,
-    get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
-    get_sender_stream_count, get_treasury, increment_batch_nonce, index_by_recipient,
-    index_by_sender, index_global_stream, is_paused, load_stream, mark_nonce_used, nonce_used,
-    read_admin, read_min_duration, read_version, remove_stream, save_stream,
-    set_max_streams_per_sender, set_paused, set_protocol_fee, set_sender_limit, set_treasury,
-    stream_exists, unindex_by_recipient, unindex_by_sender, write_admin, write_min_duration,
-    write_version, set_delegate, get_delegate, remove_delegate, read_pending_fee_proposal,
-    write_pending_fee_proposal, clear_pending_fee_proposal,
-    append_audit_entry, check_admin, derive_stream_id, effective_sender_limit, get_global_stream_at,
-    get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
-    get_sender_stream_count, get_treasury, index_by_recipient, index_by_sender,
-    index_global_stream, is_paused, load_stream, mark_nonce_used, nonce_used, read_admin,
-    read_applied_migrations, read_audit_log, read_min_duration, read_version, record_migration,
-    remove_stream, save_stream, set_max_streams_per_sender, set_paused, set_protocol_fee,
-    set_sender_limit, set_treasury, stream_exists, unindex_by_recipient, unindex_by_sender,
-    write_admin, write_min_duration, write_version, set_delegate, get_delegate, remove_delegate,
-    read_pending_fee_proposal, write_pending_fee_proposal, clear_pending_fee_proposal,
-    add_to_whitelist, check_admin, derive_stream_id, effective_sender_limit, get_global_stream_at,
-    get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
-    get_sender_stream_count, get_treasury, get_withdrawal_cooldown, index_by_recipient, index_by_sender,
-    index_global_stream, is_paused, is_whitelist_enabled, is_whitelisted, load_stream, mark_nonce_used,
-    nonce_used, read_admin, read_min_duration, read_version, remove_from_whitelist, remove_stream,
-    save_stream, set_max_streams_per_sender, set_paused, set_protocol_fee, set_sender_limit,
-    set_treasury, set_whitelist_enabled, set_withdrawal_cooldown, stream_exists,
-    unindex_by_recipient, unindex_by_sender, write_admin, write_min_duration, write_version,
-    set_delegate, get_delegate, remove_delegate, read_pending_fee_proposal, write_pending_fee_proposal, clear_pending_fee_proposal,
+    add_to_whitelist, append_audit_entry, check_admin, clear_pending_fee_proposal,
+    derive_stream_id, effective_sender_limit, get_batch_nonce, get_creation_fee_xlm,
+    get_delegate, get_global_stream_at, get_global_stream_count, get_ids_by_recipient,
+    get_ids_by_sender, get_protocol_fee, get_sender_stream_count, get_treasury,
+    get_withdrawal_cooldown, get_xlm_token, increment_batch_nonce, index_by_recipient,
+    index_by_sender, index_global_stream, is_paused, is_whitelist_enabled, is_whitelisted,
+    load_stream, mark_nonce_used, nonce_used, read_admin, read_applied_migrations, read_audit_log,
+    read_min_duration, read_version, record_migration, remove_delegate, remove_from_whitelist,
+    remove_stream, save_stream, set_creation_fee_xlm, set_delegate, set_max_streams_per_sender,
+    set_paused, set_protocol_fee, set_sender_limit, set_treasury, set_whitelist_enabled,
+    set_withdrawal_cooldown, set_xlm_token, stream_exists, unindex_by_recipient,
+    unindex_by_sender, write_admin, write_min_duration, write_pending_fee_proposal,
+    write_version, read_pending_fee_proposal,
 };
 
 fn checked_flow_amount(flow_rate: i128, elapsed: u64) -> Result<i128, StreamError> {
@@ -295,6 +281,10 @@ impl SoroStreamContract {
         let end_time = now
             .checked_add(duration_seconds)
             .ok_or(StreamError::Overflow)?;
+        // #191: reject streams whose end_time is not strictly in the future
+        if end_time <= now {
+            return Err(StreamError::InvalidEndTime);
+        }
         let cliff_time = now
             .checked_add(cliff_seconds)
             .ok_or(StreamError::Overflow)?;
@@ -303,6 +293,19 @@ impl SoroStreamContract {
 
         if stream_exists(&env, stream_id) {
             return Err(StreamError::StreamIdConflict);
+        }
+
+        // #193: collect flat XLM creation fee if configured
+        let creation_fee = get_creation_fee_xlm(&env);
+        if creation_fee > 0 {
+            let treasury = get_treasury(&env).ok_or(StreamError::NotInitialized)?;
+            let xlm_token = get_xlm_token(&env).ok_or(StreamError::NotInitialized)?;
+            token::Client::new(&env, &xlm_token).transfer(
+                &sender,
+                &treasury,
+                &creation_fee,
+            );
+            events::creation_fee_collected(&env, creation_fee, &treasury);
         }
 
         token::Client::new(&env, &token).transfer(
@@ -1488,6 +1491,23 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Sets the flat XLM creation fee (in stroops) and the XLM SAC token address.
+    /// Only the admin may call this. Set `fee` to 0 to disable the fee.
+    pub fn set_creation_fee(env: Env, fee: i128, xlm_token: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        if fee < 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        set_creation_fee_xlm(&env, fee);
+        set_xlm_token(&env, &xlm_token);
+        Ok(())
+    }
+
+    /// Returns the current XLM creation fee in stroops (0 = disabled).
+    pub fn get_creation_fee(env: Env) -> i128 {
+        get_creation_fee_xlm(&env)
+    }
+
     /// Returns protocol fee configuration.
     pub fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>) {
         (get_protocol_fee(&env), get_treasury(&env))
@@ -1799,5 +1819,25 @@ impl SoroStreamInterface for SoroStreamContract {
 
     fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError> {
         Self::recipient_terminate(env, stream_id, recipient)
+    }
+
+    fn set_creation_fee(env: Env, fee: i128, xlm_token: Address) -> Result<(), StreamError> {
+        Self::set_creation_fee(env, fee, xlm_token)
+    }
+
+    fn get_creation_fee(env: Env) -> i128 {
+        Self::get_creation_fee(env)
+    }
+
+    fn migrate(env: Env, from_version: String, to_version: String) -> Result<(), StreamError> {
+        Self::migrate(env, from_version, to_version)
+    }
+
+    fn get_admin_log(env: Env) -> Vec<AuditEntry> {
+        Self::get_admin_log(env)
+    }
+
+    fn archive_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError> {
+        Self::archive_stream(env, stream_id, caller)
     }
 }
