@@ -1,4 +1,4 @@
-use crate::types::Stream;
+use crate::types::{AuditEntry, Stream};
 use soroban_sdk::{Address, Bytes, Env, Symbol, Vec, xdr::ToXdr};
 
 const ADMIN_KEY: &str = "admin";
@@ -10,6 +10,8 @@ const VERSION_KEY: &str = "version";
 const MAX_STREAMS_KEY: &str = "max_str";
 const STREAM_COUNT_KEY: &str = "str_cnt";
 const PENDING_FEE_KEY: &str = "pnd_fee";
+const WITHDRAWAL_COOLDOWN_KEY: &str = "wd_cd";
+const WHITELIST_ENABLED_KEY: &str = "wl_en";
 
 /// Stores the contract admin address.
 pub fn write_admin(env: &Env, admin: &Address) {
@@ -359,6 +361,55 @@ pub fn set_max_streams_per_sender(env: &Env, max_streams: u32) {
         .set(&Symbol::new(env, MAX_STREAMS_KEY), &max_streams);
 }
 
+/// Gets the global withdrawal cooldown in seconds (default: 0).
+pub fn get_withdrawal_cooldown(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, WITHDRAWAL_COOLDOWN_KEY))
+        .unwrap_or(0u64)
+}
+
+/// Sets the global withdrawal cooldown in seconds.
+pub fn set_withdrawal_cooldown(env: &Env, cooldown: u64) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, WITHDRAWAL_COOLDOWN_KEY), &cooldown);
+}
+
+/// Returns whether recipient whitelisting is enabled.
+pub fn is_whitelist_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, WHITELIST_ENABLED_KEY))
+        .unwrap_or(false)
+}
+
+/// Enables or disables recipient whitelisting.
+pub fn set_whitelist_enabled(env: &Env, enabled: bool) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, WHITELIST_ENABLED_KEY), &enabled);
+}
+
+fn whitelist_key(env: &Env, recipient: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "wl"), recipient.clone())
+}
+
+/// Returns whether a recipient is whitelisted.
+pub fn is_whitelisted(env: &Env, recipient: &Address) -> bool {
+    env.storage().persistent().get(&whitelist_key(env, recipient)).unwrap_or(false)
+}
+
+/// Adds a recipient to the whitelist.
+pub fn add_to_whitelist(env: &Env, recipient: &Address) {
+    env.storage().persistent().set(&whitelist_key(env, recipient), &true);
+}
+
+/// Removes a recipient from the whitelist.
+pub fn remove_from_whitelist(env: &Env, recipient: &Address) {
+    env.storage().persistent().remove(&whitelist_key(env, recipient));
+}
+
 fn sender_limit_key(env: &Env, sender: &Address) -> (Symbol, Address) {
     (Symbol::new(env, "sl"), sender.clone())
 }
@@ -380,4 +431,62 @@ pub fn set_sender_limit(env: &Env, sender: &Address, limit: u32) {
 /// Returns the effective stream limit for a sender (per-sender override or global default).
 pub fn effective_sender_limit(env: &Env, sender: &Address) -> u32 {
     get_sender_limit(env, sender).unwrap_or_else(|| get_max_streams_per_sender(env))
+}
+
+// --- Audit log helpers (circular buffer, capacity = 20) ---
+
+const AUDIT_HEAD_KEY: &str = "al_head";
+const AUDIT_LEN_KEY: &str = "al_len";
+const AUDIT_CAP: u32 = 20;
+
+fn audit_slot_key(env: &Env, idx: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "al"), idx)
+}
+
+/// Appends an audit entry to the circular buffer.
+pub fn append_audit_entry(env: &Env, entry: &AuditEntry) {
+    let head: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_HEAD_KEY)).unwrap_or(0u32);
+    let len: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_LEN_KEY)).unwrap_or(0u32);
+
+    let write_idx = head % AUDIT_CAP;
+    env.storage().instance().set(&audit_slot_key(env, write_idx), entry);
+
+    let new_head = (head + 1) % AUDIT_CAP;
+    let new_len = (len + 1).min(AUDIT_CAP);
+    env.storage().instance().set(&Symbol::new(env, AUDIT_HEAD_KEY), &new_head);
+    env.storage().instance().set(&Symbol::new(env, AUDIT_LEN_KEY), &new_len);
+}
+
+/// Returns all audit entries in chronological order (oldest first).
+pub fn read_audit_log(env: &Env) -> Vec<AuditEntry> {
+    let head: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_HEAD_KEY)).unwrap_or(0u32);
+    let len: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_LEN_KEY)).unwrap_or(0u32);
+    let mut result = Vec::new(env);
+    for i in 0..len {
+        // oldest entry is at (head - len + i) mod CAP
+        let idx = (head + AUDIT_CAP - len + i) % AUDIT_CAP;
+        if let Some(entry) = env.storage().instance().get::<(Symbol, u32), AuditEntry>(&audit_slot_key(env, idx)) {
+            result.push_back(entry);
+        }
+    }
+    result
+}
+
+// --- Migration helpers ---
+
+const APPLIED_MIGRATIONS_KEY: &str = "migrations";
+
+/// Returns the set of applied migration version strings.
+pub fn read_applied_migrations(env: &Env) -> Vec<soroban_sdk::String> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, APPLIED_MIGRATIONS_KEY))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Records a migration as applied.
+pub fn record_migration(env: &Env, version: &soroban_sdk::String) {
+    let mut applied = read_applied_migrations(env);
+    applied.push_back(version.clone());
+    env.storage().instance().set(&Symbol::new(env, APPLIED_MIGRATIONS_KEY), &applied);
 }

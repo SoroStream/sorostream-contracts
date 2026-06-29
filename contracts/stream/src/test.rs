@@ -3,7 +3,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, Bytes, Env,
 };
 
 struct TestEnv {
@@ -52,11 +52,69 @@ fn test_create_stream_success() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     let stream = c.get_stream(&stream_id);
     assert_eq!(stream.deposit, 100_000);
     assert_eq!(stream.flow_rate, 100);
     assert_eq!(stream.status, StreamStatus::Active);
+}
+
+#[test]
+fn test_withdrawal_cooldown_blocks_repeated_withdrawals() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
+    c.set_withdrawal_cooldown(&t.sender, &10u64);
+
+    t.env.ledger().set_timestamp(500);
+    c.withdraw(&stream_id, &t.recipient);
+
+    let result = c.try_withdraw(&stream_id, &t.recipient);
+    assert!(matches!(result, Err(_)));
+}
+
+#[test]
+fn test_whitelist_rejects_non_whitelisted_recipient() {
+    let t = setup();
+    let c = client(&t);
+
+    c.set_whitelist_enabled(&t.sender, &true);
+    c.add_to_whitelist(&t.sender, &t.recipient);
+
+    let other = Address::generate(&t.env);
+    let result = c.try_create_stream(&t.sender, &other, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_metadata_is_stored_and_updatable() {
+    let t = setup();
+    let c = client(&t);
+    let metadata = Bytes::from_array(&t.env, &[1u8, 2u8, 3u8]);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &metadata, &Bytes::new(&t.env));
+    let stream = c.get_stream(&stream_id);
+    assert_eq!(stream.metadata, metadata);
+
+    let updated = Bytes::from_array(&t.env, &[9u8, 9u8, 9u8]);
+    c.update_metadata(&t.sender, &stream_id, &updated);
+    let updated_stream = c.get_stream(&stream_id);
+    assert_eq!(updated_stream.metadata, updated);
+}
+
+#[test]
+fn test_cancel_auto_renew_before_expiry() {
+    let t = setup();
+    let c = client(&t);
+
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &true, &0u64, &Bytes::new(&t.env));
+    c.cancel_auto_renew(&t.sender, &stream_id);
+
+    let stream = c.get_stream(&stream_id);
+    assert!(!stream.auto_renew);
 }
 
 #[test]
@@ -70,6 +128,9 @@ fn test_get_all_stream_ids_enumerates_globally() {
         &false);
     let third_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &2u64, &false, &0u64,
         &false);
+    let first_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
+    let second_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &1u64, &false, &0u64, &Bytes::new(&t.env));
+    let third_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &2u64, &false, &0u64, &Bytes::new(&t.env));
 
     let all_ids = c.get_all_stream_ids(&0u32, &10u32);
     assert_eq!(all_ids.len(), 3);
@@ -91,6 +152,7 @@ fn test_withdraw_partial() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(500);
     c.withdraw(&stream_id, &t.recipient);
@@ -107,6 +169,7 @@ fn test_withdraw_full() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(1000);
     c.withdraw(&stream_id, &t.recipient);
@@ -126,6 +189,7 @@ fn test_cancel_stream_splits_correctly() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(300);
     c.cancel_stream(&stream_id, &t.sender);
@@ -148,6 +212,7 @@ fn test_top_up_extends_duration() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
     let stream_before = c.get_stream(&stream_id);
 
     c.top_up(&stream_id, &t.sender, &t.token_id, &50_000);
@@ -178,6 +243,7 @@ fn test_auto_renew_restarts_on_completion() {
 
     let stream_id = c.create_stream(&sender, &recipient, &token_id, &100_000, &1000, &0, &0u64, &true, &0u64,
         &false);
+    let stream_id = c.create_stream(&sender, &recipient, &token_id, &100_000, &1000, &0, &0u64, &true, &0u64, &Bytes::new(&t.env));
 
     env.ledger().set_timestamp(1000);
     c.withdraw(&stream_id, &recipient);
@@ -196,6 +262,7 @@ fn test_cannot_withdraw_if_not_recipient() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
     let other = Address::generate(&t.env);
 
     let result = c.try_withdraw(&stream_id, &other);
@@ -209,6 +276,7 @@ fn test_cannot_cancel_if_not_sender() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
     let other = Address::generate(&t.env);
 
     let result = c.try_cancel_stream(&stream_id, &other);
@@ -222,6 +290,7 @@ fn test_zero_amount_fails() {
 
     let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &0, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &0, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
     assert!(result.is_err());
 }
 
@@ -233,6 +302,7 @@ fn test_get_claimable_calculates_correctly() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(250);
     let claimable = c.get_claimable(&stream_id);
@@ -252,6 +322,7 @@ fn test_cliff_pre_cliff_returns_zero() {
     // cliff at t=500, end at t=1000
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(499);
     assert_eq!(c.get_claimable(&stream_id), 0);
@@ -267,6 +338,7 @@ fn test_cliff_at_cliff_returns_accrued() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(500);
     assert_eq!(c.get_claimable(&stream_id), 50_000);
@@ -281,6 +353,7 @@ fn test_cliff_post_cliff_linear() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(750);
     assert_eq!(c.get_claimable(&stream_id), 75_000);
@@ -295,6 +368,7 @@ fn test_cliff_withdraw_pre_cliff_transfers_nothing() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(300);
     c.withdraw(&stream_id, &t.recipient);
@@ -311,6 +385,7 @@ fn test_cliff_exceeds_duration_fails() {
 
     let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &1001, &0u64, &false, &0u64,
         &false);
+    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &1001, &0u64, &false, &0u64, &Bytes::new(&t.env));
     assert!(result.is_err());
 }
 
@@ -322,6 +397,7 @@ fn test_cliff_equals_duration_fails() {
 
     let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &1000, &0u64, &false, &0u64,
         &false);
+    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &1000, &0u64, &false, &0u64, &Bytes::new(&t.env));
     assert_eq!(result, Err(Ok(StreamError::InvalidCliff)));
 }
 
@@ -367,6 +443,7 @@ fn test_admin_persists_across_calls() {
     // Interleave unrelated contract calls and re-check admin
     c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
     assert_eq!(c.get_admin(), admin);
 }
 
@@ -392,6 +469,7 @@ fn test_create_stream_blocked_when_paused() {
     c.emergency_pause();
     let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
     assert!(result.is_err());
 }
 
@@ -405,6 +483,7 @@ fn test_create_stream_works_after_unpause() {
     c.emergency_resume();
     let _stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let _stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 }
 
 #[test]
@@ -428,6 +507,7 @@ fn test_cliff_accrual_restarts_after_withdrawal() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &500, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     // At cliff: 500 * 100 = 50_000 claimable
     t.env.ledger().set_timestamp(500);
@@ -449,6 +529,7 @@ fn test_claimable_zero_before_cliff() {
     // cliff at t=800 within a 1000s stream
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &800, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &800, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     // at t=500, still before cliff → 0 claimable
     t.env.ledger().set_timestamp(500);
@@ -463,6 +544,7 @@ fn test_zero_duration_fails() {
 
     let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &0, &0, &0u64, &false, &0u64,
         &false);
+    let result = c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &0, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
     assert!(result.is_err());
 }
 
@@ -1427,6 +1509,7 @@ fn test_delegate_can_top_up_and_cancel() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     c.delegate(&t.sender, &stream_id, &operator);
 
@@ -1449,6 +1532,7 @@ fn test_delegate_cannot_withdraw() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     c.delegate(&t.sender, &stream_id, &operator);
 
@@ -1469,6 +1553,8 @@ fn test_batch_cancel_stream_success() {
         &false);
     let stream_id2 = c.create_stream(&t.sender, &t.recipient, &t.token_id, &200_000, &1000, &0, &1u64, &false, &0u64,
         &false);
+    let stream_id1 = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
+    let stream_id2 = c.create_stream(&t.sender, &t.recipient, &t.token_id, &200_000, &1000, &0, &1u64, &false, &0u64, &Bytes::new(&t.env));
 
     let sender_bal_before = TokenClient::new(&t.env, &t.token_id).balance(&t.sender);
 
@@ -1498,6 +1584,8 @@ fn error_batch_cancel_not_sender() {
         &false);
     let stream_id2 = c.create_stream(&other_sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id1 = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
+    let stream_id2 = c.create_stream(&other_sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     let result = c.batch_cancel_stream(&soroban_vec![&t.env, stream_id1, stream_id2], &t.sender);
     assert_eq!(result.get(0).unwrap(), Ok(()));
@@ -1532,6 +1620,7 @@ fn test_revoke_delegate_strips_capabilities() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     c.delegate(&t.sender, &stream_id, &operator);
     c.revoke_delegate(&t.sender, &stream_id);
@@ -1548,6 +1637,7 @@ fn test_pause_resume() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
         &false);
+    let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &Bytes::new(&t.env));
 
     t.env.ledger().set_timestamp(200);
     c.pause_stream(&stream_id, &t.sender);

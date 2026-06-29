@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, String, Symbol};
+use soroban_sdk::{Address, Bytes, Env, String, Symbol};
 
 /// Emitted when a new stream is created.
 pub fn stream_created(
@@ -180,5 +180,56 @@ pub fn recipient_transferred(
     env.events().publish(
         (Symbol::new(env, "RecipientTransferred"), stream_id),
         (old_recipient.clone(), new_recipient.clone()),
+    );
+}
+
+/// Emitted when a migration is successfully applied.
+pub fn contract_migrated(env: &Env, from_version: &String, to_version: &String, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "ContractMigrated"),),
+        (from_version.clone(), to_version.clone(), admin.clone()),
+    );
+}
+
+/// Emitted when an admin action is logged.
+pub fn admin_action(env: &Env, instruction: &String, admin: &Address, timestamp: u64) {
+    env.events().publish(
+        (Symbol::new(env, "AdminAction"),),
+        (instruction.clone(), admin.clone(), timestamp),
+    );
+}
+
+/// Emitted when a stream is archived after full settlement.
+pub fn stream_archived(
+    env: &Env,
+    stream_id: u64,
+    sender: &Address,
+    recipient: &Address,
+    total_amount: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "StreamArchived"), stream_id),
+        (sender.clone(), recipient.clone(), total_amount),
+/// Emitted when metadata is updated for a stream.
+pub fn metadata_updated(env: &Env, stream_id: u64, metadata: &Bytes) {
+    env.events().publish(
+        (Symbol::new(env, "MetadataUpdated"), stream_id),
+        metadata.clone(),
+    );
+}
+
+/// Emitted when an auto-renewal is cancelled for a stream.
+pub fn auto_renew_cancelled(env: &Env, stream_id: u64) {
+    env.events().publish(
+        (Symbol::new(env, "AutoRenewCancelled"), stream_id),
+        (),
+    );
+}
+
+/// Emitted when a stream is renewed.
+pub fn stream_renewed(env: &Env, old_stream_id: u64, new_stream_id: u64) {
+    env.events().publish(
+        (Symbol::new(env, "StreamRenewed"), old_stream_id),
+        new_stream_id,
     );
 }

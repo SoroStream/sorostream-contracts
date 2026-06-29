@@ -54,6 +54,7 @@ proptest! {
 
         c.create_stream(&sender, &recipient, &token_id, &amount, &duration, &cliff, &0u64, &false, &0u64,
         &false);
+        c.create_stream(&sender, &recipient, &token_id, &amount, &duration, &cliff, &0u64, &false, &0u64, &Bytes::new(&env));
 
         let sender_after = token.balance(&sender);
         let contract_after = token.balance(&contract_id);
@@ -80,6 +81,7 @@ proptest! {
         let stream_id = c.create_stream(
             &sender, &recipient, &token_id, &amount, &duration, &cliff, &0u64, &false, &0u64,
         &false,
+            &Bytes::new(&env),
         );
 
         let stream = c.get_stream(&stream_id);
@@ -115,6 +117,7 @@ proptest! {
         let stream_id = c.create_stream(
             &sender, &recipient, &token_id, &amount, &duration, &0u64, &0u64, &false, &0u64,
         &false,
+            &Bytes::new(&env),
         );
         let token = TokenClient::new(&env, &token_id);
 
@@ -160,6 +163,7 @@ proptest! {
         let stream_id = c.create_stream(
             &sender, &recipient, &token_id, &amount, &duration, &0u64, &0u64, &false, &0u64,
         &false,
+            &Bytes::new(&env),
         );
         let token = TokenClient::new(&env, &token_id);
 
@@ -193,6 +197,7 @@ proptest! {
         let stream_id = c.create_stream(
             &sender, &recipient, &token_id, &amount, &duration, &0u64, &0u64, &false, &0u64,
         &false,
+            &Bytes::new(&env),
         );
         let stream_before = c.get_stream(&stream_id);
 
@@ -235,6 +240,7 @@ proptest! {
         let stream_id = c.create_stream(
             &sender, &recipient, &token_id, &amount, &duration, &0u64, &0u64, &false, &0u64,
         &false,
+            &Bytes::new(&env),
         );
 
         let cancel_time = cancel_time.min(duration - 1).max(1);
@@ -267,6 +273,7 @@ proptest! {
         let stream_id = c.create_stream(
             &sender, &recipient, &token_id, &amount, &duration, &0u64, &0u64, &false, &0u64,
         &false,
+            &Bytes::new(&env),
         );
 
         env.ledger().set_timestamp(1);

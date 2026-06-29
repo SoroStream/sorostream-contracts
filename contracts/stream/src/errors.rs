@@ -30,4 +30,9 @@ pub enum StreamError {
     StreamIdConflict = 23,
     SenderStreamLimitExceeded = 24,
     InvalidNonce = 25,
+    MigrationAlreadyApplied = 25,
+    StreamNotSettled = 26,
+    WithdrawalCooldownActive = 25,
+    RecipientNotWhitelisted = 26,
+    MetadataTooLong = 27,
 }
