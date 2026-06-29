@@ -1962,6 +1962,13 @@ fn test_interface_is_participant() {
 /// and full withdrawal scenarios.
 #[test]
 fn test_withdraw_after_top_up() {
+// ── Issue #187: cancel_stream with zero withdrawals ───────────────────────────
+
+/// create stream → immediately cancel (no time passes, no withdrawal made).
+/// Asserts: full deposit refunded to sender, claimable is 0, stream entry removed,
+/// and StreamCancelled event emitted with correct refund amount.
+#[test]
+fn test_cancel_stream_with_zero_withdrawals() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
@@ -2004,4 +2011,206 @@ fn test_withdraw_after_top_up() {
 
     // Stream should be removed after full withdrawal
     assert!(c.try_get_stream(&stream_id).is_err());
+    let initial_sender_bal = TokenClient::new(&t.env, &t.token_id).balance(&t.sender);
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64,
+        &false, &Bytes::new(&t.env),
+    );
+
+    // Verify claimable is 0 immediately after creation (t=0, no time has elapsed)
+    let claimable_before = c.get_claimable(&stream_id);
+    assert_eq!(claimable_before, 0, "claimable must be 0 before any time passes");
+
+    // Cancel immediately — no time advances, no withdrawals made
+    c.cancel_stream(&stream_id, &t.sender);
+
+    // Sender receives full deposit back
+    let sender_bal_after = TokenClient::new(&t.env, &t.token_id).balance(&t.sender);
+    assert_eq!(
+        sender_bal_after, initial_sender_bal,
+        "sender must receive full deposit refund",
+    );
+
+    // Recipient received nothing
+    let recipient_bal = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
+    assert_eq!(recipient_bal, 0, "recipient must receive 0 when cancelled before cliff");
+
+    // Stream storage entry must be removed
+    assert!(
+        c.try_get_stream(&stream_id).is_err(),
+        "stream entry must be removed after cancel",
+    );
+
+    // StreamCancelled event with refund_amount = 100_000, recipient_amount = 0
+    let events = t.env.events().all();
+    let cancel_events: std::vec::Vec<_> = events.iter().filter(|(_, topics, _)| {
+        let topic_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
+        if !topic_vec.is_empty() {
+            let first: soroban_sdk::Symbol = topic_vec.get(0).unwrap().into_val(&t.env);
+            first == soroban_sdk::Symbol::new(&t.env, "StreamCancelled")
+        } else {
+            false
+        }
+    }).collect();
+
+    assert_eq!(cancel_events.len(), 1, "Expected exactly one StreamCancelled event");
+
+    let (_, topics, data) = &cancel_events[0];
+    let topics_vec: soroban_sdk::Vec<soroban_sdk::Val> = topics.clone();
+    let topic_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&t.env);
+    assert_eq!(topic_stream_id, stream_id);
+
+    // Data: (sender: Address, refund_amount: i128, recipient_amount: i128)
+    let data_tuple: (Address, i128, i128) = data.clone().into_val(&t.env);
+    assert_eq!(data_tuple.0, t.sender);
+    assert_eq!(data_tuple.1, 100_000i128, "refund_amount must equal full deposit");
+    assert_eq!(data_tuple.2, 0i128, "recipient_amount must be 0");
+// --- #186: Emergency pause blocks create_stream and withdraw ---
+
+#[test]
+fn test_emergency_pause_blocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    // Pause the contract
+    c.emergency_pause();
+
+    // create_stream must return ContractPaused
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    c.emergency_pause();
+    c.emergency_resume();
+
+    // create_stream must succeed after resume
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    let stream = c.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Active);
+}
+
+#[test]
+fn test_emergency_pause_blocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    // Create stream while unpaused
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    // Advance time so tokens are claimable
+    t.env.ledger().set_timestamp(500);
+
+    // Pause the contract
+    c.emergency_pause();
+
+    // withdraw must return ContractPaused
+    let result = c.try_withdraw(&stream_id, &t.recipient);
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    t.env.ledger().set_timestamp(500);
+    c.emergency_pause();
+    c.emergency_resume();
+
+    // withdraw must succeed after resume
+    c.withdraw(&stream_id, &t.recipient);
+}
+
+// --- #186: Emergency pause blocks create_stream and withdraw ---
+
+#[test]
+fn test_emergency_pause_blocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    c.emergency_pause();
+
+    let result = c.try_create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_create_stream() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    c.emergency_pause();
+    c.emergency_resume();
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+    let stream = c.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Active);
+}
+
+#[test]
+fn test_emergency_pause_blocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    t.env.ledger().set_timestamp(500);
+    c.emergency_pause();
+
+    let result = c.try_withdraw(&stream_id, &t.recipient);
+    assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
+}
+
+#[test]
+fn test_emergency_resume_unblocks_withdraw() {
+    let t = setup();
+    let c = client(&t);
+    let admin = Address::generate(&t.env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&t.env, "1.0.0"));
+
+    let stream_id = c.create_stream(
+        &t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &Bytes::new(&t.env),
+    );
+
+    t.env.ledger().set_timestamp(500);
+    c.emergency_pause();
+    c.emergency_resume();
+
+    c.withdraw(&stream_id, &t.recipient);
 }

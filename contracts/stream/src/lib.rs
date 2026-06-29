@@ -34,33 +34,34 @@ mod testnet_integration_tests;
 
 use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal};
 use storage::{
-    check_admin, derive_stream_id, effective_sender_limit, get_batch_nonce, get_global_stream_at,
-    get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
-    get_sender_stream_count, get_treasury, increment_batch_nonce, index_by_recipient,
-    index_by_sender, index_global_stream, is_paused, load_stream, mark_nonce_used, nonce_used,
-    read_admin, read_min_duration, read_version, remove_stream, save_stream,
-    set_max_streams_per_sender, set_paused, set_protocol_fee, set_sender_limit, set_treasury,
-    stream_exists, unindex_by_recipient, unindex_by_sender, write_admin, write_min_duration,
-    write_version, set_delegate, get_delegate, remove_delegate, read_pending_fee_proposal,
-    write_pending_fee_proposal, clear_pending_fee_proposal,
-    append_audit_entry, check_admin, derive_stream_id, effective_sender_limit, get_global_stream_at,
-    get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
-    get_sender_stream_count, get_treasury, index_by_recipient, index_by_sender,
-    index_global_stream, is_paused, load_stream, mark_nonce_used, nonce_used, read_admin,
-    read_applied_migrations, read_audit_log, read_min_duration, read_version, record_migration,
-    remove_stream, save_stream, set_max_streams_per_sender, set_paused, set_protocol_fee,
-    set_sender_limit, set_treasury, stream_exists, unindex_by_recipient, unindex_by_sender,
-    write_admin, write_min_duration, write_version, set_delegate, get_delegate, remove_delegate,
-    read_pending_fee_proposal, write_pending_fee_proposal, clear_pending_fee_proposal,
-    add_to_whitelist, check_admin, derive_stream_id, effective_sender_limit, get_global_stream_at,
-    get_global_stream_count, get_ids_by_recipient, get_ids_by_sender, get_protocol_fee,
-    get_sender_stream_count, get_treasury, get_withdrawal_cooldown, index_by_recipient, index_by_sender,
-    index_global_stream, is_paused, is_whitelist_enabled, is_whitelisted, load_stream, mark_nonce_used,
-    nonce_used, read_admin, read_min_duration, read_version, remove_from_whitelist, remove_stream,
-    save_stream, set_max_streams_per_sender, set_paused, set_protocol_fee, set_sender_limit,
-    set_treasury, set_whitelist_enabled, set_withdrawal_cooldown, stream_exists,
-    unindex_by_recipient, unindex_by_sender, write_admin, write_min_duration, write_version,
-    set_delegate, get_delegate, remove_delegate, read_pending_fee_proposal, write_pending_fee_proposal, clear_pending_fee_proposal,
+    add_fee_exempt, add_to_whitelist, append_audit_entry, check_admin, clear_pending_fee_proposal,
+    derive_stream_id, effective_sender_limit, get_batch_nonce, get_delegate,
+    get_global_stream_at, get_global_stream_count, get_ids_by_recipient, get_ids_by_sender,
+    get_pause_expiry, get_protocol_fee, get_sender_stream_count, get_treasury,
+    get_withdrawal_cooldown, increment_batch_nonce, index_by_recipient, index_by_sender,
+    index_global_stream, is_fee_exempt, is_paused_or_auto_unpause,
+    is_whitelist_enabled, is_whitelisted, load_stream, mark_nonce_used, nonce_used,
+    read_admin, read_applied_migrations, read_audit_log, read_governance, read_guardian,
+    read_min_duration, read_pending_fee_proposal, read_version, record_migration,
+    remove_delegate, remove_fee_exempt, remove_from_whitelist, remove_stream, save_stream,
+    set_delegate, set_max_streams_per_sender, set_pause_expiry, set_paused, set_protocol_fee,
+    set_sender_limit, set_treasury, set_whitelist_enabled, set_withdrawal_cooldown,
+    stream_exists, unindex_by_recipient, unindex_by_sender, write_admin, write_governance,
+    write_guardian, write_min_duration, write_pending_fee_proposal, write_version,
+    MAX_PAUSE_DURATION,
+    add_to_whitelist, append_audit_entry, check_admin, clear_pending_fee_proposal,
+    derive_stream_id, effective_sender_limit, get_batch_nonce, get_creation_fee_xlm,
+    get_delegate, get_global_stream_at, get_global_stream_count, get_ids_by_recipient,
+    get_ids_by_sender, get_protocol_fee, get_sender_stream_count, get_treasury,
+    get_withdrawal_cooldown, get_xlm_token, increment_batch_nonce, index_by_recipient,
+    index_by_sender, index_global_stream, is_paused, is_whitelist_enabled, is_whitelisted,
+    load_stream, mark_nonce_used, nonce_used, read_admin, read_applied_migrations, read_audit_log,
+    read_min_duration, read_version, record_migration, remove_delegate, remove_from_whitelist,
+    remove_stream, save_stream, set_creation_fee_xlm, set_delegate, set_max_streams_per_sender,
+    set_paused, set_protocol_fee, set_sender_limit, set_treasury, set_whitelist_enabled,
+    set_withdrawal_cooldown, set_xlm_token, stream_exists, unindex_by_recipient,
+    unindex_by_sender, write_admin, write_min_duration, write_pending_fee_proposal,
+    write_version, read_pending_fee_proposal,
 };
 
 fn checked_flow_amount(flow_rate: i128, elapsed: u64) -> Result<i128, StreamError> {
@@ -109,9 +110,11 @@ impl SoroStreamContract {
     pub fn emergency_pause(env: Env) -> Result<(), StreamError> {
         check_admin(&env);
         set_paused(&env, true);
-        let admin = read_admin(&env).unwrap();
-        events::contract_paused(&env, &admin, env.ledger().timestamp());
         let ts = env.ledger().timestamp();
+        let expiry = ts.checked_add(MAX_PAUSE_DURATION).unwrap_or(u64::MAX);
+        set_pause_expiry(&env, expiry);
+        let admin = read_admin(&env).unwrap();
+        events::contract_paused(&env, &admin, ts);
         let entry = AuditEntry {
             instruction: String::from_str(&env, "emergency_pause"),
             admin: admin.clone(),
@@ -127,6 +130,7 @@ impl SoroStreamContract {
     pub fn emergency_resume(env: Env) -> Result<(), StreamError> {
         check_admin(&env);
         set_paused(&env, false);
+        set_pause_expiry(&env, 0);
         let admin = read_admin(&env).unwrap();
         events::contract_resumed(&env, &admin, env.ledger().timestamp());
         let ts = env.ledger().timestamp();
@@ -142,8 +146,100 @@ impl SoroStreamContract {
     }
 
     /// Returns whether the contract is currently paused.
+    /// Automatically returns false (and clears the paused state) if the maximum
+    /// pause duration has elapsed since pausing (auto-unpause after 72 h).
     pub fn is_paused(env: Env) -> bool {
-        is_paused(&env)
+        is_paused_or_auto_unpause(&env)
+    }
+
+    /// Sets the guardian address (the only address that can call `pause`).
+    /// Only the admin may set this.
+    pub fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        write_guardian(&env, &guardian);
+        Ok(())
+    }
+
+    /// Returns the current guardian address, if set.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        read_guardian(&env)
+    }
+
+    /// Sets the governance address (the only address that can call `unpause`).
+    /// Only the admin may set this.
+    pub fn set_governance(env: Env, governance: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        write_governance(&env, &governance);
+        Ok(())
+    }
+
+    /// Returns the current governance address, if set.
+    pub fn get_governance(env: Env) -> Option<Address> {
+        read_governance(&env)
+    }
+
+    /// Pauses the contract. Only the designated guardian may call this.
+    ///
+    /// Sets an automatic unpause expiry of `MAX_PAUSE_DURATION` (72 h) to prevent
+    /// indefinite lockout.  Emits `Paused(guardian, timestamp)`.
+    pub fn pause(env: Env, guardian: Address) -> Result<(), StreamError> {
+        guardian.require_auth();
+        let stored_guardian = read_guardian(&env).ok_or(StreamError::NotAuthorized)?;
+        if guardian != stored_guardian {
+            return Err(StreamError::NotAuthorized);
+        }
+        set_paused(&env, true);
+        let ts = env.ledger().timestamp();
+        let expiry = ts.checked_add(MAX_PAUSE_DURATION).unwrap_or(u64::MAX);
+        set_pause_expiry(&env, expiry);
+        env.events().publish(
+            (Symbol::new(&env, "Paused"), guardian.clone()),
+            ts,
+        );
+        Ok(())
+    }
+
+    /// Unpauses the contract. Only the designated governance contract may call this.
+    ///
+    /// Emits `Unpaused(governance, timestamp)`.
+    pub fn unpause(env: Env, governance: Address) -> Result<(), StreamError> {
+        governance.require_auth();
+        let stored_governance = read_governance(&env).ok_or(StreamError::NotAuthorized)?;
+        if governance != stored_governance {
+            return Err(StreamError::NotAuthorized);
+        }
+        set_paused(&env, false);
+        set_pause_expiry(&env, 0);
+        let ts = env.ledger().timestamp();
+        env.events().publish(
+            (Symbol::new(&env, "Unpaused"), governance.clone()),
+            ts,
+        );
+        Ok(())
+    }
+
+    /// Returns the timestamp at which the contract will auto-unpause (0 = never set).
+    pub fn get_pause_expiry(env: Env) -> u64 {
+        get_pause_expiry(&env)
+    }
+
+    /// Adds `addr` to the protocol fee exemption list. Only admin may call this.
+    pub fn add_fee_exempt(env: Env, addr: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        add_fee_exempt(&env, &addr);
+        Ok(())
+    }
+
+    /// Removes `addr` from the protocol fee exemption list. Only admin may call this.
+    pub fn remove_fee_exempt(env: Env, addr: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        remove_fee_exempt(&env, &addr);
+        Ok(())
+    }
+
+    /// Returns whether `addr` is currently fee-exempt.
+    pub fn is_fee_exempt(env: Env, addr: Address) -> bool {
+        is_fee_exempt(&env, &addr)
     }
 
     /// Upgrades the contract WASM bytecode. Only the admin may call this.
@@ -254,7 +350,7 @@ impl SoroStreamContract {
     ) -> Result<u64, StreamError> {
         sender.require_auth();
 
-        if is_paused(&env) {
+        if is_paused_or_auto_unpause(&env) {
             return Err(StreamError::ContractPaused);
         }
         if nonce_used(&env, &sender, nonce) {
@@ -295,6 +391,10 @@ impl SoroStreamContract {
         let end_time = now
             .checked_add(duration_seconds)
             .ok_or(StreamError::Overflow)?;
+        // #191: reject streams whose end_time is not strictly in the future
+        if end_time <= now {
+            return Err(StreamError::InvalidEndTime);
+        }
         let cliff_time = now
             .checked_add(cliff_seconds)
             .ok_or(StreamError::Overflow)?;
@@ -303,6 +403,19 @@ impl SoroStreamContract {
 
         if stream_exists(&env, stream_id) {
             return Err(StreamError::StreamIdConflict);
+        }
+
+        // #193: collect flat XLM creation fee if configured
+        let creation_fee = get_creation_fee_xlm(&env);
+        if creation_fee > 0 {
+            let treasury = get_treasury(&env).ok_or(StreamError::NotInitialized)?;
+            let xlm_token = get_xlm_token(&env).ok_or(StreamError::NotInitialized)?;
+            token::Client::new(&env, &xlm_token).transfer(
+                &sender,
+                &treasury,
+                &creation_fee,
+            );
+            events::creation_fee_collected(&env, creation_fee, &treasury);
         }
 
         token::Client::new(&env, &token).transfer(
@@ -418,9 +531,9 @@ impl SoroStreamContract {
 
     /// Allows the recipient to withdraw all tokens earned since last withdrawal.
     pub fn withdraw(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         recipient.require_auth();
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
@@ -457,7 +570,7 @@ impl SoroStreamContract {
             }
 
             let fee_bps = get_protocol_fee(&env);
-            let fee_amount = if fee_bps > 0 {
+            let fee_amount = if fee_bps > 0 && !is_fee_exempt(&env, &stream.recipient) {
                 claimable
                     .checked_mul(fee_bps as i128)
                     .ok_or(StreamError::Overflow)?
@@ -627,9 +740,9 @@ impl SoroStreamContract {
     ///
     /// The recipient receives all currently vested tokens; the sender receives the remainder.
     pub fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         recipient.require_auth();
 
         let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
@@ -691,9 +804,9 @@ impl SoroStreamContract {
         current_recipient: Address,
         new_recipient: Address,
     ) -> Result<(), StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         current_recipient.require_auth();
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
@@ -724,7 +837,7 @@ impl SoroStreamContract {
 
                 if claimable > 0 {
                     let fee_bps = get_protocol_fee(&env);
-                    let fee_amount = if fee_bps > 0 {
+                    let fee_amount = if fee_bps > 0 && !is_fee_exempt(&env, &stream.recipient) {
                         claimable
                             .checked_mul(fee_bps as i128)
                             .ok_or(StreamError::Overflow)?
@@ -889,9 +1002,9 @@ impl SoroStreamContract {
         token: Address,
         amount: i128,
     ) -> Result<(), StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         caller.require_auth();
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
@@ -1088,9 +1201,9 @@ impl SoroStreamContract {
 
     /// Pauses an active stream.
     pub fn pause_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         sender.require_auth();
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
@@ -1111,9 +1224,9 @@ impl SoroStreamContract {
 
     /// Resumes a paused stream, pushing back the end time.
     pub fn resume_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         sender.require_auth();
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
@@ -1153,9 +1266,9 @@ impl SoroStreamContract {
         lock_untils: Vec<u64>,
         nonce: u64,
     ) -> Result<Vec<u64>, StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         sender.require_auth();
 
         let expected_nonce = get_batch_nonce(&env, &sender);
@@ -1262,9 +1375,9 @@ impl SoroStreamContract {
         stream_ids: Vec<u64>,
         recipient: Address,
     ) -> Result<Vec<i128>, StreamError> {
-        if is_paused(&env) {
-            return Err(StreamError::ContractPaused);
-        }
+        if is_paused_or_auto_unpause(&env) {
+                    return Err(StreamError::ContractPaused);
+                }
         recipient.require_auth();
 
         let mut amounts = Vec::new(&env);
@@ -1300,7 +1413,7 @@ impl SoroStreamContract {
                 }
 
                 let fee_bps = get_protocol_fee(&env);
-                let fee_amount = if fee_bps > 0 {
+                let fee_amount = if fee_bps > 0 && !is_fee_exempt(&env, &stream.recipient) {
                     claimable
                         .checked_mul(fee_bps as i128)
                         .ok_or(StreamError::Overflow)?
@@ -1494,6 +1607,23 @@ impl SoroStreamContract {
     pub fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError> {
         set_treasury(&env, &treasury);
         Ok(())
+    }
+
+    /// Sets the flat XLM creation fee (in stroops) and the XLM SAC token address.
+    /// Only the admin may call this. Set `fee` to 0 to disable the fee.
+    pub fn set_creation_fee(env: Env, fee: i128, xlm_token: Address) -> Result<(), StreamError> {
+        check_admin(&env);
+        if fee < 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        set_creation_fee_xlm(&env, fee);
+        set_xlm_token(&env, &xlm_token);
+        Ok(())
+    }
+
+    /// Returns the current XLM creation fee in stroops (0 = disabled).
+    pub fn get_creation_fee(env: Env) -> i128 {
+        get_creation_fee_xlm(&env)
     }
 
     /// Returns protocol fee configuration.
@@ -1807,5 +1937,63 @@ impl SoroStreamInterface for SoroStreamContract {
 
     fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError> {
         Self::recipient_terminate(env, stream_id, recipient)
+    }
+
+    fn add_fee_exempt(env: Env, addr: Address) -> Result<(), StreamError> {
+        Self::add_fee_exempt(env, addr)
+    }
+
+    fn remove_fee_exempt(env: Env, addr: Address) -> Result<(), StreamError> {
+        Self::remove_fee_exempt(env, addr)
+    }
+
+    fn is_fee_exempt(env: Env, addr: Address) -> bool {
+        Self::is_fee_exempt(env, addr)
+    }
+
+    fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError> {
+        Self::set_guardian(env, guardian)
+    }
+
+    fn get_guardian(env: Env) -> Option<Address> {
+        Self::get_guardian(env)
+    }
+
+    fn set_governance(env: Env, governance: Address) -> Result<(), StreamError> {
+        Self::set_governance(env, governance)
+    }
+
+    fn get_governance(env: Env) -> Option<Address> {
+        Self::get_governance(env)
+    }
+
+    fn pause(env: Env, guardian: Address) -> Result<(), StreamError> {
+        Self::pause(env, guardian)
+    }
+
+    fn unpause(env: Env, governance: Address) -> Result<(), StreamError> {
+        Self::unpause(env, governance)
+    }
+
+    fn get_pause_expiry(env: Env) -> u64 {
+        Self::get_pause_expiry(env)
+    fn set_creation_fee(env: Env, fee: i128, xlm_token: Address) -> Result<(), StreamError> {
+        Self::set_creation_fee(env, fee, xlm_token)
+    }
+
+    fn get_creation_fee(env: Env) -> i128 {
+        Self::get_creation_fee(env)
+    }
+
+    fn migrate(env: Env, from_version: String, to_version: String) -> Result<(), StreamError> {
+        Self::migrate(env, from_version, to_version)
+    }
+
+    fn get_admin_log(env: Env) -> Vec<AuditEntry> {
+        Self::get_admin_log(env)
+    }
+
+    fn archive_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError> {
+        Self::archive_stream(env, stream_id, caller)
     }
 }

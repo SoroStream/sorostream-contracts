@@ -36,4 +36,11 @@ pub enum StreamError {
     RecipientNotWhitelisted = 26,
     MetadataTooLong = 27,
     DuplicateStreamId = 28,
+    MigrationAlreadyApplied = 26,
+    StreamNotSettled = 27,
+    WithdrawalCooldownActive = 28,
+    RecipientNotWhitelisted = 29,
+    MetadataTooLong = 30,
+    InvalidEndTime = 31,
+    InsufficientXlmForFee = 32,
 }

@@ -616,4 +616,44 @@ pub trait SoroStreamInterface {
 
     /// Archives a fully settled stream (total_withdrawn == deposit), deleting its storage entry.
     fn archive_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
+
+    // ── Issue #208: fee exemption ────────────────────────────────────────────
+
+    /// Adds `addr` to the protocol fee exemption list. Only admin may call this.
+    fn add_fee_exempt(env: Env, addr: Address) -> Result<(), StreamError>;
+
+    /// Removes `addr` from the protocol fee exemption list. Only admin may call this.
+    fn remove_fee_exempt(env: Env, addr: Address) -> Result<(), StreamError>;
+
+    /// Returns whether `addr` is currently fee-exempt.
+    fn is_fee_exempt(env: Env, addr: Address) -> bool;
+
+    // ── Issue #209: guardian / governance pause ──────────────────────────────
+
+    /// Sets the guardian address (the only address allowed to call `pause`).
+    fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError>;
+
+    /// Returns the current guardian address.
+    fn get_guardian(env: Env) -> Option<Address>;
+
+    /// Sets the governance address (the only address allowed to call `unpause`).
+    fn set_governance(env: Env, governance: Address) -> Result<(), StreamError>;
+
+    /// Returns the current governance address.
+    fn get_governance(env: Env) -> Option<Address>;
+
+    /// Pauses all fund-moving operations. Only the guardian may call this.
+    /// Auto-unpauses after MAX_PAUSE_DURATION (72 h).
+    fn pause(env: Env, guardian: Address) -> Result<(), StreamError>;
+
+    /// Unpauses the contract. Only the governance contract may call this.
+    fn unpause(env: Env, governance: Address) -> Result<(), StreamError>;
+
+    /// Returns the timestamp at which the contract will auto-unpause (0 = not set).
+    fn get_pause_expiry(env: Env) -> u64;
+    /// Sets the flat XLM creation fee (in stroops) and the XLM SAC token address. Admin-only.
+    fn set_creation_fee(env: Env, fee: i128, xlm_token: Address) -> Result<(), StreamError>;
+
+    /// Returns the current XLM creation fee in stroops (0 = disabled).
+    fn get_creation_fee(env: Env) -> i128;
 }

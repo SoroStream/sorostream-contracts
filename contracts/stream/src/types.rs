@@ -1,5 +1,4 @@
-use soroban_sdk::{contracttype, Address, String};
-use soroban_sdk::{contracttype, Address, Bytes};
+use soroban_sdk::{contracttype, Address, Bytes, String};
 
 /// Status of a payment stream.
 #[contracttype]
