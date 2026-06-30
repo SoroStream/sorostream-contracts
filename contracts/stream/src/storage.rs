@@ -593,6 +593,32 @@ pub fn set_xlm_token(env: &Env, xlm_token: &Address) {
         .set(&Symbol::new(env, XLM_TOKEN_KEY), xlm_token);
 }
 
+// --- Reentrancy guard ---
+
+const REENTRANCY_LOCK_KEY: &str = "re_lk";
+
+/// Returns true if the reentrancy lock is currently held.
+pub fn is_reentrancy_locked(env: &Env) -> bool {
+    env.storage()
+        .temporary()
+        .get(&Symbol::new(env, REENTRANCY_LOCK_KEY))
+        .unwrap_or(false)
+}
+
+/// Acquires the reentrancy lock.
+pub fn set_reentrancy_lock(env: &Env) {
+    env.storage()
+        .temporary()
+        .set(&Symbol::new(env, REENTRANCY_LOCK_KEY), &true);
+}
+
+/// Releases the reentrancy lock.
+pub fn clear_reentrancy_lock(env: &Env) {
+    env.storage()
+        .temporary()
+        .remove(&Symbol::new(env, REENTRANCY_LOCK_KEY));
+}
+
 // --- Migration helpers ---
 
 const APPLIED_MIGRATIONS_KEY: &str = "migrations";
