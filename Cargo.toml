@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["contracts/stream", "contracts/treasury", "contracts/proxy"]
+members = ["contracts/stream", "contracts/treasury", "contracts/proxy", "contracts/governance", "contracts/multisig"]
 
 [profile.release]
 opt-level = "z"
