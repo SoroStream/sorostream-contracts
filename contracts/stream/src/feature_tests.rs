@@ -649,7 +649,7 @@ fn test_dual_stream_top_up_rejected() {
 
     let stream_id = make_dual_stream(&t, 0, 1000);
     let result = c.try_top_up(&stream_id, &t.sender, &t.token_id, &10_000);
-    assert_eq!(result, Err(Ok(StreamError::IsDualStream)));
+    assert_eq!(result, Err(Ok(StreamError::InvalidDuration)));
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•

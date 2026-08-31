@@ -1,6 +1,6 @@
 use soroban_sdk::contracterror;
 
-/// Custom errors for the SoroStream contract (≤50 variants for Soroban XDR).
+/// Custom errors for the SoroStream contract (≤50 variants, Soroban XDR limit).
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -19,7 +19,6 @@ pub enum StreamError {
     Overflow = 15,
     ZeroFlowRate = 16,
     BatchLengthMismatch = 17,
-    TokenMismatch = 18,
     StreamLocked = 19,
     NotAuthorized = 20,
     StreamNotPaused = 21,
@@ -54,13 +53,10 @@ pub enum StreamError {
     /// `transfer_recipient` was called on a stream marked as non-transferable at creation.
     StreamNonTransferable = 58,
     /// `withdraw` was called on a stream still in `PendingApproval` state.
-    /// The recipient must call `approve_stream` first.
     AwaitingApproval = 59,
-    /// `cancel_stream` was called by the sender on a stream they have irrevocably
-    /// locked via `lock_stream`.
+    /// `cancel_stream` was called on a sender-locked stream.
     StreamIsLocked = 60,
-    /// Recipient is not on the admin-managed recipient allowlist, and the stream
-    /// requires allowlist enforcement.
+    /// Recipient is not on the admin-managed recipient allowlist.
     RecipientNotAllowed = 61,
     /// The stream deposit exceeds the maximum allowed per-token limit.
     MaxDepositExceeded = 64,

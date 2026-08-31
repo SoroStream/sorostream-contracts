@@ -69,6 +69,23 @@ pub fn stream_cancelled(
     );
 }
 
+/// Emitted when a cancellation fee is deducted from the sender's refund.
+///
+/// `fee_amount`  — tokens withheld from the sender refund and sent to the treasury.
+/// `fee_bps`     — the fee rate in basis points at the time of cancellation.
+pub fn cancellation_fee_collected(
+    env: &Env,
+    stream_id: u64,
+    sender: &Address,
+    fee_amount: i128,
+    fee_bps: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "CancelFeeCollected"), stream_id),
+        (sender.clone(), fee_amount, fee_bps),
+    );
+}
+
 /// Emitted when a sender tops up an existing stream.
 pub fn stream_topped_up(env: &Env, stream_id: u64, added_amount: i128, new_end_time: u64) {
     env.events().publish(
@@ -1070,5 +1087,74 @@ pub fn on_complete_failed(
     env.events().publish(
         (Symbol::new(env, "OnCompleteFailed"), stream_id),
         (on_complete_contract.clone(), error_message.clone()),
+    );
+}
+
+// ── Issue #292: Role-based admin access control events ──────────────────────
+
+/// Emitted when the super-admin assigns a new role to an address.
+///
+/// `role_name` is a string label (e.g. `"FeeManager"`, `"EmergencyPause"`, `"Analytics"`).
+pub fn role_assigned(env: &Env, role_name: &String, assignee: &Address, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "RoleAssigned"),),
+        (role_name.clone(), assignee.clone(), admin.clone()),
+    );
+}
+
+/// Emitted when the super-admin revokes a role from an address.
+pub fn role_revoked(env: &Env, role_name: &String, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "RoleRevoked"),),
+        (role_name.clone(), admin.clone()),
+    );
+}
+
+// ── Issue #293: Sender collateral / stake events ─────────────────────────────
+
+/// Emitted when a sender deposits stake collateral.
+pub fn stake_deposited(env: &Env, sender: &Address, token: &Address, amount: i128, new_balance: i128) {
+    env.events().publish(
+        (Symbol::new(env, "StakeDeposited"),),
+        (sender.clone(), token.clone(), amount, new_balance),
+    );
+}
+
+/// Emitted when a sender initiates an unstake (starts the cooldown period).
+pub fn unstake_initiated(env: &Env, sender: &Address, token: &Address, amount: i128, unlock_at: u64) {
+    env.events().publish(
+        (Symbol::new(env, "UnstakeInitiated"),),
+        (sender.clone(), token.clone(), amount, unlock_at),
+    );
+}
+
+/// Emitted when a sender completes an unstake after the cooldown period.
+pub fn unstake_completed(env: &Env, sender: &Address, token: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "UnstakeCompleted"),),
+        (sender.clone(), token.clone(), amount),
+    );
+}
+
+/// Emitted when the admin slashes a sender's staked collateral.
+pub fn stake_slashed(
+    env: &Env,
+    sender: &Address,
+    token: &Address,
+    slash_amount: i128,
+    destination: &Address,
+    admin: &Address,
+) {
+    env.events().publish(
+        (Symbol::new(env, "StakeSlashed"),),
+        (sender.clone(), token.clone(), slash_amount, destination.clone(), admin.clone()),
+    );
+}
+
+/// Emitted when the admin sets a new minimum stake threshold for a token.
+pub fn min_stake_set(env: &Env, token: &Address, amount: i128, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "MinStakeSet"),),
+        (token.clone(), amount, admin.clone()),
     );
 }

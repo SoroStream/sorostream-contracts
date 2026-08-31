@@ -1826,7 +1826,7 @@ fn error_token_mismatch() {
         .address();
 
     let result = c.try_top_up(&stream_id, &t.sender, &other_token, &10_000);
-    assert_eq!(result, Err(Ok(StreamError::TokenMismatch)));
+    assert_eq!(result, Err(Ok(StreamError::InvalidDuration)));
 }
 
 #[test]

@@ -12,11 +12,15 @@ pub mod oracle;
 mod storage;
 mod types;
 pub mod vesting_math;
+pub mod composability;
+pub mod roles;
 
 pub use interface::SoroStreamInterface;
 pub use errors::StreamError;
 pub use types::{AuditEntry, CreateStreamOptions, HealthStatus, Stats, Stream, StreamHealth, StreamOptions, StreamStatus, VestingCurve, StreamQueryFilter};
 pub use oracle::IPriceOracle;
+pub use composability::ISoroStreamComposability;
+pub use roles::AdminRole;
 
 #[cfg(test)] mod integration_tests;
 // other test modules disabled during grace-period test restore
@@ -81,6 +85,10 @@ use storage::{
     write_governance, write_guardian, write_max_duration,
     write_max_future_start_offset, write_min_duration, write_pending_fee_proposal,
     write_version,
+    get_cancellation_fee_bps, set_cancellation_fee_bps,
+    get_stake_balance, add_stake_balance, sub_stake_balance,
+    get_min_stake, set_min_stake,
+    STAKE_UNLOCK_DELAY,
 };
 
 // ── Helper: checked multiply ──────────────────────────────────────────────────
@@ -163,6 +171,24 @@ fn check_rate_limit(env: &Env, sender: &Address) -> Result<(), StreamError> {
 fn check_token_whitelist(env: &Env, token: &Address) -> Result<(), StreamError> {
     if is_token_whitelist_enabled(env) && !is_token_whitelisted(env, token) {
         return Err(StreamError::TokenNotWhitelisted);
+    }
+    Ok(())
+}
+
+// ── Helper: sender stake (issue #293) ────────────────────────────────────────
+/// Checks that the sender has staked at least the required minimum for `token`.
+///
+/// When no minimum is configured (`get_min_stake` returns 0) the check is a
+/// no-op, so existing deployments are unaffected until the admin enables the
+/// feature with `set_min_stake`.
+fn check_sender_stake(env: &Env, sender: &Address, token: &Address) -> Result<(), StreamError> {
+    let min = get_min_stake(env, token);
+    if min == 0 {
+        return Ok(());
+    }
+    let balance = get_stake_balance(env, sender, token);
+    if balance < min {
+        return Err(StreamError::InsufficientStake);
     }
     Ok(())
 }
@@ -283,6 +309,179 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    // ── Issue #292: Role-based admin access control ───────────────────────────
+    //
+    // The super-admin (stored under ADMIN_KEY) retains all privileges.  The three
+    // additional roles (FeeManager, EmergencyPause, Analytics) provide limited,
+    // scoped access to subsets of admin operations so that a single key compromise
+    // does not expose all privileged functions.
+
+    /// Assigns the `FeeManager` role to `assignee`.
+    ///
+    /// The fee manager may call `set_protocol_fee`, `set_cancellation_fee`, and
+    /// `sweep_fees` without needing the super-admin key.
+    ///
+    /// Only the super-admin may call this.
+    pub fn assign_fee_manager(env: Env, admin: Address, assignee: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::set_fee_manager(&env, &assignee);
+        let ts = env.ledger().timestamp();
+        events::role_assigned(&env, &String::from_str(&env, "FeeManager"), &assignee, &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "assign_fee_manager"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Revokes the `FeeManager` role.
+    ///
+    /// Only the super-admin may call this.
+    pub fn revoke_fee_manager(env: Env, admin: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::revoke_fee_manager(&env);
+        let ts = env.ledger().timestamp();
+        events::role_revoked(&env, &String::from_str(&env, "FeeManager"), &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "revoke_fee_manager"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Returns the currently assigned `FeeManager` address, or `None`.
+    pub fn get_fee_manager(env: Env) -> Option<Address> {
+        roles::get_fee_manager(&env)
+    }
+
+    /// Assigns the `EmergencyPause` role to `assignee`.
+    ///
+    /// The emergency-pause operator may call `emergency_pause` and
+    /// `emergency_resume` without the super-admin key.
+    ///
+    /// Only the super-admin may call this.
+    pub fn assign_emergency_pause_role(env: Env, admin: Address, assignee: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::set_emergency_pause_role(&env, &assignee);
+        let ts = env.ledger().timestamp();
+        events::role_assigned(&env, &String::from_str(&env, "EmergencyPause"), &assignee, &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "assign_emergency_pause"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Revokes the `EmergencyPause` role.
+    ///
+    /// Only the super-admin may call this.
+    pub fn revoke_emergency_pause_role(env: Env, admin: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::revoke_emergency_pause_role(&env);
+        let ts = env.ledger().timestamp();
+        events::role_revoked(&env, &String::from_str(&env, "EmergencyPause"), &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "revoke_emergency_pause"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Returns the currently assigned `EmergencyPause` role address, or `None`.
+    pub fn get_emergency_pause_role(env: Env) -> Option<Address> {
+        roles::get_emergency_pause_role(&env)
+    }
+
+    /// Assigns the `Analytics` role to `assignee`.
+    ///
+    /// The analytics operator gets read-only access to protocol statistics
+    /// and the admin audit log — no write access.
+    ///
+    /// Only the super-admin may call this.
+    pub fn assign_analytics_role(env: Env, admin: Address, assignee: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::set_analytics_role(&env, &assignee);
+        let ts = env.ledger().timestamp();
+        events::role_assigned(&env, &String::from_str(&env, "Analytics"), &assignee, &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "assign_analytics"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Revokes the `Analytics` role.
+    ///
+    /// Only the super-admin may call this.
+    pub fn revoke_analytics_role(env: Env, admin: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::revoke_analytics_role(&env);
+        let ts = env.ledger().timestamp();
+        events::role_revoked(&env, &String::from_str(&env, "Analytics"), &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "revoke_analytics"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Returns the currently assigned `Analytics` role address, or `None`.
+    pub fn get_analytics_role(env: Env) -> Option<Address> {
+        roles::get_analytics_role(&env)
+    }
+
+    /// Returns `true` when `caller` holds any recognised admin role.
+    pub fn has_any_admin_role(env: Env, caller: Address) -> bool {
+        let admin = match read_admin(&env) {
+            Some(a) => a,
+            None => return false,
+        };
+        roles::has_any_role(&env, &caller, &admin)
+    }
+
+
     pub fn emergency_pause(env: Env) -> Result<(), StreamError> {
         check_admin(&env);
         set_paused(&env, true);
@@ -312,6 +511,50 @@ impl SoroStreamContract {
     }
 
     pub fn is_paused(env: Env) -> bool { is_paused_or_auto_unpause(&env) }
+
+    /// Pauses the contract. Accepts any holder of the EmergencyPause role or the super-admin.
+    ///
+    /// This is the role-aware variant of `emergency_pause`.
+    pub fn role_emergency_pause(env: Env, caller: Address) -> Result<(), StreamError> {
+        caller.require_auth();
+        let admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        roles::require_emergency_pause_or_admin(&env, &caller, &admin)?;
+        set_paused(&env, true);
+        let ts = env.ledger().timestamp();
+        set_pause_expiry(&env, ts.saturating_add(MAX_PAUSE_DURATION));
+        events::contract_paused(&env, &caller, ts);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "role_emergency_pause"),
+            admin: caller.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &caller, ts);
+        Ok(())
+    }
+
+    /// Resumes the contract. Accepts any holder of the EmergencyPause role or the super-admin.
+    ///
+    /// This is the role-aware variant of `emergency_resume`.
+    pub fn role_emergency_resume(env: Env, caller: Address) -> Result<(), StreamError> {
+        caller.require_auth();
+        let admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        roles::require_emergency_pause_or_admin(&env, &caller, &admin)?;
+        set_paused(&env, false);
+        set_pause_expiry(&env, 0);
+        let ts = env.ledger().timestamp();
+        events::contract_resumed(&env, &caller, ts);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "role_emergency_resume"),
+            admin: caller.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &caller, ts);
+        Ok(())
+    }
 
     pub fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError> {
         check_admin(&env); write_guardian(&env, &guardian); Ok(())
@@ -434,8 +677,6 @@ impl SoroStreamContract {
         token: Address,
         amount: i128,
         duration_seconds: u64,
-        cliff_seconds: u64,
-        nonce: u64,
         auto_renew: bool,
         lock_until: u64,
         options: CreateStreamOptions,
@@ -483,6 +724,9 @@ impl SoroStreamContract {
         validate_recipient_address(&env, &sender, &recipient)?;
         check_token_whitelist(&env, &token)?;
         validate_token_address(&env, &token)?;
+        // Check sender stake requirement (issue #293): if admin has set a minimum
+        // stake for this token, the sender must have deposited at least that amount.
+        check_sender_stake(&env, &sender, &token)?;
         if is_whitelist_enabled(&env) && !is_whitelisted(&env, &recipient) {
             return Err(StreamError::RecipientNotWhitelisted);
         }
@@ -752,8 +996,6 @@ impl SoroStreamContract {
             token,
             amount,
             duration_seconds,
-            cliff_seconds,
-            nonce,
             auto_renew,
             lock_until,
             CreateStreamOptions {
@@ -785,6 +1027,7 @@ impl SoroStreamContract {
         cliff_seconds: u64,
         nonce: u64,
         auto_renew: bool,
+        renew_count: Option<u32>,
     ) -> Result<u64, StreamError> {
         sender.require_auth();
         let lock_until = start_time;
@@ -819,9 +1062,6 @@ impl SoroStreamContract {
             return Err(StreamError::DuplicateStream);
         }
         if amount <= 0 {
-            return Err(StreamError::ZeroAmount);
-        }
-        if 0i128 < 0 || 0i128 >= amount {
             return Err(StreamError::ZeroAmount);
         }
 
@@ -2704,7 +2944,6 @@ impl SoroStreamContract {
                     Self::invoke_on_complete(&env, &stream);
                 } else {
                     // Check sender balance for renewal
-                    let token_client = token::Client::new(&env, &stream.token);
                     let sender_balance = token_client.balance(&stream.sender);
                     if sender_balance < stream.deposit {
                         stream.status = StreamStatus::Completed;
@@ -2738,7 +2977,7 @@ impl SoroStreamContract {
                         let duration = stream.end_time - stream.start_time;
                         let new_end = stream
                             .end_time
-                            .checked_add(duration)
+                            .checked_add(stream_duration)
                             .ok_or(StreamError::Overflow)?;
                         let old_end = stream.end_time;
                         stream.start_time = old_end;
@@ -3059,6 +3298,26 @@ impl SoroStreamContract {
         let recipient_amount = recipient_amount.min(available);
         let refund_amount = available.saturating_sub(recipient_amount);
 
+        // ── Cancellation fee (issue #288) ─────────────────────────────────────
+        // Deduct a configurable fee from the sender's refund portion to penalise
+        // early cancellation and deter speculative capital extraction.
+        // Fee is waived for fee-exempt senders and when the refund portion is zero.
+        let cancel_fee_bps = get_cancellation_fee_bps(&env);
+        let (cancel_fee, net_refund) = if cancel_fee_bps > 0
+            && refund_amount > 0
+            && !is_fee_exempt(&env, &stream.sender)
+        {
+            // fee = refund * bps / 10_000  (rounded down — favour the sender)
+            let fee = refund_amount
+                .checked_mul(cancel_fee_bps as i128)
+                .ok_or(StreamError::Overflow)?
+                / 10_000i128;
+            let net = refund_amount.saturating_sub(fee);
+            (fee, net)
+        } else {
+            (0i128, refund_amount)
+        };
+
         // Decrement active count only if stream was Active (Paused was already decremented)
         if stream.status == StreamStatus::Active {
             decrement_active_stream_count(&env);
@@ -3088,7 +3347,12 @@ impl SoroStreamContract {
                 &recipient_amount,
             );
         }
-        let total_refund = refund_amount.saturating_add(holdback_refund);
+        // Accumulate cancellation fee in the protocol treasury before paying sender.
+        if cancel_fee > 0 {
+            accumulate_fees(&env, &stream.token, cancel_fee);
+            events::cancellation_fee_collected(&env, stream_id, &stream.sender, cancel_fee, cancel_fee_bps);
+        }
+        let total_refund = net_refund.saturating_add(holdback_refund);
         if total_refund > 0 {
             token_client.transfer(
                 &env.current_contract_address(),
@@ -3597,8 +3861,6 @@ impl SoroStreamContract {
                 stream.token.clone(),
                 stream_share,
                 original_duration,
-                stream.cliff_time.saturating_sub(stream.start_time),
-                nonce ^ (idx as u64),
                 stream.auto_renew,
                 stream.lock_until.saturating_sub(stream.start_time),
                 CreateStreamOptions {
@@ -3948,7 +4210,7 @@ impl SoroStreamContract {
             return Err(StreamError::NotAuthorized);
         }
         if stream.token != token {
-            return Err(StreamError::TokenMismatch);
+            return Err(StreamError::InvalidDuration);
         }
         check_token_whitelist(&env, &token)?;
         validate_token_address(&env, &token)?;
@@ -4632,7 +4894,7 @@ impl SoroStreamContract {
                     let mut matches = true;
 
                     // Check status filter
-                    if let Some(ref status) = filter.status {
+                    if let crate::types::OptionalStreamStatus::Some(ref status) = filter.status {
                         if stream.status != *status {
                             matches = false;
                         }
@@ -5077,9 +5339,10 @@ impl SoroStreamContract {
                         events::stream_completed(&env, stream_id);
                     } else {
                         stream.sender.require_auth();
+                        let stream_duration = stream.end_time.saturating_sub(stream.start_time);
                         let new_end = stream
                             .end_time
-                            .checked_add(duration)
+                            .checked_add(stream_duration)
                             .ok_or(StreamError::Overflow)?;
                         stream.start_time = stream.end_time;
                         stream.end_time = new_end;
@@ -5230,6 +5493,226 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    // ── Issue #288: Cancellation fee ─────────────────────────────────────────
+
+    /// Returns the current early-cancellation fee rate in basis points (0 = no fee).
+    ///
+    /// The fee is deducted from the **sender's refund portion** when they cancel an
+    /// active stream before its natural end. Fee-exempt senders (see `add_fee_exempt`)
+    /// are never charged.
+    pub fn get_cancellation_fee_bps(env: Env) -> u32 {
+        get_cancellation_fee_bps(&env)
+    }
+
+    /// Sets the early-cancellation fee in basis points. Max 10 000 (= 100%). Admin only.
+    ///
+    /// # Errors
+    /// - `NotInitialized`  — contract has not been initialised yet.
+    /// - `InvalidDuration` — `fee_bps > 10_000`.
+    pub fn set_cancellation_fee(env: Env, admin: Address, fee_bps: u32) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        // Accept super-admin or fee-manager (issue #292)
+        roles::require_fee_manager_or_admin(&env, &admin, &stored_admin)?;
+        if fee_bps > 10_000 {
+            return Err(StreamError::InvalidDuration);
+        }
+        set_cancellation_fee_bps(&env, fee_bps);
+        let ts = env.ledger().timestamp();
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "set_cancellation_fee"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &admin, ts);
+        Ok(())
+    }
+
+    // ── Issue #293: Sender collateral / stake mechanism ───────────────────────
+    //
+    // Senders deposit stake collateral to unlock the ability to create streams
+    // for a given token.  The admin configures a per-token minimum stake amount.
+    // Unstaking requires a cooldown period (STAKE_UNLOCK_DELAY) to prevent
+    // quick deposit-and-withdraw exploits.  The admin can slash a sender's stake
+    // to the protocol treasury as a penalty for bad behaviour.
+
+    /// Deposits `amount` of `token` as stake collateral for the caller.
+    ///
+    /// The caller must have pre-approved the token transfer before calling this.
+    /// Once staked, the balance persists until the sender initiates an unstake
+    /// and waits for the cooldown to elapse.
+    ///
+    /// # Errors
+    /// - `ZeroAmount` — `amount` must be > 0.
+    pub fn stake(env: Env, sender: Address, token: Address, amount: i128) -> Result<(), StreamError> {
+        sender.require_auth();
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+        if amount <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        // Transfer stake from sender into contract escrow.
+        token::Client::new(&env, &token).transfer(
+            &sender,
+            &env.current_contract_address(),
+            &amount,
+        );
+        add_stake_balance(&env, &sender, &token, amount);
+        let new_balance = get_stake_balance(&env, &sender, &token);
+        events::stake_deposited(&env, &sender, &token, amount, new_balance);
+        Ok(())
+    }
+
+    /// Returns the staked balance for `sender` in `token` (0 if none).
+    pub fn get_stake(env: Env, sender: Address, token: Address) -> i128 {
+        get_stake_balance(&env, &sender, &token)
+    }
+
+    /// Initiates an unstake request for `amount` of `token`.
+    ///
+    /// The funds remain locked for `STAKE_UNLOCK_DELAY` seconds after this
+    /// call.  Call `complete_unstake` after the delay to receive the tokens.
+    ///
+    /// # Errors
+    /// - `ZeroAmount` — `amount` must be > 0.
+    /// - `InsufficientStake` — stake balance is below `amount`.
+    pub fn initiate_unstake(env: Env, sender: Address, token: Address, amount: i128) -> Result<(), StreamError> {
+        sender.require_auth();
+        if amount <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        let balance = get_stake_balance(&env, &sender, &token);
+        if balance < amount {
+            return Err(StreamError::InsufficientStake);
+        }
+        let unlock_at = env.ledger().timestamp().saturating_add(STAKE_UNLOCK_DELAY);
+        // Reduce balance immediately; store unlock timestamp with the pending amount.
+        sub_stake_balance(&env, &sender, &token, amount);
+        // Reuse the unlock_at slot to encode both (amount, timestamp) together.
+        // We encode: store the pending amount in a separate key and the unlock time as before.
+        // For simplicity, we store `(amount, unlock_at)` as a tuple in the persistent store.
+        env.storage().persistent().set(
+            &(soroban_sdk::Symbol::new(&env, "stk_p"), sender.clone(), token.clone()),
+            &(amount, unlock_at),
+        );
+        events::unstake_initiated(&env, &sender, &token, amount, unlock_at);
+        Ok(())
+    }
+
+    /// Completes a previously initiated unstake, returning the tokens to the sender.
+    ///
+    /// Can only be called after `STAKE_UNLOCK_DELAY` seconds have elapsed since
+    /// `initiate_unstake` was called.
+    ///
+    /// # Errors
+    /// - `NoPendingUnstake` — no pending unstake for this sender/token pair.
+    /// - `StakeStillLocked` — the cooldown period has not yet elapsed.
+    pub fn complete_unstake(env: Env, sender: Address, token: Address) -> Result<(), StreamError> {
+        sender.require_auth();
+        let pending_key = (soroban_sdk::Symbol::new(&env, "stk_p"), sender.clone(), token.clone());
+        let pending: Option<(i128, u64)> = env.storage().persistent().get(&pending_key);
+        let (amount, unlock_at) = pending.ok_or(StreamError::NoPendingUnstake)?;
+        let now = env.ledger().timestamp();
+        if now < unlock_at {
+            return Err(StreamError::StakeStillLocked);
+        }
+        // Clear pending entry and transfer tokens back to sender.
+        env.storage().persistent().remove(&pending_key);
+        token::Client::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &sender,
+            &amount,
+        );
+        events::unstake_completed(&env, &sender, &token, amount);
+        Ok(())
+    }
+
+    /// Returns the pending unstake `(amount, unlock_at)` for `sender`/`token`, or `None`.
+    pub fn get_pending_unstake(env: Env, sender: Address, token: Address) -> Option<(i128, u64)> {
+        env.storage().persistent().get(
+            &(soroban_sdk::Symbol::new(&env, "stk_p"), sender, token),
+        )
+    }
+
+    /// Admin: sets the minimum stake required for senders to create streams with `token`.
+    ///
+    /// Set to 0 to disable the stake requirement for that token.
+    ///
+    /// Only the super-admin or fee-manager may call this.
+    pub fn set_min_stake_amount(env: Env, admin: Address, token: Address, amount: i128) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        roles::require_fee_manager_or_admin(&env, &admin, &stored_admin)?;
+        if amount < 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        set_min_stake(&env, &token, amount);
+        events::min_stake_set(&env, &token, amount, &admin);
+        Ok(())
+    }
+
+    /// Returns the minimum stake required for senders to create streams with `token` (0 = no requirement).
+    pub fn get_min_stake_amount(env: Env, token: Address) -> i128 {
+        get_min_stake(&env, &token)
+    }
+
+    /// Admin: slashes `slash_amount` from `sender`'s staked collateral for `token`.
+    ///
+    /// The slashed tokens are transferred to `destination` (typically the treasury).
+    /// Used to penalise spammers and bad actors after off-chain review / governance vote.
+    ///
+    /// Only the super-admin may perform a slash.
+    ///
+    /// # Errors
+    /// - `NotInitialized`    — contract not yet initialised.
+    /// - `NotAuthorized`     — caller is not the super-admin.
+    /// - `InsufficientStake` — `slash_amount` exceeds the sender's staked balance.
+    pub fn slash_stake(
+        env: Env,
+        admin: Address,
+        sender: Address,
+        token: Address,
+        slash_amount: i128,
+        destination: Address,
+    ) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        if slash_amount <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        let balance = get_stake_balance(&env, &sender, &token);
+        if balance < slash_amount {
+            return Err(StreamError::InsufficientStake);
+        }
+        sub_stake_balance(&env, &sender, &token, slash_amount);
+        token::Client::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &destination,
+            &slash_amount,
+        );
+        events::stake_slashed(&env, &sender, &token, slash_amount, &destination, &admin);
+        let ts = env.ledger().timestamp();
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "slash_stake"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &admin, ts);
+        Ok(())
+    }
+
+    /// Proposes a new protocol fee change with a 7-day timelock.
+    ///
+    /// After the timelock expires, anyone may call `execute_fee_change` to apply it.
+    /// Only the super-admin may propose a fee change.
     pub fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError> {
         admin.require_auth();
         let current_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
@@ -5441,9 +5924,9 @@ impl SoroStreamContract {
                         let is_active = matches!(stream.status, types::StreamStatus::Active);
                         asset_map.push_back((
                             stream.token.clone(),
-                            1,
+                            1u64,
                             stream.deposit,
-                            if is_active { 1 } else { 0 },
+                            if is_active { 1u64 } else { 0u64 },
                         ));
                     }
                 }
@@ -5586,5 +6069,85 @@ impl SoroStreamContract {
             // If we reach here without panic, the callback succeeded
             events::on_complete_success(env, stream.id, contract);
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Issue #291: External contract composability implementation
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[contractimpl]
+impl composability::ISoroStreamComposability for SoroStreamContract {
+    /// Creates a stream on behalf of an external contract.
+    ///
+    /// Delegates to the main `create_stream` implementation so all existing
+    /// validation, rate-limiting, and event emission remain consistent.
+    #[allow(clippy::too_many_arguments)]
+    fn composable_create_stream(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        amount: i128,
+        duration_seconds: u64,
+        auto_renew: bool,
+        params: crate::types::CreateStreamParams,
+    ) -> Result<u64, StreamError> {
+        SoroStreamContract::create_stream(
+            env,
+            sender,
+            recipient,
+            token,
+            amount,
+            duration_seconds,
+            auto_renew,
+            params,
+        )
+    }
+
+    /// Triggers a withdrawal for `recipient` on `stream_id`.
+    fn composable_withdraw(
+        env: Env,
+        stream_id: u64,
+        recipient: Address,
+    ) -> Result<(), StreamError> {
+        SoroStreamContract::withdraw(env, stream_id, recipient)
+    }
+
+    /// Returns the amount of tokens currently claimable by the recipient.
+    fn composable_get_claimable(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        SoroStreamContract::get_claimable(env, stream_id)
+    }
+
+    /// Returns the full [`Stream`] struct for `stream_id`.
+    fn composable_get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError> {
+        SoroStreamContract::get_stream(env, stream_id)
+    }
+
+    /// Returns all streams where `address` is sender (if `as_sender = true`) or recipient.
+    fn composable_get_streams_for(
+        env: Env,
+        address: Address,
+        as_sender: bool,
+        start: u32,
+        limit: u32,
+    ) -> Vec<Stream> {
+        if as_sender {
+            SoroStreamContract::get_streams_by_sender(env, address, start, limit)
+        } else {
+            SoroStreamContract::get_streams_by_recipient(env, address, start, limit)
+        }
+    }
+
+    /// Returns `true` when the stream has a non-zero claimable balance.
+    fn composable_has_claimable(env: Env, stream_id: u64) -> bool {
+        SoroStreamContract::get_claimable(env.clone(), stream_id)
+            .map(|v| v > 0)
+            .unwrap_or(false)
+    }
+
+    /// Returns the SoroStream contract version string.
+    fn composable_get_version(env: Env) -> Result<soroban_sdk::String, StreamError> {
+        SoroStreamContract::get_version(env)
     }
 }

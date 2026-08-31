@@ -28,8 +28,6 @@ pub trait SoroStreamInterface {
         token: Address,
         amount: i128,
         duration_seconds: u64,
-        cliff_seconds: u64,
-        nonce: u64,
         auto_renew: bool,
         lock_until: u64,
         options: CreateStreamOptions,
