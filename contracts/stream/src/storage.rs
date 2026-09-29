@@ -1835,3 +1835,62 @@ pub fn set_min_stake(env: &Env, token: &Address, amount: i128) {
 
 /// Lock-up period in seconds before an unstake request can be completed (7 days).
 pub const STAKE_UNLOCK_DELAY: u64 = 7 * 24 * 60 * 60;
+
+// ── Reward points (issue #516) ────────────────────────────────────────────────
+//
+// A lightweight loyalty ledger kept in **instance** storage: an address earns
+// points proportional to the value streamed out of its streams, and can redeem
+// them for a discount on a future stream-creation fee.
+
+/// Instance-storage key for an address's accumulated reward points.
+pub fn reward_points_key(env: &Env, addr: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "rp"), addr.clone())
+}
+
+/// Returns the reward points accumulated by `addr` (0 if none).
+pub fn get_reward_points(env: &Env, addr: &Address) -> i128 {
+    env.storage()
+        .instance()
+        .get(&reward_points_key(env, addr))
+        .unwrap_or(0i128)
+}
+
+/// Overwrites the reward point balance for `addr`.
+pub fn set_reward_points(env: &Env, addr: &Address, points: i128) {
+    env.storage()
+        .instance()
+        .set(&reward_points_key(env, addr), &points);
+}
+
+/// Adds `delta` points to `addr`'s balance and returns the new total.
+///
+/// Non-positive deltas are a no-op so callers can award unconditionally.
+pub fn add_reward_points(env: &Env, addr: &Address, delta: i128) -> i128 {
+    let current = get_reward_points(env, addr);
+    if delta <= 0 {
+        return current;
+    }
+    let updated = current.saturating_add(delta);
+    set_reward_points(env, addr, updated);
+    updated
+}
+
+/// Instance-storage key for an address's pending creation-fee discount (bps).
+pub fn fee_discount_key(env: &Env, addr: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "rd"), addr.clone())
+}
+
+/// Returns the pending stream-creation fee discount for `addr`, in basis points.
+pub fn get_pending_fee_discount(env: &Env, addr: &Address) -> u32 {
+    env.storage()
+        .instance()
+        .get(&fee_discount_key(env, addr))
+        .unwrap_or(0u32)
+}
+
+/// Sets the pending stream-creation fee discount for `addr`, in basis points.
+pub fn set_pending_fee_discount(env: &Env, addr: &Address, bps: u32) {
+    env.storage()
+        .instance()
+        .set(&fee_discount_key(env, addr), &bps);
+}

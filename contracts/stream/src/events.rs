@@ -1257,3 +1257,19 @@ pub fn min_stake_set(env: &Env, token: &Address, amount: i128, admin: &Address) 
         (token.clone(), amount, admin.clone()),
     );
 }
+
+/// Emitted when an address accrues reward points from streamed value.
+pub fn reward_points_earned(env: &Env, address: &Address, points: i128, total: i128) {
+    env.events().publish(
+        (Symbol::new(env, "RewardPointsEarned"), address.clone()),
+        (points, total),
+    );
+}
+
+/// Emitted when an address redeems reward points for a creation-fee discount.
+pub fn reward_points_redeemed(env: &Env, address: &Address, points: i128, discount_bps: u32) {
+    env.events().publish(
+        (Symbol::new(env, "RewardPointsRedeemed"), address.clone()),
+        (points, discount_bps),
+    );
+}
