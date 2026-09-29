@@ -67,4 +67,7 @@ pub enum StreamError {
     CommentTooLong = 65,
     /// Sender has not staked the required minimum collateral for this token.
     InsufficientStake = 66,
+    /// A parameter decoded from XDR but is semantically invalid for this entry
+    /// point — for example an empty or over-long identifier string.
+    InvalidParameter = 67,
 }
