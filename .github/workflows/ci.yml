@@ -25,6 +25,24 @@ jobs:
         run: cargo test testnet_manifest_loads -- --nocapture
       - name: Storage baseline regression
         run: cargo test --package sorostream-stream -- storage_bench::check_storage_baseline_regression --nocapture
+      - name: Storage layout snapshot tests
+        # Runs the four lifecycle snapshot tests (create / withdraw / cancel / top_up).
+        # The soroban-sdk testutils layer writes test_snapshots/test/<name>.1.json at
+        # test-end; if any committed snapshot diverges from the generated output the
+        # test binary exits non-zero and this step fails.
+        # To regenerate after an intentional schema change run locally:
+        #   UPDATE_EXPECT=true cargo test --package sorostream-stream \
+        #       -- storage_layout_snapshot_tests --nocapture
+        run: cargo test --package sorostream-stream -- storage_layout_snapshot_tests --nocapture
+      - name: Check storage snapshots are committed
+        # Fail the build if a developer ran the snapshot tests and forgot to commit
+        # the generated JSON files.  git diff --exit-code returns 1 when the working
+        # tree has unstaged changes.
+        run: |
+          git diff --exit-code contracts/stream/test_snapshots/ || \
+            (echo "::error::Storage layout snapshots changed but were not committed. \
+          Run the storage_layout_snapshot_tests locally, then git add and commit the \
+          updated test_snapshots/test/storage_snapshot_*.1.json files." && exit 1)
       - name: Build size-optimised WASM
         run: cargo build --target wasm32v1-none --profile release-size
       - name: Record WASM binary size
@@ -63,6 +81,20 @@ jobs:
           PROPTEST_CASES: 1000
         run: cargo test proptest_tests -- --nocapture
         timeout-minutes: 10
+      - name: feat/39 create-stream fuzz (10,000 cases, fixed seed)
+        env:
+          PROPTEST_CASES: 10000
+        run: cargo test issue_39_tests -- --nocapture
+        timeout-minutes: 15
+      - name: feat/6 resume paused-at reset tests
+        run: cargo test issue_6_tests -- --nocapture
+        timeout-minutes: 5
+      - name: feat/37 sender stream cap tests
+        run: cargo test issue_37_tests -- --nocapture
+        timeout-minutes: 5
+      - name: Duplicate stream ID collision tests
+        run: cargo test duplicate_id_tests -- --nocapture
+        timeout-minutes: 5
 
   security-audit:
     name: Security Audit

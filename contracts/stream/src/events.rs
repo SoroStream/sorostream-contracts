@@ -1258,54 +1258,31 @@ pub fn min_stake_set(env: &Env, token: &Address, amount: i128, admin: &Address) 
     );
 }
 
-// ── Issue #472: Collateral vault yield events ────────────────────────────────
-
-/// Emitted when collateral yield is claimed from a vault.
-pub fn collateral_yield_claimed(
+/// Emitted when an existing stream is cloned into a new stream.
+///
+/// `source_stream_id` identifies the stream that was cloned and `new_stream_id`
+/// the freshly created stream. `flow_rate` and `duration` describe the cloned
+/// stream, whose deposit is funded from the source's remaining unstreamed
+/// balance rather than the original deposit.
+pub fn stream_cloned(
     env: &Env,
-    stream_id: u64,
-    vault: &Address,
-    sender_yield: i128,
-    recipient_yield: i128,
+    source_stream_id: u64,
+    new_stream_id: u64,
+    sender: &Address,
+    new_recipient: &Address,
+    flow_rate: i128,
+    duration: u64,
 ) {
-    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    let nonce = crate::storage::next_stream_event_nonce(env, source_stream_id);
     env.events().publish(
-        (Symbol::new(env, "CollateralYieldClaimed"), stream_id),
-        (vault.clone(), sender_yield, recipient_yield, nonce),
+        (Symbol::new(env, "StreamCloned"), source_stream_id),
+        (
+            new_stream_id,
+            sender.clone(),
+            new_recipient.clone(),
+            flow_rate,
+            duration,
+            nonce,
+        ),
     );
 }
-
-// ── Issue #616: Zero-decimal token transfer events ───────────────────────────
-
-/// Scales a token amount for display/logging without zero-division error.
-pub fn scale_token_amount(amount: i128, decimals: u32) -> i128 {
-    if decimals == 0 {
-        amount
-    } else {
-        let divisor = 10i128.pow(decimals);
-        if divisor == 0 {
-            amount
-        } else {
-            amount / divisor
-        }
-    }
-}
-
-/// Emitted when a token transfer occurs on stream operations (deposit, withdraw, refund).
-pub fn token_transferred(
-    env: &Env,
-    stream_id: u64,
-    token: &Address,
-    from: &Address,
-    to: &Address,
-    amount: i128,
-    decimals: u32,
-) {
-    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
-    let scaled_amount = scale_token_amount(amount, decimals);
-    env.events().publish(
-        (Symbol::new(env, "TokenTransferred"), stream_id),
-        (token.clone(), from.clone(), to.clone(), amount, scaled_amount, decimals, nonce),
-    );
-}
-
