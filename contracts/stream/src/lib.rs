@@ -150,6 +150,18 @@ fn validate_flow_rate_bounds(flow_rate: i128) -> Result<(), StreamError> {
 /// indivisible unit of any Stellar token.
 const DUST_THRESHOLD: i128 = 1;
 
+/// Reward points granted per stroop streamed, expressed as a divisor.
+///
+/// `1` point is awarded for every `POINTS_PER_STROOP_DENOM` stroops of value
+/// streamed out of a sender's streams.
+const POINTS_PER_STROOP_DENOM: i128 = 10_000;
+
+/// Reward points required to unlock one basis point of creation-fee discount.
+const POINTS_PER_DISCOUNT_BPS: i128 = 1_000;
+
+/// Maximum creation-fee discount (in basis points) reward points can unlock.
+const MAX_FEE_DISCOUNT_BPS: u32 = 1_000;
+
 /// Validates a metadata URI length (prefix checks omitted — String has no as_bytes).
 fn validate_metadata_uri(uri: &Option<String>) -> Result<(), StreamError> {
     if let Some(ref u) = uri {
@@ -308,6 +320,23 @@ fn post_create_sender_accounting(env: &Env, sender: &Address) {
         let threshold = get_sender_promotion_threshold(env);
         events::sender_promoted(env, sender, lifetime, threshold);
     }
+}
+
+/// Awards loyalty points to a stream's sender for value that has streamed out.
+///
+/// `1` point is granted per `POINTS_PER_STROOP_DENOM` stroops withdrawn.  The
+/// points are credited to the sender's reward ledger, which can later be
+/// redeemed for a stream-creation fee discount (see `redeem_points`).
+fn award_stream_reward_points(env: &Env, stream: &Stream, streamed: i128) {
+    if streamed <= 0 {
+        return;
+    }
+    let points = streamed / POINTS_PER_STROOP_DENOM;
+    if points <= 0 {
+        return;
+    }
+    let total = accrue_reward_points(env, &stream.sender, points);
+    events::reward_points_earned(env, &stream.sender, points, total);
 }
 
 // ── Feature (c): circular redirect detection ─────────────────────────────────
@@ -1358,12 +1387,24 @@ impl SoroStreamContract {
         if creation_fee > 0 {
             let treasury = get_treasury(&env).ok_or(StreamError::NotInitialized)?;
             let xlm_token = get_xlm_token(&env).ok_or(StreamError::NotInitialized)?;
+            // Issue #516: apply any reward-point discount the sender redeemed.
+            let discount_bps = read_fee_discount(&env, &sender);
+            let effective_fee = if discount_bps > 0 {
+                let reduced = creation_fee
+                    .checked_mul((10_000u32 - discount_bps) as i128)
+                    .ok_or(StreamError::Overflow)?
+                    / 10_000;
+                write_fee_discount(&env, &sender, 0);
+                reduced
+            } else {
+                creation_fee
+            };
             token::Client::new(&env, &xlm_token).transfer(
                 &sender,
                 &treasury,
-                &creation_fee,
+                &effective_fee,
             );
-            events::creation_fee_collected(&env, creation_fee, &treasury);
+            events::creation_fee_collected(&env, effective_fee, &treasury);
         }
 
         // Transfer total amount (streaming + holdback) from the funding sponsor into contract escrow.
@@ -3470,6 +3511,7 @@ impl SoroStreamContract {
                 }
             }
 
+            award_stream_reward_points(&env, &stream, available);
             events::stream_withdrawn(&env, stream_id, &recipient, available, now, stream.options.total_withdrawn);
             return Ok(());
         }
@@ -3606,6 +3648,7 @@ impl SoroStreamContract {
             if all_claimed {
                 events::stream_completed(&env, stream_id);
             }
+            award_stream_reward_points(&env, &stream, claimable);
 
             clear_reentrancy_lock(&env);
             return Ok(());
@@ -3977,6 +4020,7 @@ impl SoroStreamContract {
             }
         }
 
+        award_stream_reward_points(&env, &stream, claimable);
         events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
 
         // Clear stream-specific reentrancy lock only if the stream still exists.
@@ -6817,6 +6861,7 @@ impl SoroStreamContract {
                 }
             }
 
+            award_stream_reward_points(&env, &stream, claimable);
             amounts.push_back(claimable);
             events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
         }

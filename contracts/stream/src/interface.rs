@@ -348,6 +348,15 @@ pub trait SoroStreamInterface {
     fn get_fees_collected(env: Env, token: Address) -> i128;
     fn sweep_fees(env: Env, token: Address, destination: Address) -> Result<(), StreamError>;
 
+    /// Returns the reward points accumulated by an address (issue #516).
+    fn get_reward_points(env: Env, address: Address) -> i128;
+
+    /// Returns the pending stream-creation fee discount (bps) for an address.
+    fn get_fee_discount(env: Env, address: Address) -> u32;
+
+    /// Redeems reward points for a discount on the caller's next stream creation.
+    fn redeem_points(env: Env, caller: Address, points: i128) -> Result<u32, StreamError>;
+
     fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError>;
     fn get_guardian(env: Env) -> Option<Address>;
     fn set_governance(env: Env, governance: Address) -> Result<(), StreamError>;
