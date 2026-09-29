@@ -169,6 +169,22 @@ pub trait SoroStreamInterface {
     fn approve_release(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
 
     fn withdraw(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+
+    /// Clones an existing active stream into a new stream.
+    ///
+    /// For a pure clone (no overrides) the new stream continues the source at
+    /// the same flow rate for the source's remaining duration and is funded
+    /// with the source's remaining unstreamed balance rather than its original
+    /// deposit, so a clone created mid-stream cannot over-pay.
+    fn clone_stream(
+        env: Env,
+        source_stream_id: u64,
+        caller: Address,
+        recipient_override: Option<Address>,
+        token_override: Option<Address>,
+        rate_override: Option<i128>,
+        duration_override: Option<u64>,
+    ) -> Result<u64, StreamError>;
     fn cancel_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
     fn stop_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
     fn transfer_sender(env: Env, stream_id: u64, current_sender: Address, new_sender: Address) -> Result<(), StreamError>;
@@ -521,4 +537,14 @@ pub trait SoroStreamInterface {
 
     /// Returns an admin override request by ID.
     fn get_override_request(env: Env, request_id: u64) -> Result<AdminOverrideRequest, StreamError>;
+
+    /// Prunes expired/completed streams from storage to reclaim space (Admin only - Issue #401).
+    fn prune_expired_streams(env: Env, admin: Address, stream_ids: Vec<u64>) -> Result<u32, StreamError>;
+
+    /// Reads stream details with rate-limiting per caller (Issue #615).
+    fn get_stream_with_rate_limit(env: Env, caller: Address, stream_id: u64) -> Result<Stream, StreamError>;
+
+    /// Claims accrued yield from a collateral vault (Issue #472).
+    fn claim_collateral_yield(env: Env, stream_id: u64, caller: Address) -> Result<(i128, i128), StreamError>;
 }
+

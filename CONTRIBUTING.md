@@ -375,3 +375,53 @@ When you add a new contract instruction, consider writing property tests for the
 | **Status transitions** | Cancelled / completed streams cannot be re-cancelled or withdrawn from |
 
 > Closes [#318](https://github.com/SoroStream/sorostream-contracts/issues/318).
+
+---
+
+## Storage Layout Snapshots
+
+Soroban contract storage is binary-encoded XDR. A schema change — added field, renamed variant, type change — can silently break deployed state reads without any compile-time error. Committed storage snapshots make this visible at review time.
+
+### How it works
+
+The soroban-sdk `testutils` infrastructure automatically writes a JSON file at the end of every `#[test]` that uses `Env::default()`. The file captures the full ledger state (all storage entries + events) in the same binary-equivalent JSON representation that the Soroban host uses on-chain. Files are placed at:
+
+```
+contracts/stream/test_snapshots/test/<test_name>.1.json
+```
+
+The four lifecycle scenario snapshots (`storage_snapshot_create`, `storage_snapshot_withdraw`, `storage_snapshot_cancel`, `storage_snapshot_top_up`) are committed to the repository. CI runs them as part of the `integration` job and then checks `git diff --exit-code contracts/stream/test_snapshots/` to ensure no JSON was generated but not staged.
+
+If the binary encoding of any `#[contracttype]` changes, the test will regenerate a different JSON file, the `git diff` check will fail, and the PR will be blocked until the author explicitly regenerates and commits the updated snapshots.
+
+### Normal development — no schema change
+
+Nothing special required. Run `cargo test` as usual. If the snapshot tests pass and produce no diff, you are done.
+
+### Updating snapshots after an intentional schema change
+
+When you intentionally change a `#[contracttype]` (add a field, rename a variant, change a type), you must regenerate the committed snapshots:
+
+```bash
+# 1. Run the snapshot tests with the update flag set.
+#    The SDK overwrites test_snapshots/test/storage_snapshot_*.1.json in place.
+UPDATE_EXPECT=true cargo test --package sorostream-stream \
+    -- storage_layout_snapshot_tests --nocapture
+
+# 2. Review the diff carefully — every changed field should be expected.
+git diff contracts/stream/test_snapshots/
+
+# 3. Stage and commit the updated snapshots as part of the same PR.
+git add contracts/stream/test_snapshots/test/storage_snapshot_*.1.json
+git commit -m "chore: regenerate storage layout snapshots after schema change"
+```
+
+> **Rule:** A PR that changes a `#[contracttype]` or adds a new storage key **must** include the regenerated snapshots in the same commit. Reviewers use the snapshot diff to verify the on-chain format change is intentional.
+
+### Adding new snapshot scenarios
+
+If you add a new entry point that writes a new storage key, add a corresponding `#[test]` to `contracts/stream/src/storage_layout_snapshot_tests.rs` that exercises the entry point. Run with `UPDATE_EXPECT=true` once to generate the baseline, then commit both the test and the snapshot file.
+
+### Storage durability guidelines (recap)
+
+Before adding or changing any storage key, re-read the durability rules in [docs/STORAGE.md](./docs/STORAGE.md) and the key-layout table in [ARCHITECTURE.md](./ARCHITECTURE.md). Wrong durability (e.g. putting a long-lived index in `temporary`) causes silent data loss. Add every new key to both documents.

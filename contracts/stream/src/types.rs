@@ -255,6 +255,23 @@ pub struct StreamOptions {
 
     /// Whether this stream is a dual-token stream (two token contract addresses).
     pub is_dual_stream: bool,
+
+    // ── Collateral vault mode (issue #472) ───────────────────────────────────
+
+    /// Optional collateral vault routing configuration.
+    pub collateral_vault: Option<CollateralVaultConfig>,
+}
+
+/// Configuration for yield-bearing collateral vault routing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CollateralVaultConfig {
+    /// On-chain yield vault contract address.
+    pub vault_address: Address,
+    /// Basis points of accrued yield assigned to sender (e.g. 5000 = 50%).
+    pub yield_split_sender_bps: u32,
+    /// Basis points of accrued yield assigned to recipient (e.g. 5000 = 50%).
+    pub yield_split_recipient_bps: u32,
 }
 
 /// Represents a single payment stream.
@@ -344,6 +361,8 @@ pub struct CreateStreamOptions {
     pub requires_recipient_approval: bool,
     /// Optional human-readable payment reference (UTF-8, at most 256 bytes).
     pub comment: Option<String>,
+    /// Optional collateral vault routing configuration for yield mode (issue #472).
+    pub collateral_vault: Option<CollateralVaultConfig>,
 }
 
 impl CreateStreamOptions {

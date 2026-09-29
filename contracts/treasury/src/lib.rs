@@ -47,6 +47,7 @@ pub struct TreasuryContract;
 
 #[contractimpl]
 impl TreasuryContract {
+    /// Initialises the treasury with its admin. May only be called once.
     pub fn initialize(env: Env, admin: Address) {
         if read_admin(&env).is_some() {
             panic!("treasury already initialized");
@@ -56,10 +57,14 @@ impl TreasuryContract {
             .set(&Symbol::new(&env, ADMIN_KEY), &admin);
     }
 
+    /// Returns the current admin address, or `None` before initialisation.
     pub fn get_admin(env: Env) -> Option<Address> {
         read_admin(&env)
     }
 
+    /// Records `new_admin` as the pending admin. Only the current admin may call this.
+    ///
+    /// The transfer only takes effect once `new_admin` calls `accept_admin`.
     pub fn propose_admin(env: Env, new_admin: Address) {
         check_admin(&env);
         env.storage()
@@ -71,6 +76,7 @@ impl TreasuryContract {
         );
     }
 
+    /// Accepts the pending admin role. Must be called by the pending admin itself.
     pub fn accept_admin(env: Env, accepted_by: Address) {
         accepted_by.require_auth();
         let pending = read_pending_admin(&env)
@@ -90,6 +96,7 @@ impl TreasuryContract {
         );
     }
 
+    /// Immediately transfers the admin role. Only the current admin may call this.
     pub fn set_admin(env: Env, new_admin: Address) {
         check_admin(&env);
         env.storage()
@@ -97,6 +104,10 @@ impl TreasuryContract {
             .set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
     }
 
+    /// Credits `amount` of `token` to the treasury's internal accounting balance.
+    ///
+    /// This only updates the recorded balance; the tokens must already be held by the
+    /// contract for [`Self::withdraw_treasury`] to move them out.
     pub fn deposit(env: Env, token: Address, amount: i128) {
         let key = balance_key(&env, &token);
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -105,11 +116,15 @@ impl TreasuryContract {
             .set(&key, &(current + amount));
     }
 
+    /// Returns the recorded balance of `token` held by the treasury.
     pub fn get_balance(env: Env, token: Address) -> i128 {
         let key = balance_key(&env, &token);
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
+    /// Transfers `amount` of `token` from the treasury to `destination`.
+    ///
+    /// Only the admin may call this. Panics when `amount` exceeds the recorded balance.
     pub fn withdraw_treasury(env: Env, token: Address, amount: i128, destination: Address) {
         check_admin(&env);
         let key = balance_key(&env, &token);
@@ -127,6 +142,10 @@ impl TreasuryContract {
         );
     }
 
+    /// Withdraws the entire recorded balance of `token` to `destination`.
+    ///
+    /// Only the admin may call this. Returns the amount withdrawn (`0` if the treasury
+    /// held nothing), in which case no transfer is performed.
     pub fn withdraw_all(env: Env, token: Address, destination: Address) -> i128 {
         check_admin(&env);
         let key = balance_key(&env, &token);
