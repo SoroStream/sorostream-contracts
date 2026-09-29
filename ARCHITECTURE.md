@@ -1,66 +1,88 @@
 # SoroStream Architecture
 
+> **Maintenance rule:** This document must be updated in every PR that changes
+> the storage layout (new key, type change, durability change) or adds / removes
+> an entry point. CI does not enforce this automatically — it is a reviewer
+> responsibility enforced through the PR checklist.
+
+---
+
 ## Stream Lifecycle State Machine
 
-Every stream begins in the `Active` state immediately after `create_stream` succeeds. The diagram below shows all valid states and the instructions that trigger each transition.
+Every stream starts in either `Active` or `PendingApproval` immediately after
+`create_stream` returns. The diagram below shows every valid status and the
+entry points that drive each transition.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Active : create_stream\n(sender locks deposit)
+    [*] --> Active         : create_stream\n[requires_recipient_approval = false]
+    [*] --> PendingApproval: create_stream\n[requires_recipient_approval = true]
+    [*] --> EscrowHold     : create_stream_with_curve\n[escrow_hold = true]
 
-    Active --> Paused : pause_stream\n[caller = sender]
-    Paused --> Active : resume_stream\n[caller = sender]\nend_time extended by paused duration
+    PendingApproval --> Active    : approve_stream\n[caller = recipient]
+    PendingApproval --> Cancelled : cancel_stream / stop_stream\n[caller = sender]\nfull refund to sender
 
-    Active --> Cancelled : cancel_stream\n[caller = sender or delegate]\nearned tokens → recipient\nremainder → sender
+    EscrowHold --> Active    : activate_stream / approve_release\n[both parties approve]
+    EscrowHold --> Cancelled : cancel_stream\n[caller = sender]\nfull refund to sender
 
-    Paused --> Cancelled : cancel_stream\n[caller = sender or delegate]\nearned tokens frozen at last_pause_time
+    Active --> Paused    : pause_stream\n[caller = sender]
+    Paused --> Active    : resume_stream\n[caller = sender]\nend_time += paused_duration
+
+    Active --> Cancelled : cancel_stream\n[caller = sender or delegate]\nearned → recipient, remainder → sender
+    Paused --> Cancelled : cancel_stream\n[caller = sender or delegate]\nearned frozen at last_pause_time
 
     Active --> Cancelled : partial_cancel_stream\n[caller = sender or delegate]\ncreates a new smaller Active stream
 
     Active --> Cancelled : recipient_terminate\n[allow_recipient_termination = true]
-
     Paused --> Cancelled : recipient_terminate\n[allow_recipient_termination = true]
 
-    Active --> Completed : withdraw\n[now ≥ end_time, auto_renew = false]\nall tokens distributed and stream removed
+    Active --> Cancelled : stop_stream\n[caller = sender, recipient, or delegate]
+    Paused --> Cancelled : stop_stream
 
-    Active --> Active : withdraw\n[auto_renew = true, sender has balance]\nnew epoch starts; end_time += duration
+    Active --> Completed : withdraw\n[now ≥ end_time, auto_renew = false]
+    Active --> Active    : withdraw\n[auto_renew = true, sender has balance]\nnew epoch starts
 
-    Active --> Completed : withdraw\n[auto_renew = true, sender balance insufficient]\nAutoRenewFailed emitted
+    Active --> Expired   : mark_expired\n[now ≥ end_time]
 
-    Cancelled --> [*] : stream removed from storage
-    Completed --> [*] : stream removed from storage
-
-    Active --> [*] : archive_stream\n[fully settled: total_withdrawn + dust = deposit]
-    Completed --> [*] : archive_stream
+    Cancelled --> [*] : stream removed from Persistent storage
+    Completed --> [*] : stream removed from Persistent storage
+    Expired   --> [*] : cleanup_expired_stream\n[balance = 0]\ntombstone written to Temporary storage (7d TTL)
 ```
 
-### State Descriptions
+### State descriptions
 
 | State | Meaning |
 |-------|---------|
-| `Active` | Tokens are flowing; the recipient accrues `flow_rate` stroops per second. |
-| `Paused` | Flow is frozen at `last_pause_time`; no new tokens accrue. `end_time` will be extended by the paused duration on resume. |
-| `Cancelled` | The stream was ended early. Earned tokens went to the recipient; the unstreamed remainder returned to the sender. The storage entry is deleted. |
-| `Completed` | The stream reached its natural `end_time`. All tokens have been distributed. The storage entry is deleted. |
+| `Active` | Tokens accrue at `flow_rate` stroops/second. Recipients may `withdraw`. |
+| `Paused` | Flow is frozen at `last_pause_time`. No tokens accrue until `resume_stream`. `end_time` is extended by the paused duration on resume. |
+| `PendingApproval` | Stream created with `requires_recipient_approval = true`. No tokens accrue. Sender may cancel at zero cost. |
+| `EscrowHold` | Stream created with `escrow_hold = true`. Both parties must approve via `approve_release` before vesting begins. |
+| `Cancelled` | Ended early. Earned tokens went to recipient; unstreamed remainder returned to sender. Record deleted. |
+| `Completed` | Reached natural `end_time`. All tokens distributed. Record deleted. |
+| `Expired` | Past `end_time` and explicitly marked via `mark_expired`. Awaiting `cleanup_expired_stream` or `recover_expired`. |
 
-### Guard Conditions
+### Transition guard conditions
 
 | Transition | Guard |
 |-----------|-------|
-| `pause_stream` | Caller must be the stream's `sender`. Stream must be `Active`. Contract must not be globally paused. |
-| `resume_stream` | Caller must be the stream's `sender`. Stream must be `Paused`. Contract must not be globally paused. |
-| `cancel_stream` | Caller must be `sender` or the appointed `delegate`. Stream must be `Active` or `Paused`. |
-| `partial_cancel_stream` | Same as `cancel_stream`. `cancel_amount < remaining` and `remaining - cancel_amount ≥ flow_rate`. |
-| `recipient_terminate` | `allow_recipient_termination` flag must be `true` on the stream. Caller must be the stream's `recipient`. |
-| `withdraw` (mid-stream) | Caller must be `recipient`. Stream must be `Active`. `now ≥ cliff_time`. `now ≥ lock_until`. Withdrawal cooldown (if set) must have elapsed. |
-| `withdraw` (auto-renew success) | Above, plus `now ≥ end_time`, `auto_renew = true`, sender balance ≥ deposit. Requires sender auth. |
-| `archive_stream` | Caller must be `sender` or `recipient`. `total_withdrawn + dust = deposit` (stream fully settled). |
+| `pause_stream` | Caller = sender. Stream = Active. Contract not globally paused. |
+| `resume_stream` | Caller = sender. Stream = Paused. Contract not globally paused. |
+| `cancel_stream` | Caller = sender or delegate. Stream = Active, Paused, PendingApproval, or EscrowHold. Sender-locked streams (`sender_locked = true`) may not be cancelled by sender/delegate (EscrowHold/PendingApproval excepted). |
+| `partial_cancel_stream` | Same as `cancel_stream`. `cancel_amount < remaining` and `remaining − cancel_amount ≥ flow_rate`. |
+| `recipient_terminate` | `allow_recipient_termination = true`. Caller = recipient. Stream = Active or Paused. |
+| `stop_stream` | Caller = sender, recipient, or delegate. If `sender_locked`, only recipient may call. Stream = Active, Paused, or PendingApproval. |
+| `withdraw` (mid-stream) | Caller = recipient. Stream = Active. `now ≥ cliff_time`. `now ≥ lock_until`. Withdrawal cooldown elapsed. Storage version = current. |
+| `withdraw` (completes) | Above, plus `now ≥ end_time`, `auto_renew = false`. |
+| `withdraw` (auto-renew) | Above, plus `auto_renew = true`, sender balance ≥ deposit. Requires sender auth. |
+| `approve_stream` | Caller = recipient. Stream = PendingApproval. |
+| `mark_expired` | Anyone. Stream = Active or Completed. `now ≥ end_time`. |
+| `cleanup_expired_stream` | Anyone. Stream = Cancelled, Completed, or Expired with `balance = 0`. |
+| `recover_expired` | Caller = sender. `now ≥ end_time`. Grace period (if set) elapsed. |
+| `archive_stream` | Caller = sender or recipient. `total_withdrawn + dust = deposit`. |
 
 ---
 
 ## Contract System Overview
-
-The protocol is split across five contracts. The arrows show call relationships.
 
 ```mermaid
 graph TD
@@ -72,9 +94,9 @@ graph TD
         PC[Proxy Contract\nsorostream-proxy]
     end
 
-    SC -- "fee transfer on withdrawal" --> TC
+    SC -- "fee transfer on withdrawal / cancellation" --> TC
     SC -- "creation fee transfer" --> TC
-    GC -- "unpause\n(governance-gated)" --> SC
+    GC -- "unpause (governance-gated)" --> SC
     MC -- "proposal execution" --> GC
     PC -- "forward calls" --> SC
     TC -- "distribute(token, dest)" --> TC
@@ -88,261 +110,349 @@ graph TD
     IDX -- "invoke" --> PC
 ```
 
-### Contract Roles
+### Contract roles
 
 | Contract | Role |
 |----------|------|
-| `stream` | Core payment streaming logic: create, withdraw, cancel, top-up, pause, fee collection. |
-| `treasury` | Holds accumulated protocol fees. Supports `deposit`, `withdraw_treasury`, `withdraw_all`, and `distribute` (treasury/LP split). |
+| `stream` | Core payment streaming: create, withdraw, cancel, top-up, pause, fee collection, storage versioning, cleanup. |
+| `treasury` | Holds accumulated protocol fees. Supports `deposit`, `withdraw_treasury`, `withdraw_all`, `distribute`. |
 | `governance` | Time-locked admin actions; can call `unpause` on the stream contract. |
 | `multisig` | Multi-signature threshold for executing governance proposals. |
-| `proxy` | Transparent upgrade proxy; forwards calls to the current stream contract implementation. |
+| `proxy` | Transparent upgrade proxy; forwards calls to the current stream implementation. |
+
+---
+
+## Storage Layout — Complete Key Reference
+
+### Notation
+
+- **Instance** — shared across the entire contract instance; cheapest; evicted only when the instance TTL expires.
+- **Persistent** — per-entry TTL, never auto-evicted while TTL > 0; the default for user data.
+- **Temporary** — auto-evicted when TTL expires; suitable for rate-limit windows, reentrancy locks, and cleanup tombstones.
+
+TTL values are in **ledgers** (1 ledger ≈ 5 seconds on Mainnet).
+
+---
+
+### Instance storage keys
+
+All instance keys are `Symbol`-keyed via `env.storage().instance()`.
+
+| Symbol key | Rust constant | Type | Description |
+|------------|--------------|------|-------------|
+| `"admin"` | `ADMIN_KEY` | `Address` | Super-admin address set at initialisation. |
+| `"paused"` | `PAUSED_KEY` | `bool` | Global emergency-pause flag. |
+| `"p_exp"` | `PAUSE_EXPIRES_KEY` | `u64` | Unix timestamp after which auto-unpause fires (0 = no expiry). |
+| `"fee_bps"` | `PROTOCOL_FEE_KEY` | `u32` | Protocol withdrawal fee in basis points (100 bps = 1 %). |
+| `"treasury"` | `TREASURY_KEY` | `Address` | Treasury contract address for fee accumulation. |
+| `"min_dur"` | `MIN_DURATION_KEY` | `u64` | Minimum stream duration in seconds (default 3 600). |
+| `"max_dur"` | `MAX_DURATION_KEY` | `u64` | Maximum stream duration in seconds (clamped to protocol hard cap). |
+| `"mf_start"` | `MAX_FUTURE_OFFSET_KEY` | `u64` | Maximum future `start_time` offset in seconds (default 365 days). |
+| `"version"` | `VERSION_KEY` | `String` | Human-readable contract version string (e.g. `"1.0.0"`). |
+| `"stor_ver"` | `STORAGE_VERSION_KEY` | `u32` | **Schema version** written at `initialize` (value: 1). Checked by `create_stream`, `withdraw`, `cancel_stream`, `top_up`. Bumped by `upgrade_storage`. |
+| `"max_str"` | `MAX_STREAMS_KEY` | `u32` | Global per-sender stream cap (default 1 000). |
+| `"act_cnt"` | `ACTIVE_STREAM_COUNT_KEY` | `u32` | Monotonically-maintained count of currently Active streams. |
+| `"str_cnt"` | `STREAM_COUNT_KEY` | `u32` | Monotonically-maintained count of all streams ever created (global index size). |
+| `"wl_en"` | `WHITELIST_ENABLED_KEY` | `bool` | Whether recipient whitelisting is enabled. |
+| `"ral_en"` | `RECIPIENT_ALLOWLIST_ENABLED_KEY` | `bool` | Whether recipient allowlisting (for regulated payments) is enabled. |
+| `"twl_en"` | `TOKEN_WHITELIST_ENABLED_KEY` | `bool` | Whether token whitelisting is enforced. |
+| `"wd_cd"` | `WITHDRAWAL_COOLDOWN_KEY` | `u64` | Global withdrawal cooldown in seconds (0 = disabled). |
+| `"sc_cd"` | `STREAM_CREATION_COOLDOWN_KEY` | `u64` | Global stream-creation cooldown in seconds (0 = disabled). |
+| `"pnd_fee"` | `PENDING_FEE_KEY` | `(u32, u64)` | Pending fee proposal `(new_fee_bps, unlock_timestamp)`. |
+| `"cf_xlm"` | `CREATION_FEE_XLM_KEY` | `i128` | Flat XLM creation fee in stroops (0 = disabled). |
+| `"xlm_tok"` | `XLM_TOKEN_KEY` | `Address` | XLM SAC token address used to collect creation fees. |
+| `"guardian"` | `GUARDIAN_KEY` | `Address` | Guardian address that may call `pause`. |
+| `"governance"` | `GOVERNANCE_KEY` | `Address` | Governance address that may call `unpause`. |
+| `"grace"` | `GRACE_PERIOD_LEDGERS_KEY` | `u32` | Post-expiry grace period before `recover_expired` is allowed (0 = none). |
+| `"exp_win"` | `EXPIRY_WARNING_WINDOW_KEY` | `u32` | Ledgers before `end_time` at which a `StreamExpiryWarning` is emitted (default 17 280 ≈ 24 h). |
+| `"ns_cap"` | `NEW_SENDER_STREAM_CAP_KEY` | `u32` | Max concurrent streams for new (non-promoted) senders (default 10). |
+| `"sp_thr"` | `SENDER_PROMOTION_THRESHOLD_KEY` | `u32` | Lifetime stream count after which the new-sender cap no longer applies (default 50). |
+| `"rl_wl"` | `RATE_LIMIT_WINDOW_LEDGERS_KEY` | `u32` | Sliding-window size for per-sender rate limiting in ledgers (default 720 ≈ 1 h). |
+| `"rl_max"` | `RATE_LIMIT_MAX_KEY` | `u32` | Max stream creations per sender per window (default 20). |
+| `"max_tok"` | `MAX_STREAMS_PER_TOKEN_KEY` | `u32` | Per-token active stream cap (0 = unlimited). |
+| `"cancel_fee"` | `CANCELLATION_FEE_KEY` | `i128` | Early-cancellation fee in basis points applied to the sender refund. |
+| `"migrations"` | `APPLIED_MIGRATIONS_KEY` | `Vec<String>` | Ordered list of applied migration version strings. |
+| `("min_stake", token)` | — | `i128` | Minimum stake required to create streams for `token` (0 = disabled). |
+| `"al_head"` | `AUDIT_HEAD_KEY` | `u32` | Circular audit-log write pointer (head index, mod 20). |
+| `"al_len"` | `AUDIT_LEN_KEY` | `u32` | Number of entries currently in the circular audit log (max 20). |
+| `("al", idx)` | — | `AuditEntry` | Individual audit log entry slot (20 slots, indices 0–19). |
+| `"upg_prop"` | — | `(BytesN<32>, Address, u64)` | Pending WASM upgrade proposal `(wasm_hash, proposer, created_at)`. |
+| `"upg_exp"` | — | `u64` | Expiry ledger for the pending upgrade proposal. |
+
+---
+
+### Persistent storage keys
+
+All persistent keys are stored via `env.storage().persistent()` with per-entry TTLs.
+
+#### Stream records and global index
+
+| Key pattern | Type | TTL (ledgers) | Description |
+|-------------|------|--------------|-------------|
+| `stream_id: u64` | `Stream` | Varies (bumped by `bump_stream_ttl`) | Full stream struct for each live stream. |
+| `("gi", idx: u32)` | `u64` | Inherited | Global stream enumeration; slot `idx` holds a `stream_id`. |
+
+#### Sender / recipient / tag indexes (counter + slot pattern)
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("sc", sender: Address)` | `u32` | Count of all slots ever written for `sender` (never decrements). |
+| `("s", sender, idx: u32)` | `u64` | Slot `idx` in sender's stream-ID list (swap-and-pop on removal). |
+| `("rc", recipient: Address)` | `u32` | Count of all slots for `recipient`. |
+| `("r", recipient, idx: u32)` | `u64` | Slot `idx` in recipient's stream-ID list. |
+| `("asc", sender)` | `u32` | Active-only sender index slot count. |
+| `("as", sender, idx: u32)` | `u64` | Active-only sender index slot. |
+| `("tc", tag: String)` | `u32` | Count of slots for `tag`. |
+| `("t", tag, idx: u32)` | `u64` | Slot `idx` in tag's stream-ID list. |
+
+#### Per-stream auxiliary data
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("vt", stream_id)` | `Vec<VestingTranche>` | Step-vesting tranche list (only present for `is_step_vesting = true` streams). |
+| `("hb", stream_id)` | `i128` | Holdback escrow amount in stroops. |
+| `("del", stream_id)` | `Address` | Authorised delegate address for the stream. |
+| `("evn", stream_id)` | `u64` | Monotonic per-stream event nonce (prevents event replay). |
+| `("exp_em", stream_id)` | `bool` | Whether the expiry warning event has already been emitted. |
+| `("stag", stream_id)` | `String` | Human-readable tag attached to the stream. |
+| `("slip", stream_id)` | `(i128, u32)` | Slippage params `(reference_price, max_slippage_bps)`. |
+
+#### Dual-stream auxiliary data
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("ds", stream_id, "tok2")` | `Address` | Second token address for dual-token streams. |
+| `("ds", stream_id, "dep2")` | `i128` | Second token deposit amount. |
+| `("ds", stream_id, "wd2")` | `i128` | Total withdrawn from second token. |
+
+#### Global per-sender accounting
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("sl_cnt", sender)` | `u32` | Lifetime stream count for sender (used for promotion check). |
+| `("lc", sender)` | `u64` | Timestamp of sender's last stream creation (creation-cooldown guard). |
+| `("bn", sender)` | `u64` | Batch nonce counter for `batch_create_stream`. |
+| `("n", sender, nonce: u64)` | `bool` | Nonce-used marker for `create_stream` deduplication. |
+| `("sl", sender)` | `u32` | Per-sender stream-limit override (overrides global `MAX_STREAMS_KEY`). |
+
+#### Token-scoped data
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("tsc", token)` | `u32` | Current active stream count for `token`. |
+| `("tft", token)` | `u32` | Per-token fee tier override in basis points. |
+| `("max_dep", token)` | `i128` | Maximum single-stream deposit for `token` (0 = unlimited). |
+| `(FEES_COLLECTED_KEY, token)` | `i128` | Accumulated protocol fees for `token` (drained by `sweep_fees`). |
+
+#### Access control lists
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("wl", recipient)` | `bool` | Recipient whitelist entry. |
+| `("ral", recipient)` | `bool` | Recipient allowlist entry (regulated payments). |
+| `("fe", addr)` | `bool` | Fee-exemption list entry. |
+| `("bl", addr)` | `bool` | Blocklist entry. |
+| `("twl", token)` | `bool` | Token whitelist entry. |
+| `("rle", addr)` | `bool` | Rate-limit exemption list entry. |
+| `("stk", sender, token)` | `i128` | Staked collateral balance for `sender` / `token` pair. |
+| `("stk_p", sender, token)` | `(i128, u64)` | Pending unstake `(amount, unlock_timestamp)`. |
+
+#### Federation registry
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("fed", federation_name: String)` | `Address` | Stellar address registered for a federation name. |
+
+#### Stream transition history
+
+| Key pattern | Type | Description |
+|-------------|------|-------------|
+| `("str_tr", stream_id, idx: u32)` | `StreamTransition` | Circular buffer of last 10 lifecycle transitions per stream. |
+| `("str_tr_h", stream_id)` | `u32` | Head pointer for the transition buffer. |
+| `("str_tr_l", stream_id)` | `u32` | Current length of the transition buffer (max 10). |
+
+---
+
+### Temporary storage keys
+
+| Key pattern | Type | TTL | Description |
+|-------------|------|-----|-------------|
+| `"re_lk"` | `bool` | Auto-cleared | Global reentrancy lock. Set at the start of mutating entry points; cleared before return. |
+| `("rl", addr)` | `(u32, u32)` | `window_ledgers` | Per-sender rate-limit state `(window_start_ledger, count_in_window)`. TTL = one full window. |
+| `("cln_ts", stream_id)` | `(u32, u64)` | `CLEANUP_TTL_LEDGERS` (120 960 ≈ 7 days) | **Cleanup tombstone** written by `cleanup_expired_stream`. Stores `(status_discriminant, end_time)` so lightweight proof-of-past-existence is available for ~7 days after cleanup. |
+
+---
+
+## Storage Schema Version
+
+The key `"stor_ver"` (Instance storage, type `u32`) was introduced in **feat/50**.
+
+| Version | Written by | Migration logic |
+|---------|-----------|----------------|
+| 1 | `initialize` (all new deployments) | Initial version — no data transformation. |
+| 1 | `upgrade_storage` (legacy deployments) | Stamps the key on contracts initialised before feat/50. No data transformation. |
+
+**Guard:** `create_stream`, `withdraw`, `cancel_stream`, and `top_up` all call
+`assert_storage_version` as their first action after the reentrancy lock is set.
+A missing or outdated version key causes `Error::StorageVersionMismatch` — the
+call is rejected and the admin must run `upgrade_storage` first.
+
+---
+
+## Access Control Matrix
+
+The table below maps every public entry point to the identity that is authorised to call it. "Admin" means the super-admin stored under `"admin"` in Instance storage. Role-based variants are noted where applicable.
+
+### Lifecycle entry points
+
+| Entry point | Authorised caller | Notes |
+|-------------|------------------|-------|
+| `initialize` | Anyone (once only) | Reverts `AlreadyInitialized` on second call. |
+| `upgrade` | Admin | Requires `require_auth()` on the stored admin address. |
+| `migrate` | Admin | Records version string in `applied_migrations`. |
+| `upgrade_storage` | Admin | Bumps `stor_ver`; fails if already current. |
+| `set_admin` | Admin | Replaces stored admin address. |
+| `emergency_pause` | Admin | Sets `paused = true`, stamps `pause_expiry`. |
+| `emergency_resume` | Admin | Clears `paused`. |
+| `role_emergency_pause` | Admin **or** EmergencyPause role | Role-aware variant. |
+| `role_emergency_resume` | Admin **or** EmergencyPause role | Role-aware variant. |
+| `pause` | Guardian | Guardian is a separately stored address. |
+| `unpause` | Governance | Governance is a separately stored address. |
+
+### Stream creation
+
+| Entry point | Authorised caller | Notes |
+|-------------|------------------|-------|
+| `create_stream` | Sender (`require_auth`) | Checks token whitelist, rate limit, sender cap, blocklist. |
+| `create_stream_with_sponsor` | Sender | Sponsor funds the deposit; sender controls lifecycle. |
+| `create_stream_scheduled` | Sender | Accepts a future `start_time` within `max_future_start_offset`. |
+| `create_stream_with_milestones` | Sender | Timestamp-gated milestone stream. |
+| `create_stream_with_approval_milestones` | Sender | Oracle/multisig-gated milestone stream. |
+| `batch_create_stream` | Sender | All-or-nothing batch; checks per-sender batch nonce. |
+
+### Stream mutation
+
+| Entry point | Authorised caller | Notes |
+|-------------|------------------|-------|
+| `withdraw` | Recipient | Checks cliff, lock, cooldown, storage version. |
+| `batch_withdraw` | Recipient | Recipient must be the invoker. |
+| `cancel_stream` | Sender **or** Delegate | `sender_locked = true` blocks sender/delegate (not EscrowHold/PendingApproval). |
+| `batch_cancel_stream` | Sender | All streams in batch must belong to caller. |
+| `stop_stream` | Sender, Recipient, **or** Delegate | `sender_locked` blocks sender only. |
+| `partial_cancel_stream` | Sender **or** Delegate | Creates a smaller replacement stream. |
+| `recipient_terminate` | Recipient | Only when `allow_recipient_termination = true`. |
+| `top_up` | Sender **or** Delegate | Token must match stream token. Checks storage version. |
+| `pause_stream` | Sender | Stream must be Active. |
+| `resume_stream` | Sender | Stream must be Paused. |
+| `approve_stream` | Recipient | Transitions PendingApproval → Active. |
+| `lock_stream` | Sender | Irrevocable; sets `sender_locked = true`. |
+| `transfer_sender` | Current sender | Stream must be Active / Paused / PendingApproval / EscrowHold. |
+| `transfer_recipient` | Current recipient | Blocked if `non_transferable = true`. Settles accrued balance to old recipient first. |
+| `activate_stream` | Sender | EscrowHold → Active (if recipient also approved). |
+| `approve_release` | Sender **or** Recipient | EscrowHold dual-approval path. |
+| `update_stream_rate` | Sender | Settles accrued balance before applying new rate. |
+| `set_delegate` | Sender | Delegate may cancel/top-up/bump-ttl on behalf of sender. |
+| `revoke_delegate` | Sender | Removes delegate. |
+
+### Milestone & holdback
+
+| Entry point | Authorised caller | Notes |
+|-------------|------------------|-------|
+| `release_milestone` | Sender | Not allowed when `milestone_approver` is set. |
+| `approve_milestone` | `milestone_approver` address | One approval per pending milestone. |
+| `release_holdback` | Sender **or** Delegate | Transfers holdback to recipient. |
+| `claw_back_holdback` | Sender **or** Delegate | Returns holdback to sender. |
+| `clawback_stream` | Token issuer (`StellarAssetClient.admin()`) | Reclaims contract escrow via SAC clawback. |
+
+### Expiry, cleanup, and archival
+
+| Entry point | Authorised caller | Notes |
+|-------------|------------------|-------|
+| `mark_expired` | Anyone | Stream must be Active/Completed with `now ≥ end_time`. |
+| `cleanup_expired_stream` | Anyone (incentivised) | Stream must be zero-balance Cancelled/Expired/Completed. Pays optional XLM reward from treasury. Writes Temporary tombstone (7-day TTL). |
+| `recover_expired` | Sender | Stream must be expired and grace period elapsed. |
+| `sweep_expired` | Anyone | Batch removal of expired fully-withdrawn streams. |
+| `archive_stream` | Sender **or** Recipient | Stream must be fully settled (`total_withdrawn + dust = deposit`). |
+| `bump_stream_ttl` | Anyone | Extends Persistent TTL; no auth required. |
+
+### Admin / protocol configuration
+
+| Entry point | Authorised caller | Notes |
+|-------------|------------------|-------|
+| `set_protocol_fee` | Admin | Initiates 7-day timelock via `write_pending_fee_proposal`. |
+| `execute_fee_change` | Anyone | Applies pending fee after timelock expires. |
+| `set_cancellation_fee` | Admin **or** FeeManager role | Max 10 000 bps. |
+| `set_token_fee_tier` | Admin | Per-token fee override. |
+| `remove_token_fee_tier` | Admin | Reverts to global default. |
+| `sweep_fees` | Admin | Transfers accumulated fees to destination. |
+| `add_fee_exempt` / `remove_fee_exempt` | Admin | |
+| `set_whitelist_enabled` | Admin | |
+| `set_token_whitelist_enabled` | Admin | Disabling is rejected (`NotAuthorized`). |
+| `add_token_to_whitelist` / `remove_token_from_whitelist` | Admin | |
+| `add_to_blocklist` / `remove_from_blocklist` | Admin | |
+| `set_rate_limit_window` / `set_rate_limit_max` | Admin | |
+| `add_rate_limit_exempt` / `remove_rate_limit_exempt` | Admin | |
+| `set_max_streams` | Admin | Global per-sender cap. |
+| `set_sender_stream_limit` | Admin | Per-sender override. |
+| `set_max_streams_per_token` | Admin | |
+| `set_max_deposit_per_token` | Admin | |
+| `set_creation_fee` | Admin | Sets both fee amount and XLM SAC address. |
+| `set_treasury_address` | Anyone | **Note:** not auth-gated in current code; tighten if deploying to production. |
+| `set_min_duration` / `set_max_duration` | Admin | |
+| `set_max_future_start_offset` | Admin | |
+| `set_withdrawal_cooldown` | Admin | |
+| `set_stream_creation_cooldown` | Admin | |
+| `set_grace_period_ledgers` | Admin | |
+| `set_expiry_warning_window` | Admin | Must be > 0. |
+| `set_new_sender_stream_cap` | Admin | |
+| `set_sender_promotion_threshold` | Admin | |
+| `register_federation` / `unregister_federation` | Admin | |
+| `recalibrate_stats` | Admin | Rescans all streams to fix counter drift. |
+| `set_slippage_params` | Sender | |
+| `update_metadata_uri` | Sender | |
+| `update_metadata` | Sender | 256-byte cap; stored in Persistent with ~24 h TTL. |
+
+### Role assignment
+
+| Entry point | Authorised caller |
+|-------------|------------------|
+| `assign_fee_manager` / `revoke_fee_manager` | Admin only |
+| `assign_emergency_pause_role` / `revoke_emergency_pause_role` | Admin only |
+| `assign_analytics_role` / `revoke_analytics_role` | Admin only |
+
+### Staking
+
+| Entry point | Authorised caller |
+|-------------|------------------|
+| `stake` | Sender (staking caller) |
+| `initiate_unstake` | Sender |
+| `complete_unstake` | Sender (after `STAKE_UNLOCK_DELAY` = 7 days) |
+| `set_min_stake_amount` | Admin **or** FeeManager role |
+| `slash_stake` | Admin only |
+
+### Read-only entry points
+
+All `get_*`, `query_streams`, `is_*`, `simulate_claimable`, `remaining_quota`, `get_stream_health` — no auth required.
 
 ---
 
 ## Stream ID Generation
 
-### Algorithm
+Stream IDs are the first 8 bytes of `SHA-256(sender_xdr ‖ recipient_xdr ‖ start_time_be8 ‖ nonce_be8)`, interpreted as a big-endian `u64`. Full algorithm and collision analysis: see §"Stream ID Generation" in the previous version of this document (preserved in git history).
 
-Stream IDs are derived deterministically from the creation parameters using SHA-256.
-The full implementation lives in `contracts/stream/src/storage.rs` (`derive_stream_id`).
-
-#### Inputs
-
-| Field | Type | Encoding | Width |
-|-------|------|----------|-------|
-| `sender` | `Address` | Soroban XDR serialisation (`to_xdr`) | variable |
-| `recipient` | `Address` | Soroban XDR serialisation (`to_xdr`) | variable |
-| `start_time` | `u64` | 8-byte big-endian (`to_be_bytes`) | 8 bytes |
-| `nonce` | `u64` | 8-byte big-endian (`to_be_bytes`) | 8 bytes |
-
-#### Computation
-
-```
-preimage   = sender_xdr ‖ recipient_xdr ‖ start_time_be8 ‖ nonce_be8
-hash       = SHA-256(preimage)             // 32-byte digest
-stream_id  = u64::from_be_bytes(hash[0..8])
-```
-
-The first 8 bytes of the SHA-256 digest are interpreted as a big-endian unsigned 64-bit
-integer. This value is used as both the persistent storage key for the `Stream` struct
-and as the externally visible stream identifier returned to callers.
-
-#### Reference implementation
-
-```rust
-// contracts/stream/src/storage.rs
-pub fn derive_stream_id(
-    env: &Env,
-    sender: &Address,
-    recipient: &Address,
-    start_time: u64,
-    nonce: u64,
-) -> u64 {
-    let mut buf = Bytes::new(env);
-    buf.append(&sender.to_xdr(env));
-    buf.append(&recipient.to_xdr(env));
-    buf.append(&Bytes::from_array(env, &start_time.to_be_bytes()));
-    buf.append(&Bytes::from_array(env, &nonce.to_be_bytes()));
-    let hash       = env.crypto().sha256(&buf);
-    let hash_bytes = hash.to_array();
-    u64::from_be_bytes([
-        hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3],
-        hash_bytes[4], hash_bytes[5], hash_bytes[6], hash_bytes[7],
-    ])
-}
-```
-
-#### Uniqueness enforcement
-
-A raw hash-derived ID provides probabilistic uniqueness (see analysis below). To
-guarantee that the same `(sender, recipient, start_time, nonce)` tuple cannot be
-used twice — even if the hash happened to collide — the contract checks for an
-existing stream at the computed ID and reverts with `DuplicateStream` if one is
-found:
-
-```
-if stream_exists(env, stream_id) {
-    return Err(StreamError::DuplicateStream);
-}
-```
-
-Callers must therefore supply a distinct `nonce` for each new stream. The contract
-provides `get_nonce(sender)` which returns the next expected nonce for use with
-`batch_create_stream`. For single-stream creation, any `u64` that has not already
-been used with the same `(sender, recipient, start_time)` triple is acceptable.
+Key properties:
+- Deterministic and predictable by both parties before confirmation (by design).
+- Not a secret — all mutations require `require_auth()`.
+- `stream_exists` guard + up-to-3 nonce retries protect against the astronomically unlikely accidental collision.
 
 ---
 
-### Collision Probability Analysis
+## PR Review Checklist for Storage / Entry Point Changes
 
-#### Truncation to 64 bits
+Every PR that changes storage layout or adds an entry point must:
 
-SHA-256 produces 256 bits of output. Only the first 64 bits are used as the stream
-ID. The security of the scheme against *accidental* collisions is therefore bounded
-by the birthday paradox applied to a 64-bit space.
-
-#### Birthday-bound collision probability
-
-For `n` independently derived stream IDs drawn from a uniform 64-bit space:
-
-```
-P(collision | n streams) ≈ 1 − e^(−n²/(2 × 2^64))
-                         ≈ n² / (2 × 2^64)        (small n approximation)
-```
-
-Concrete figures:
-
-| Total streams created | Collision probability |
-|-----------------------|-----------------------|
-| 1,000 | ~2.7 × 10⁻¹¹ (negligible) |
-| 1,000,000 | ~2.7 × 10⁻⁵ (negligible) |
-| 1,000,000,000 | ~2.7 × 10¹ — ~1 expected collision |
-| 4,294,967,296 (2³²) | ~50 % chance of at least one collision |
-
-At realistic protocol usage (tens of thousands of streams per year), the accidental
-collision probability is astronomically small. The explicit `stream_exists` duplicate
-check additionally protects against the vanishingly rare event that an accidental
-collision does occur: the second creation call simply reverts, and the sender retries
-with a different nonce.
-
-#### Input entropy
-
-Even if the 64-bit output were smaller, an adversary cannot *control* the hash output
-without controlling the preimage. The preimage includes the XDR-serialised `Address`
-of both the sender and the recipient. Stellar addresses are 32-byte Ed25519 public
-keys; their XDR encoding adds type tags and length prefixes. The sender is always the
-transaction signer, so an adversary who is not the sender cannot predict the sender's
-address contribution to the preimage.
-
----
-
-### Adversarial Pre-Image Analysis
-
-#### Threat model
-
-An adversary wishes to cause one of:
-
-1. **Collision attack** — force two different legitimate creation calls to produce the
-   same stream ID, causing one to revert as `DuplicateStream` (denial-of-service).
-2. **Pre-image prediction** — predict the stream ID that will be assigned to a
-   future stream in order to pre-populate state or front-run state changes that key
-   off the stream ID.
-3. **Second pre-image attack** — given a known stream ID, find different inputs that
-   hash to the same 64-bit value in order to hijack an existing stream's storage slot.
-
-#### Attack 1: Forced collision (DoS via `DuplicateStream`)
-
-To force a `DuplicateStream` error for a victim's stream, the adversary must:
-
-1. Know the victim's `(sender, recipient, start_time, nonce)` tuple *before* the
-   victim's transaction is confirmed, **and**
-2. Submit a transaction with the same tuple that is confirmed first.
-
-**Requirement (1)** is non-trivial: the adversary must observe the pending transaction
-in the mempool and extract the four fields. On Stellar, transactions in the mempool
-are visible via Horizon, so this is theoretically possible for an observer with
-real-time access to the fee-bump queue.
-
-**Requirement (2)** requires the adversary to be the transaction signer, since
-`sender.require_auth()` is enforced. The adversary cannot replay the victim's
-transaction verbatim — they would need to craft their own transaction as a different
-sender, but then the `sender` field in the preimage differs, producing a different
-hash. There is no mechanism by which an adversary who is *not* the victim's sender
-can create a stream on the victim's behalf.
-
-**Conclusion:** Forced collision is not feasible against a victim who controls their
-own signing key. The only realistic DoS vector is a frontrun by the victim's own
-sender key, which is self-defeating.
-
-#### Attack 2: Stream ID prediction
-
-Because the hash function is deterministic and the inputs are known to both the
-sender and the recipient, *both parties can predict* the stream ID before the
-transaction is confirmed. This is intentional behaviour that enables:
-
-- Off-chain indexers to subscribe to events by stream ID before confirmation.
-- Recipient-side UIs to display pending streams.
-- `batch_create_stream` callers to pre-compute IDs for all streams in the batch.
-
-An external observer who knows `(sender, recipient, start_time, nonce)` can also
-predict the ID. This is not a vulnerability because stream IDs are **not** used as
-authorization tokens or secrets — every mutation (`withdraw`, `cancel_stream`, etc.)
-requires `require_auth()` from the appropriate party regardless of whether the caller
-knows the ID.
-
-**Conclusion:** ID predictability is a design property, not an attack surface.
-The contract does not rely on stream IDs being unguessable.
-
-#### Attack 3: Second pre-image / storage slot hijack
-
-To overwrite an existing stream's storage slot, an adversary would need to:
-
-1. Find inputs `(sender′, recipient′, start_time′, nonce′)` such that
-   `SHA-256(preimage′)[0..8]` matches an existing stream ID, **and**
-2. Successfully call `create_stream` with those inputs (requires `sender′.require_auth()`).
-
-Finding such inputs requires inverting SHA-256 on a 64-bit target — a 2⁶⁴ brute-force
-search in the best case. At 10⁹ hash evaluations per second this would take roughly
-584 years. The `stream_exists` guard means even a successful hash collision is caught
-and reverted before any state is mutated.
-
-**Conclusion:** Second pre-image attacks are computationally infeasible.
-
-#### Attack 4: Length-extension attacks
-
-SHA-256 is vulnerable to length-extension attacks, but the vulnerability only applies
-when the hash is used as a MAC with a secret prefix, which is not the case here.
-The preimage contains no secrets; it is a plain concatenation of public values. Length
-extension is therefore irrelevant to this use of SHA-256.
-
-#### Summary
-
-| Attack | Feasibility | Mitigation |
-|--------|-------------|------------|
-| Forced collision / DoS via `DuplicateStream` | Not feasible — requires sender auth | `require_auth()` + `stream_exists` guard |
-| Stream ID prediction by either party | Intentional — by design | IDs are not secrets; auth required for mutations |
-| Stream ID prediction by external observer | Possible if inputs are known | No sensitive information gated on ID secrecy |
-| Second pre-image / slot hijack | Computationally infeasible (2⁶⁴ preimage search) | `stream_exists` guard as additional defence |
-| Length-extension attack | Not applicable | No secret prefix in preimage |
-
----
-
-### Design Rationale
-
-The hash-based approach was chosen over a monotonic counter (described in
-[ADR-0002](./docs/adr/0002-stream-id-generation.md)) because:
-
-- It makes stream IDs predictable to *both parties* before confirmation, enabling
-  better off-chain UX without requiring an additional query round-trip.
-- The nonce-based deduplication mechanism already enforces per-sender uniqueness;
-  the SHA-256 step extends this to cross-sender uniqueness with negligible collision
-  probability.
-- The `stream_exists` guard provides a deterministic safety net against the
-  probability-zero but theoretically possible accidental collision.
-
-See [ADR-0002](./docs/adr/0002-stream-id-generation.md) for the full alternatives
-analysis, including the rejected monotonic counter and per-sender sequential ID
-schemes.
-
----
-
-## Storage Layout (Summary)
-
-| Key | Storage tier | Type | Description |
-|-----|-------------|------|-------------|
-| `"admin"` | Instance | `Address` | Contract admin |
-| `"paused"` | Instance | `bool` | Global pause flag |
-| `"fee_bps"` | Instance | `u32` | Protocol fee in basis points |
-| `"treasury"` | Instance | `Address` | Treasury contract address |
-| `"cf_xlm"` | Instance | `i128` | Flat XLM creation fee (stroops) |
-| `"p_exp"` | Instance | `u64` | Auto-unpause expiry timestamp |
-| `"pnd_fee"` | Instance | `(u32, u64)` | Pending fee proposal (bps, unlock_time) |
-| `stream_id` (u64) | Persistent | `Stream` | Full stream struct |
-| `("si", sender)` | Persistent | `Vec<u64>` | Stream IDs by sender |
-| `("ri", recipient)` | Persistent | `Vec<u64>` | Stream IDs by recipient |
-| `("gi", idx)` | Persistent | `u64` | Global stream index |
-
-For the full storage specification see [`docs/STORAGE.md`](./docs/STORAGE.md) and [`docs/storage-layout.md`](./docs/storage-layout.md).
-
-> Closes [#263](https://github.com/SoroStream/sorostream-contracts/issues/263).
+- [ ] Update the relevant section of this document (`ARCHITECTURE.md`).
+- [ ] Update `contracts/stream/STORAGE.md` with the new key(s) and encoding.
+- [ ] Regenerate storage layout snapshots if any `#[contracttype]` changed: `UPDATE_EXPECT=true cargo test -- storage_layout_snapshot_tests`.
+- [ ] Add the new entry point to the access control matrix above.
+- [ ] Ensure all new storage keys use the correct durability tier (see CONTRIBUTING.md §"Contract Storage").

@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["contracts/stream", "contracts/treasury", "contracts/proxy", "contracts/governance", "contracts/multisig"]
+members = ["contracts/*"]
+
+[workspace.dependencies]
+soroban-sdk = { version = "21.7.6", features = ["alloc"] }
 
 [profile.release]
 opt-level = "z"
@@ -12,13 +15,6 @@ panic = "abort"
 codegen-units = 1
 lto = true
 
-[profile.release-size]
+[profile.release-with-logs]
 inherits = "release"
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = "symbols"
-debug = 0
-debug-assertions = false
-overflow-checks = false
+debug-assertions = true
