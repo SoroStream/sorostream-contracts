@@ -197,6 +197,15 @@ fn test_516_discount_applied_to_next_creation_fee() {
     let t = setup();
     let c = client(&t);
 
+    // Earn 1_000 points (no creation fee configured yet) and redeem them for a
+    // 1 bp discount.
+    t.env.ledger().set_timestamp(0);
+    let first = create_stream(&t, 10_000_000, 1000, 0);
+    t.env.ledger().set_timestamp(1000);
+    c.withdraw(&first, &t.recipient);
+    c.redeem_points(&t.sender, &1000i128);
+    assert_eq!(c.get_fee_discount(&t.sender), 1);
+
     // Configure a 1_000-stroop creation fee paid in a separate XLM-like token.
     let xlm_admin = Address::generate(&t.env);
     let xlm_token = t
@@ -207,14 +216,6 @@ fn test_516_discount_applied_to_next_creation_fee() {
     let treasury = Address::generate(&t.env);
     c.set_creation_fee(&t.admin, &1000i128, &xlm_token);
     c.set_treasury_address(&treasury);
-
-    // Earn 1_000 points and redeem them for a 1 bp discount.
-    t.env.ledger().set_timestamp(0);
-    let first = create_stream(&t, 10_000_000, 1000, 0);
-    t.env.ledger().set_timestamp(1000);
-    c.withdraw(&first, &t.recipient);
-    c.redeem_points(&t.sender, &1000i128);
-    assert_eq!(c.get_fee_discount(&t.sender), 1);
 
     // Next creation pays the fee discounted by 1 bp: 1000 * 9999 / 10_000 = 999.
     create_stream(&t, 100_000, 1000, 1);
