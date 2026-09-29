@@ -1,25 +1,16 @@
-WASM_TARGET  := wasm32v1-none
-WASM_DIR     := target/$(WASM_TARGET)/release
-WASM_FILE    := $(WASM_DIR)/sorostream_stream.wasm
-WASM_OPT_OUT := $(WASM_DIR)/sorostream_stream.optimized.wasm
-SIZE_LOG     := wasm-size.log
-
-.PHONY: build build-size optimize clean check-size
+.PHONY: build test fmt lint clean
 
 build:
-	cargo build --target $(WASM_TARGET) --release
+	cargo build --target wasm32-unknown-unknown --release
 
-build-size:
-	cargo build --target $(WASM_TARGET) --profile release-size
+test:
+	cargo test
 
-optimize: build-size
-	wasm-opt -Oz --strip-debug --strip-producers $(WASM_FILE) -o $(WASM_OPT_OUT)
-	@echo "Optimized WASM size: $$(wc -c < $(WASM_OPT_OUT)) bytes"
+fmt:
+	cargo fmt --all
 
-check-size: optimize
-	@SIZE=$$(wc -c < $(WASM_OPT_OUT)); \
-	echo "$$SIZE" > $(SIZE_LOG); \
-	echo "Current WASM binary size: $$SIZE bytes"
+lint:
+	cargo clippy --all-targets --all-features -- -D warnings
 
 clean:
 	cargo clean
