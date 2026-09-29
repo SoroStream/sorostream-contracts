@@ -874,6 +874,275 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Clones an existing active stream into a new stream.
+    ///
+    /// The clone inherits the source stream's configuration (auto-renew,
+    /// curve, oracle, withdrawal steps, metadata, …).  For a pure clone with no
+    /// overrides it continues the source at the same flow rate for its
+    /// **remaining** duration and is funded with the source's **remaining
+    /// unstreamed balance** — never the original deposit, which has already
+    /// been partially consumed by the source.  This prevents a clone created
+    /// mid-stream from paying out more than the original had left to stream.
+    ///
+    /// # Parameters
+    /// - `source_stream_id`: the stream to clone.
+    /// - `caller`: must be the source stream's sender or its delegate.
+    /// - `recipient_override`: optional new recipient (`None` = keep source's).
+    /// - `token_override`: optional new token (`None` = keep source's).
+    /// - `rate_override`: optional new flow rate in stroops/second.
+    /// - `duration_override`: optional new duration in seconds.
+    ///
+    /// # Returns
+    /// The ID of the newly created stream.
+    pub fn clone_stream(
+        env: Env,
+        source_stream_id: u64,
+        caller: Address,
+        recipient_override: Option<Address>,
+        token_override: Option<Address>,
+        rate_override: Option<i128>,
+        duration_override: Option<u64>,
+    ) -> Result<u64, StreamError> {
+        reject_reentrant_call(&env)?;
+        set_reentrancy_lock(&env);
+
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+
+        caller.require_auth();
+
+        let source = load_stream(&env, source_stream_id).ok_or(StreamError::StreamNotFound)?;
+
+        // Only the original sender (or an explicit delegate) may clone.
+        let is_sender = source.sender == caller;
+        let is_delegate = get_delegate(&env, source_stream_id)
+            .map_or(false, |d| d == caller);
+        if !is_sender && !is_delegate {
+            return Err(StreamError::NotAuthorized);
+        }
+
+        // Cloning only makes sense for a stream that is still vesting.
+        if source.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+        if source.options.is_dual_stream {
+            return Err(StreamError::IsDualStream);
+        }
+        // Milestone-gated and step-vesting streams carry a zero flow rate and a
+        // separate release schedule; they are not cloneable through this path.
+        if source.flow_rate == 0 {
+            return Err(StreamError::ZeroFlowRate);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Remaining (unstreamed) duration and balance — the clone may only ever
+        // distribute what the source had left to stream.
+        let remaining_duration = source.end_time.saturating_sub(now);
+        if remaining_duration == 0 {
+            return Err(StreamError::StreamNotActive);
+        }
+        // Value that still has to be streamed over the remaining duration —
+        // the time-adjusted remainder of the deposit.  Using the original
+        // deposit instead would let a mid-stream clone pay out funds for time
+        // the source has already vested.
+        let remaining_unstreamed = source
+            .flow_rate
+            .checked_mul(remaining_duration as i128)
+            .ok_or(StreamError::Overflow)?
+            .min(source.deposit)
+            .max(0);
+        if remaining_unstreamed <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+
+        let new_recipient = recipient_override.unwrap_or_else(|| source.recipient.clone());
+        let new_token = token_override.unwrap_or_else(|| source.token.clone());
+        let requested_rate = rate_override.unwrap_or(source.flow_rate);
+        if requested_rate <= 0 {
+            return Err(StreamError::ZeroFlowRate);
+        }
+        let new_duration = duration_override.unwrap_or(remaining_duration);
+        if new_duration == 0 {
+            return Err(StreamError::InvalidDuration);
+        }
+
+        // ── Fix: fund the clone from the *remaining* unstreamed balance ──────
+        // A pure clone continues the source at the same rate for the remaining
+        // duration using exactly the remaining unstreamed balance.  Reusing the
+        // original deposit here would let a mid-stream clone pay out funds that
+        // the source had already consumed.
+        let (new_amount, effective_rate) =
+            if rate_override.is_none() && duration_override.is_none() {
+                (remaining_unstreamed, source.flow_rate)
+            } else {
+                let amount = requested_rate
+                    .checked_mul(new_duration as i128)
+                    .ok_or(StreamError::Overflow)?;
+                (amount, requested_rate)
+            };
+        if new_amount <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        validate_flow_rate_bounds(effective_rate)?;
+
+        // ── Validation (mirrors create_stream) ──────────────────────────────
+        if read_admin(&env).is_none() {
+            return Err(StreamError::NotInitialized);
+        }
+        if is_blocked(&env, &caller) || is_blocked(&env, &new_recipient) {
+            return Err(StreamError::NotAuthorized);
+        }
+        if new_recipient == source.sender || new_recipient == env.current_contract_address() {
+            return Err(StreamError::NotRecipient);
+        }
+        if is_whitelist_enabled(&env) && !is_whitelisted(&env, &new_recipient) {
+            return Err(StreamError::RecipientNotWhitelisted);
+        }
+        check_token_whitelist(&env, &new_token)?;
+        validate_token_address(&env, &new_token)?;
+        check_sender_stake(&env, &source.sender, &new_token)?;
+
+        let min_dur = read_min_duration(&env);
+        if new_duration < min_dur {
+            return Err(StreamError::StreamDurationTooShort);
+        }
+        let max_dur = read_max_duration(&env);
+        if max_dur > 0 && new_duration > max_dur {
+            return Err(StreamError::DurationExceedsMax);
+        }
+
+        let sender_count = get_sender_stream_count(&env, &source.sender);
+        let limit = effective_sender_limit(&env, &source.sender);
+        if sender_count >= limit {
+            return Err(StreamError::NewSenderStreamCapExceeded);
+        }
+        let max_per_token = get_max_streams_per_token(&env);
+        if max_per_token > 0 && get_token_stream_count(&env, &new_token) >= max_per_token {
+            return Err(StreamError::StreamNotFound);
+        }
+        let max_deposit = get_max_deposit_per_token(&env, &new_token);
+        if max_deposit > 0 && new_amount > max_deposit {
+            return Err(StreamError::MaxDepositExceeded);
+        }
+
+        check_rate_limit(&env, &source.sender)?;
+
+        // ── Derive a fresh, collision-free stream ID ────────────────────────
+        let nonce = get_batch_nonce(&env, &source.sender);
+        increment_batch_nonce(&env, &source.sender);
+
+        const MAX_ID_RETRIES: u64 = 3;
+        let mut new_stream_id = derive_stream_id(&env, &source.sender, &new_recipient, now, nonce);
+        if stream_exists(&env, new_stream_id) {
+            let mut found = false;
+            for retry in 1u64..=MAX_ID_RETRIES {
+                let candidate = derive_stream_id(
+                    &env, &source.sender, &new_recipient, now, nonce ^ (retry << 32),
+                );
+                if !stream_exists(&env, candidate) {
+                    new_stream_id = candidate;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(StreamError::IDCollision);
+            }
+        }
+
+        let end_time = now.checked_add(new_duration).ok_or(StreamError::Overflow)?;
+        if end_time <= now {
+            return Err(StreamError::InvalidEndTime);
+        }
+        // Preserve an as-yet-unreached cliff, otherwise the clone vests from now.
+        let cliff_time = if source.cliff_time > now {
+            source.cliff_time.min(end_time)
+        } else {
+            now
+        };
+        let lock_until = if source.lock_until > now {
+            source.lock_until
+        } else {
+            now
+        };
+
+        // ── Fund the new stream from the source sender ──────────────────────
+        source.sender.require_auth();
+        token::Client::new(&env, &new_token).transfer(
+            &source.sender,
+            &env.current_contract_address(),
+            &new_amount,
+        );
+
+        // ── Build the cloned stream ─────────────────────────────────────────
+        let mut new_stream = source.clone();
+        new_stream.id = new_stream_id;
+        new_stream.recipient = new_recipient.clone();
+        new_stream.token = new_token.clone();
+        new_stream.deposit = new_amount;
+        new_stream.flow_rate = effective_rate;
+        new_stream.start_time = now;
+        new_stream.cliff_time = cliff_time;
+        new_stream.lock_until = lock_until;
+        new_stream.end_time = end_time;
+        new_stream.last_withdraw_time = now;
+        new_stream.sponsor = None;
+        new_stream.status = if source.options.requires_recipient_approval {
+            StreamStatus::PendingApproval
+        } else {
+            StreamStatus::Active
+        };
+        // Reset all per-stream runtime state.
+        new_stream.options.total_withdrawn = 0;
+        new_stream.options.tranches_claimed = 0;
+        new_stream.options.current_step = 0;
+        new_stream.options.last_pause_time = 0;
+        new_stream.options.locked = false;
+        new_stream.options.renewals_used = 0;
+        // The clone is funded with the streaming deposit only; it carries no
+        // holdback escrow.
+        new_stream.options.holdback_amount = 0;
+        new_stream.options.holdback_claimed = false;
+        new_stream.options.sender_locked = false;
+        new_stream.options.approval_timestamp = 0;
+        new_stream.options.escrow_sender_approved = false;
+        new_stream.options.escrow_recipient_approved = false;
+        new_stream.options.redirect_to_stream_id = None;
+        // Unsupported release schedules are cleared so the clone vests linearly.
+        new_stream.options.milestones = Vec::new(&env);
+        new_stream.options.milestone_release_mode = false;
+        new_stream.options.milestone_approver = None;
+        new_stream.options.is_step_vesting = false;
+
+        save_stream(&env, &new_stream);
+        extend_instance_ttl(&env);
+        index_by_sender(&env, &source.sender, new_stream_id);
+        index_by_recipient(&env, &new_recipient, new_stream_id);
+        index_global_stream(&env, new_stream_id);
+        if !new_stream.options.requires_recipient_approval {
+            increment_active_stream_count(&env);
+            increment_token_stream_count(&env, &new_token);
+        }
+        set_sender_last_creation_time(&env, &source.sender, now);
+        post_create_sender_accounting(&env, &source.sender);
+
+        clear_reentrancy_lock(&env);
+
+        events::stream_cloned(
+            &env,
+            source_stream_id,
+            new_stream_id,
+            &source.sender,
+            &new_recipient,
+            effective_rate,
+            new_duration,
+        );
+
+        Ok(new_stream_id)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Feature (a): Expiry warning window config
     // ─────────────────────────────────────────────────────────────────────────
