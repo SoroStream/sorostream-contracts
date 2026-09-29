@@ -67,4 +67,6 @@ pub enum StreamError {
     CommentTooLong = 65,
     /// Sender has not staked the required minimum collateral for this token.
     InsufficientStake = 66,
+    /// Multi-recipient stream exceeds maximum allowed recipients limit (20).
+    TooManyRecipients = 67,
 }

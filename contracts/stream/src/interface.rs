@@ -512,4 +512,14 @@ pub trait SoroStreamInterface {
 
     /// Returns an admin override request by ID.
     fn get_override_request(env: Env, request_id: u64) -> Result<AdminOverrideRequest, StreamError>;
+
+    /// Prunes expired/completed streams from storage to reclaim space (Admin only - Issue #401).
+    fn prune_expired_streams(env: Env, admin: Address, stream_ids: Vec<u64>) -> Result<u32, StreamError>;
+
+    /// Reads stream details with rate-limiting per caller (Issue #615).
+    fn get_stream_with_rate_limit(env: Env, caller: Address, stream_id: u64) -> Result<Stream, StreamError>;
+
+    /// Claims accrued yield from a collateral vault (Issue #472).
+    fn claim_collateral_yield(env: Env, stream_id: u64, caller: Address) -> Result<(i128, i128), StreamError>;
 }
+

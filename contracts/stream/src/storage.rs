@@ -1141,6 +1141,48 @@ pub fn remove_rate_limit_exempt(env: &Env, addr: &Address) {
         .remove(&rate_limit_exempt_key(env, addr));
 }
 
+// ── Read Rate Limiting (Issue #615) ──────────────────────────────────────────
+
+const READ_RATE_LIMIT_MAX: u32 = 10;
+
+fn read_rate_limit_key(env: &Env, addr: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "rl_read"), addr.clone())
+}
+
+/// Retrieves the last recorded ledger sequence and call count for read rate limiting.
+pub fn get_read_rate_limit_state(env: &Env, addr: &Address) -> (u32, u32) {
+    env.storage()
+        .temporary()
+        .get(&read_rate_limit_key(env, addr))
+        .unwrap_or((0, 0))
+}
+
+/// Sets the ledger sequence and call count for read rate limiting.
+pub fn set_read_rate_limit_state(env: &Env, addr: &Address, ledger: u32, count: u32) {
+    let key = read_rate_limit_key(env, addr);
+    env.storage().temporary().set(&key, &(ledger, count));
+    env.storage().temporary().extend_ttl(&key, 10, 100);
+}
+
+/// Checks and increments read rate limit (max 10 calls per ledger).
+pub fn check_read_rate_limit(env: &Env, caller: &Address) -> Result<(), crate::errors::StreamError> {
+    if is_rate_limit_exempt(env, caller) {
+        return Ok(());
+    }
+    let current_ledger = env.ledger().sequence();
+    let (last_ledger, count) = get_read_rate_limit_state(env, caller);
+    if last_ledger == current_ledger {
+        if count >= READ_RATE_LIMIT_MAX {
+            return Err(crate::errors::StreamError::RateLimitExceeded);
+        }
+        set_read_rate_limit_state(env, caller, current_ledger, count + 1);
+    } else {
+        set_read_rate_limit_state(env, caller, current_ledger, 1);
+    }
+    Ok(())
+}
+
+
 // --- Token Whitelist (for tokens, not recipients) ---
 
 const TOKEN_WHITELIST_ENABLED_KEY: &str = "twl_en";

@@ -1257,3 +1257,55 @@ pub fn min_stake_set(env: &Env, token: &Address, amount: i128, admin: &Address) 
         (token.clone(), amount, admin.clone()),
     );
 }
+
+// ── Issue #472: Collateral vault yield events ────────────────────────────────
+
+/// Emitted when collateral yield is claimed from a vault.
+pub fn collateral_yield_claimed(
+    env: &Env,
+    stream_id: u64,
+    vault: &Address,
+    sender_yield: i128,
+    recipient_yield: i128,
+) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    env.events().publish(
+        (Symbol::new(env, "CollateralYieldClaimed"), stream_id),
+        (vault.clone(), sender_yield, recipient_yield, nonce),
+    );
+}
+
+// ── Issue #616: Zero-decimal token transfer events ───────────────────────────
+
+/// Scales a token amount for display/logging without zero-division error.
+pub fn scale_token_amount(amount: i128, decimals: u32) -> i128 {
+    if decimals == 0 {
+        amount
+    } else {
+        let divisor = 10i128.pow(decimals);
+        if divisor == 0 {
+            amount
+        } else {
+            amount / divisor
+        }
+    }
+}
+
+/// Emitted when a token transfer occurs on stream operations (deposit, withdraw, refund).
+pub fn token_transferred(
+    env: &Env,
+    stream_id: u64,
+    token: &Address,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+    decimals: u32,
+) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    let scaled_amount = scale_token_amount(amount, decimals);
+    env.events().publish(
+        (Symbol::new(env, "TokenTransferred"), stream_id),
+        (token.clone(), from.clone(), to.clone(), amount, scaled_amount, decimals, nonce),
+    );
+}
+
