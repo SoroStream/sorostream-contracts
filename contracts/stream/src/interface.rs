@@ -169,6 +169,22 @@ pub trait SoroStreamInterface {
     fn approve_release(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
 
     fn withdraw(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+
+    /// Clones an existing active stream into a new stream.
+    ///
+    /// For a pure clone (no overrides) the new stream continues the source at
+    /// the same flow rate for the source's remaining duration and is funded
+    /// with the source's remaining unstreamed balance rather than its original
+    /// deposit, so a clone created mid-stream cannot over-pay.
+    fn clone_stream(
+        env: Env,
+        source_stream_id: u64,
+        caller: Address,
+        recipient_override: Option<Address>,
+        token_override: Option<Address>,
+        rate_override: Option<i128>,
+        duration_override: Option<u64>,
+    ) -> Result<u64, StreamError>;
     fn cancel_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
     fn stop_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
     fn transfer_sender(env: Env, stream_id: u64, current_sender: Address, new_sender: Address) -> Result<(), StreamError>;
@@ -335,6 +351,15 @@ pub trait SoroStreamInterface {
     fn is_fee_exempt(env: Env, addr: Address) -> bool;
     fn get_fees_collected(env: Env, token: Address) -> i128;
     fn sweep_fees(env: Env, token: Address, destination: Address) -> Result<(), StreamError>;
+
+    /// Returns the reward points accumulated by an address (issue #516).
+    fn get_reward_points(env: Env, address: Address) -> i128;
+
+    /// Returns the pending stream-creation fee discount (bps) for an address.
+    fn get_fee_discount(env: Env, address: Address) -> u32;
+
+    /// Redeems reward points for a discount on the caller's next stream creation.
+    fn redeem_points(env: Env, caller: Address, points: i128) -> Result<u32, StreamError>;
 
     fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError>;
     fn get_guardian(env: Env) -> Option<Address>;
@@ -516,4 +541,14 @@ pub trait SoroStreamInterface {
 
     /// Returns an admin override request by ID.
     fn get_override_request(env: Env, request_id: u64) -> Result<AdminOverrideRequest, StreamError>;
+
+    /// Prunes expired/completed streams from storage to reclaim space (Admin only - Issue #401).
+    fn prune_expired_streams(env: Env, admin: Address, stream_ids: Vec<u64>) -> Result<u32, StreamError>;
+
+    /// Reads stream details with rate-limiting per caller (Issue #615).
+    fn get_stream_with_rate_limit(env: Env, caller: Address, stream_id: u64) -> Result<Stream, StreamError>;
+
+    /// Claims accrued yield from a collateral vault (Issue #472).
+    fn claim_collateral_yield(env: Env, stream_id: u64, caller: Address) -> Result<(i128, i128), StreamError>;
 }
+

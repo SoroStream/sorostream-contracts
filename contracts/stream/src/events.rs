@@ -1257,3 +1257,32 @@ pub fn min_stake_set(env: &Env, token: &Address, amount: i128, admin: &Address) 
         (token.clone(), amount, admin.clone()),
     );
 }
+
+/// Emitted when an existing stream is cloned into a new stream.
+///
+/// `source_stream_id` identifies the stream that was cloned and `new_stream_id`
+/// the freshly created stream. `flow_rate` and `duration` describe the cloned
+/// stream, whose deposit is funded from the source's remaining unstreamed
+/// balance rather than the original deposit.
+pub fn stream_cloned(
+    env: &Env,
+    source_stream_id: u64,
+    new_stream_id: u64,
+    sender: &Address,
+    new_recipient: &Address,
+    flow_rate: i128,
+    duration: u64,
+) {
+    let nonce = crate::storage::next_stream_event_nonce(env, source_stream_id);
+    env.events().publish(
+        (Symbol::new(env, "StreamCloned"), source_stream_id),
+        (
+            new_stream_id,
+            sender.clone(),
+            new_recipient.clone(),
+            flow_rate,
+            duration,
+            nonce,
+        ),
+    );
+}
