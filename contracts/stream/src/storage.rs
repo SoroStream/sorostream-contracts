@@ -130,6 +130,20 @@ pub fn remove_stream(env: &Env, stream_id: u64) {
     env.storage().persistent().remove(&stream_id);
 }
 
+/// Marks a stream ID as cancelled using a lightweight persistent sentinel.
+/// This allows `cancel_stream` to distinguish "already cancelled" from "never existed"
+/// and return `StreamAlreadyCancelled` on a second call.
+pub fn mark_stream_cancelled(env: &Env, stream_id: u64) {
+    let key = (Symbol::new(env, "xcl"), stream_id);
+    env.storage().persistent().set(&key, &true);
+}
+
+/// Returns true if the stream was previously cancelled (sentinel is present).
+pub fn is_stream_cancelled(env: &Env, stream_id: u64) -> bool {
+    let key = (Symbol::new(env, "xcl"), stream_id);
+    env.storage().persistent().get::<_, bool>(&key).unwrap_or(false)
+}
+
 /// Key for the monotonic event sequence number associated with a stream.
 pub fn stream_event_nonce_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
     (Symbol::new(env, "evn"), stream_id)
