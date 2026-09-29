@@ -29,6 +29,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
+#[cfg(test)] mod issue_518_tests;
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -226,6 +227,19 @@ fn validate_recipient_address(env: &Env, sender: &Address, recipient: &Address) 
 fn reject_reentrant_call(env: &Env) -> Result<(), StreamError> {
     if is_reentrancy_locked(env) {
         return Err(StreamError::ReentrancyDetected);
+    }
+    Ok(())
+}
+
+/// Rejects execution while the contract-wide emergency pause is active.
+///
+/// This guard is evaluated both at the top of value-moving entry points and
+/// again immediately before funds are transferred.  Re-checking the flag at
+/// the interaction boundary closes the window where a pause raised after the
+/// claimable balance was computed could still let a withdrawal settle.
+fn ensure_not_paused(env: &Env) -> Result<(), StreamError> {
+    if is_paused_or_auto_unpause(env) {
+        return Err(StreamError::ContractPaused);
     }
     Ok(())
 }
@@ -719,6 +733,9 @@ impl SoroStreamContract {
         let on_complete_contract: Option<Address> = None;
         let on_complete_function: Option<Symbol> = None;
         let enforce_recipient_allowlist = false;
+        // The deposit is funded by an optional sponsor, falling back to the
+        // sender when no sponsor is supplied.
+        let payer = params.sponsor.clone().unwrap_or_else(|| sender.clone());
 
         if is_paused_or_auto_unpause(&env) {
             return Err(StreamError::ContractPaused);
@@ -2859,6 +2876,10 @@ impl SoroStreamContract {
                 save_stream(&env, &stream);
             }
 
+            // Defense-in-depth: re-check the emergency pause immediately
+            // before funds move.
+            ensure_not_paused(&env)?;
+
             // INTERACTIONS
             let token_client = token::Client::new(&env, &stream.token);
             if recipient_amount > 0 {
@@ -2963,6 +2984,10 @@ impl SoroStreamContract {
             } else {
                 save_stream(&env, &stream);
             }
+
+            // Defense-in-depth: re-check the emergency pause immediately
+            // before funds move.
+            ensure_not_paused(&env)?;
 
             // INTERACTIONS
             let token_client = token::Client::new(&env, &stream.token);
@@ -3178,6 +3203,11 @@ impl SoroStreamContract {
         }
 
         let stream_ended = now >= stream.end_time;
+
+        // Defense-in-depth: re-check the emergency pause immediately before
+        // any funds move so a withdrawal computed while unpaused can never
+        // settle after the flag has been raised.
+        ensure_not_paused(&env)?;
 
         // Set stream-specific reentrancy lock before any external token transfer
         stream.options.locked = true;
@@ -5881,6 +5911,10 @@ impl SoroStreamContract {
 
         for stream_id in stream_ids.iter() {
             let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+
+            // Defense-in-depth: re-check the emergency pause for every stream
+            // before any of its funds are moved.
+            ensure_not_paused(&env)?;
 
             if stream.recipient != recipient {
                 return Err(StreamError::NotRecipient);
