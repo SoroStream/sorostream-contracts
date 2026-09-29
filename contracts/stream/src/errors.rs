@@ -63,6 +63,8 @@ pub enum StreamError {
     RecipientNotAllowed = 61,
     /// The stream deposit exceeds the maximum allowed per-token limit.
     MaxDepositExceeded = 64,
+    /// Operation is not allowed while the individual stream is paused.
+    StreamPaused = 67,
     /// The comment attached to a stream exceeds the 256-byte limit.
     CommentTooLong = 65,
     /// Sender has not staked the required minimum collateral for this token.

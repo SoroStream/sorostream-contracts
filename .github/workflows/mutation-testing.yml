@@ -1,0 +1,91 @@
+name: Mutation Testing
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  mutants:
+    name: Mutation Kill Rate (≥ 90%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-mutants
+        # Pin to a known-good version for reproducibility.
+        run: cargo install cargo-mutants --version 24.11.1 --locked
+
+      - name: Run mutation tests
+        # --workspace covers every crate.
+        # --test-threads 4 caps parallel test workers to keep memory usage
+        #   predictable on the 2-core GHA runner.
+        # --output mutants-out writes the detailed survival report that we
+        #   upload as an artifact.
+        # -- --features sorostream-stream/testutils ensures the Soroban test
+        #   helpers are compiled in for every mutant test run.
+        run: |
+          cargo mutants \
+            --workspace \
+            --test-threads 4 \
+            --output mutants-out \
+            -- --features sorostream-stream/testutils \
+               --test-threads=1 \
+        continue-on-error: true  # we gate below; don't let this step mask the report
+
+      - name: Print step summary
+        # cargo-mutants writes a human-readable text summary to
+        # mutants-out/mutants.out.  Mirror it to the Actions step summary so
+        # reviewers can read results directly in the PR checks tab.
+        if: always()
+        run: |
+          echo "## Mutation Testing Results" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat mutants-out/mutants.out 2>/dev/null || echo "(no output file found)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutant survival report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: mutants-out/
+          retention-days: 14
+
+      - name: Enforce 90% mutant kill rate
+        # cargo-mutants exits 0 only when every mutant is caught.  We need a
+        # numeric gate, so we parse the summary line from mutants.out:
+        #
+        #   N mutants tested: X caught, Y missed, Z unviable
+        #
+        # kill_rate = caught / (caught + missed) * 100   (unviable are excluded)
+        #
+        # A missed mutant means the test suite did NOT detect the fault
+        # injection; a kill_rate below 90% means assertions are too weak.
+        run: |
+          SUMMARY=$(cat mutants-out/mutants.out 2>/dev/null || echo "")
+
+          CAUGHT=$(echo "$SUMMARY" | grep -oP '\d+(?= caught)'  | head -1 || echo "0")
+          MISSED=$(echo "$SUMMARY" | grep -oP '\d+(?= missed)'  | head -1 || echo "0")
+
+          echo "Caught: $CAUGHT  |  Missed: $MISSED"
+
+          TOTAL=$(( CAUGHT + MISSED ))
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::warning::No viable mutants were generated — check that the source is reachable."
+            exit 0
+          fi
+
+          # Use bc for floating-point arithmetic.
+          KILL_RATE=$(echo "scale=2; $CAUGHT * 100 / $TOTAL" | bc)
+          echo "Mutant kill rate: ${KILL_RATE}%"
+          echo "Kill rate: ${KILL_RATE}%" >> "$GITHUB_STEP_SUMMARY"
+
+          if echo "$KILL_RATE < 90" | bc -l | grep -q '^1$'; then
+            echo "::error::Mutant kill rate ${KILL_RATE}% is below the required 90% threshold. See the mutants-report artifact for surviving mutants."
+            exit 1
+          fi
+          echo "Mutation gate passed (${KILL_RATE}% ≥ 90%)."

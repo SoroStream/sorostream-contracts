@@ -130,6 +130,20 @@ pub fn remove_stream(env: &Env, stream_id: u64) {
     env.storage().persistent().remove(&stream_id);
 }
 
+/// Marks a stream ID as cancelled using a lightweight persistent sentinel.
+/// This allows `cancel_stream` to distinguish "already cancelled" from "never existed"
+/// and return `StreamAlreadyCancelled` on a second call.
+pub fn mark_stream_cancelled(env: &Env, stream_id: u64) {
+    let key = (Symbol::new(env, "xcl"), stream_id);
+    env.storage().persistent().set(&key, &true);
+}
+
+/// Returns true if the stream was previously cancelled (sentinel is present).
+pub fn is_stream_cancelled(env: &Env, stream_id: u64) -> bool {
+    let key = (Symbol::new(env, "xcl"), stream_id);
+    env.storage().persistent().get::<_, bool>(&key).unwrap_or(false)
+}
+
 /// Key for the monotonic event sequence number associated with a stream.
 pub fn stream_event_nonce_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
     (Symbol::new(env, "evn"), stream_id)
@@ -1141,6 +1155,48 @@ pub fn remove_rate_limit_exempt(env: &Env, addr: &Address) {
         .remove(&rate_limit_exempt_key(env, addr));
 }
 
+// ── Read Rate Limiting (Issue #615) ──────────────────────────────────────────
+
+const READ_RATE_LIMIT_MAX: u32 = 10;
+
+fn read_rate_limit_key(env: &Env, addr: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "rl_read"), addr.clone())
+}
+
+/// Retrieves the last recorded ledger sequence and call count for read rate limiting.
+pub fn get_read_rate_limit_state(env: &Env, addr: &Address) -> (u32, u32) {
+    env.storage()
+        .temporary()
+        .get(&read_rate_limit_key(env, addr))
+        .unwrap_or((0, 0))
+}
+
+/// Sets the ledger sequence and call count for read rate limiting.
+pub fn set_read_rate_limit_state(env: &Env, addr: &Address, ledger: u32, count: u32) {
+    let key = read_rate_limit_key(env, addr);
+    env.storage().temporary().set(&key, &(ledger, count));
+    env.storage().temporary().extend_ttl(&key, 10, 100);
+}
+
+/// Checks and increments read rate limit (max 10 calls per ledger).
+pub fn check_read_rate_limit(env: &Env, caller: &Address) -> Result<(), crate::errors::StreamError> {
+    if is_rate_limit_exempt(env, caller) {
+        return Ok(());
+    }
+    let current_ledger = env.ledger().sequence();
+    let (last_ledger, count) = get_read_rate_limit_state(env, caller);
+    if last_ledger == current_ledger {
+        if count >= READ_RATE_LIMIT_MAX {
+            return Err(crate::errors::StreamError::RateLimitExceeded);
+        }
+        set_read_rate_limit_state(env, caller, current_ledger, count + 1);
+    } else {
+        set_read_rate_limit_state(env, caller, current_ledger, 1);
+    }
+    Ok(())
+}
+
+
 // --- Token Whitelist (for tokens, not recipients) ---
 
 const TOKEN_WHITELIST_ENABLED_KEY: &str = "twl_en";
@@ -1835,3 +1891,60 @@ pub fn set_min_stake(env: &Env, token: &Address, amount: i128) {
 
 /// Lock-up period in seconds before an unstake request can be completed (7 days).
 pub const STAKE_UNLOCK_DELAY: u64 = 7 * 24 * 60 * 60;
+
+// ── Per-sender active stream cap (feat/37-sender-stream-cap) ─────────────────
+//
+// The cap limits the number of *active* streams a single sender address may
+// hold at once.  Unlike the existing `get_max_streams_per_sender` (which tracks
+// lifetime count using a global default), this cap tracks the *current active*
+// count in a dedicated persistent key and can be overridden globally by the
+// admin.  When the cap is reached, `create_stream` panics with
+// `SenderStreamCapReached`.  The count is decremented on cancellation or
+// natural expiry/completion.
+
+const SENDER_STREAM_CAP_KEY: &str = "ss_cap";
+
+fn sender_active_count_key(env: &Env, sender: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "sac"), sender.clone())
+}
+
+/// Returns the global per-sender active stream cap (default 1000).
+pub fn get_sender_stream_cap(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, SENDER_STREAM_CAP_KEY))
+        .unwrap_or(1_000u32)
+}
+
+/// Sets the global per-sender active stream cap.  Admin-only via contract method.
+pub fn set_sender_stream_cap(env: &Env, cap: u32) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, SENDER_STREAM_CAP_KEY), &cap);
+}
+
+/// Returns the current number of *active* streams for `sender`.
+pub fn get_sender_active_count(env: &Env, sender: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&sender_active_count_key(env, sender))
+        .unwrap_or(0u32)
+}
+
+/// Increments the active stream count for `sender` by 1.
+pub fn increment_sender_active_count(env: &Env, sender: &Address) {
+    let key = sender_active_count_key(env, sender);
+    let current = get_sender_active_count(env, sender);
+    env.storage()
+        .persistent()
+        .set(&key, &current.saturating_add(1));
+}
+
+/// Decrements the active stream count for `sender` by 1 (saturates at 0).
+pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
+    let key = sender_active_count_key(env, sender);
+    let current = get_sender_active_count(env, sender);
+    if current > 0 {
+        env.storage().persistent().set(&key, &(current - 1));
+    }
+}
