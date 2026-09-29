@@ -35,9 +35,11 @@ fn setup() -> TestEnv {
     StellarAssetClient::new(&env, &token_id).mint(&sender, &10_000_000);
 
     let admin = Address::generate(&env);
-    SoroStreamContractClient::new(&env, &contract_id)
-        .initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
-    SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    c.set_min_duration(&admin, &0u64);
+    // `create_stream` requires an admin-approved token.
+    c.add_token_to_whitelist(&admin, &token_id);
 
     TestEnv {
         env,
