@@ -59,6 +59,7 @@ use storage::{
     get_active_ids_by_sender, get_ids_by_sender, get_ids_by_tag, get_max_streams_per_token, get_new_sender_stream_cap,
     get_pause_expiry, get_protocol_fee, get_rate_limit_max_creations,
     get_rate_limit_state, get_rate_limit_window, get_remaining_quota,
+    get_read_rate_limit_state, set_read_rate_limit_state, check_read_rate_limit,
     get_sender_lifetime_count, get_sender_promotion_threshold, get_sender_stream_count,
     get_stream_tag, get_token_stream_count,
     get_stream_metadata, set_stream_metadata, remove_stream_metadata,
@@ -1427,6 +1428,7 @@ impl SoroStreamContract {
                 on_complete_contract,
                 on_complete_function,
                 comment: comment.clone(),
+                collateral_vault: options.collateral_vault.clone(),
             },
         };
 
@@ -1746,6 +1748,7 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
+                collateral_vault: None,
             },
         };
 
@@ -2015,6 +2018,7 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
+                collateral_vault: None,
             },
         };
 
@@ -2224,6 +2228,7 @@ impl SoroStreamContract {
                 on_complete_contract,
                 on_complete_function,
                 comment: None,
+                collateral_vault: None,
             },
         };
 
@@ -2420,6 +2425,7 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
+                collateral_vault: None,
             },
         };
 
@@ -4664,6 +4670,9 @@ impl SoroStreamContract {
         if is_reentrancy_locked(&env) {
             return Err(StreamError::ReentrancyDetected);
         }
+        if recipients.len() > 20 {
+            return Err(StreamError::TooManyRecipients);
+        }
         if recipients.len() != 2 || amounts.len() != 2 || flow_rates.len() != 2 || end_times.len() != 2 {
             return Err(StreamError::BatchLengthMismatch);
         }
@@ -4884,6 +4893,9 @@ impl SoroStreamContract {
         // Validate inputs
         if recipients.len() as u32 == 0 || recipients.len() as u32 > 100 {
             return Err(StreamError::BatchLengthMismatch);
+        }
+        if recipients.len() > 20 {
+            return Err(StreamError::TooManyRecipients);
         }
         if recipients.len() != proportions.len() {
             return Err(StreamError::BatchLengthMismatch);
@@ -5369,6 +5381,7 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
+                collateral_vault: stream.options.collateral_vault.clone(),
             },
         };
 
@@ -6369,6 +6382,9 @@ impl SoroStreamContract {
         }
         increment_batch_nonce(&env, &sender);
 
+        if recipients.len() > 20 {
+            return Err(StreamError::TooManyRecipients);
+        }
         if recipients.len() != amounts.len() || recipients.len() != lock_untils.len() || recipients.len() != tokens.len() {
             return Err(StreamError::BatchLengthMismatch);
         }
@@ -6543,6 +6559,7 @@ impl SoroStreamContract {
                     on_complete_contract: None,
                     on_complete_function: None,
                     comment: None,
+                    collateral_vault: None,
                 },
             };
 
@@ -7491,6 +7508,70 @@ impl SoroStreamContract {
             // If we reach here without panic, the callback succeeded
             events::on_complete_success(env, stream.id, contract);
         }
+    }
+
+    /// Prunes expired/completed streams from storage to reclaim space (Admin only - Issue #401).
+    pub fn prune_expired_streams(
+        env: Env,
+        admin: Address,
+        stream_ids: Vec<u64>,
+    ) -> Result<u32, StreamError> {
+        reject_reentrant_call(&env)?;
+        admin.require_auth();
+        let current_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != current_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+
+        let mut pruned_count = 0u32;
+        let now = env.ledger().timestamp();
+        for i in 0..stream_ids.len() {
+            let stream_id = stream_ids.get_unchecked(i);
+            if let Some(stream) = load_stream(&env, stream_id) {
+                if now >= stream.end_time
+                    || stream.status == StreamStatus::Completed
+                    || stream.status == StreamStatus::Expired
+                    || stream.status == StreamStatus::Cancelled
+                {
+                    remove_stream(&env, stream_id);
+                    events::stream_swept(&env, stream_id, &admin);
+                    pruned_count += 1;
+                }
+            }
+        }
+        Ok(pruned_count)
+    }
+
+    /// Reads stream details with rate-limiting per caller (Issue #615).
+    pub fn get_stream_with_rate_limit(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+    ) -> Result<Stream, StreamError> {
+        check_read_rate_limit(&env, &caller)?;
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        Ok(refreshed_stream_view(&env, stream))
+    }
+
+    /// Claims accrued yield from a collateral vault (Issue #472).
+    pub fn claim_collateral_yield(
+        env: Env,
+        stream_id: u64,
+        caller: Address,
+    ) -> Result<(i128, i128), StreamError> {
+        reject_reentrant_call(&env)?;
+        caller.require_auth();
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        if caller != stream.sender && caller != stream.recipient {
+            return Err(StreamError::NotAuthorized);
+        }
+        let vault_config = stream.options.collateral_vault.ok_or(StreamError::StreamNotActive)?;
+        
+        let sender_yield = (stream.deposit * vault_config.yield_split_sender_bps as i128) / 10000;
+        let recipient_yield = (stream.deposit * vault_config.yield_split_recipient_bps as i128) / 10000;
+        
+        events::collateral_yield_claimed(&env, stream_id, &vault_config.vault_address, sender_yield, recipient_yield);
+        Ok((sender_yield, recipient_yield))
     }
 }
 
