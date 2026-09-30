@@ -11,9 +11,23 @@ use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, Overri
 #[contractclient(name = "SoroStreamClient")]
 pub trait SoroStreamInterface {
     fn initialize(env: Env, admin: Address, version: String) -> Result<(), StreamError>;
+    fn initialize_roles(
+        env: Env,
+        admin: Address,
+        version: String,
+        fee_admin: Option<Address>,
+        emergency_admin: Option<Address>,
+        token_admin: Option<Address>,
+    ) -> Result<(), StreamError>;
     fn get_admin(env: Env) -> Result<Address, StreamError>;
     fn get_version(env: Env) -> Result<String, StreamError>;
     fn set_admin(env: Env, new_admin: Address) -> Result<(), StreamError>;
+    fn set_fee_admin(env: Env, admin: Address, fee_admin: Address) -> Result<(), StreamError>;
+    fn get_fee_admin(env: Env) -> Option<Address>;
+    fn set_emergency_admin(env: Env, admin: Address, emergency_admin: Address) -> Result<(), StreamError>;
+    fn get_emergency_admin(env: Env) -> Option<Address>;
+    fn set_token_admin(env: Env, admin: Address, token_admin: Address) -> Result<(), StreamError>;
+    fn get_token_admin(env: Env) -> Option<Address>;
     fn emergency_pause(env: Env) -> Result<(), StreamError>;
     fn emergency_resume(env: Env) -> Result<(), StreamError>;
     fn is_paused(env: Env) -> bool;
