@@ -501,8 +501,8 @@ pub trait SoroStreamInterface {
     ///
     /// # Errors
     /// - `NotRecipient` — caller is not this stream's recipient.
-    /// - `InvalidRedirectTarget` — target stream does not exist.
-    /// - `RedirectRecipientMismatch` — target stream's recipient differs from this stream's.
+    /// - `StreamNotFound` — target stream does not exist.
+    /// - `NotAuthorized` — target stream's recipient differs from this stream's.
     /// - `CircularRedirect` — setting this redirect would create a cycle.
     fn set_redirect(env: Env, stream_id: u64, target_stream_id: u64, recipient: Address) -> Result<(), StreamError>;
 
@@ -521,7 +521,6 @@ pub trait SoroStreamInterface {
     /// both tokens proportionally. A single `cancel_stream` refunds both.
     ///
     /// # Errors
-    /// - `DuplicateTokenInDualStream` if `token1 == token2`.
     /// - `ZeroAmount` if either amount <= 0.
     /// - `ZeroFlowRate` if either `amount / duration_seconds` rounds to 0.
     /// - Standard errors from `create_stream` also apply.

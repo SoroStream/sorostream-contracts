@@ -1,7 +1,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, IssuerFlags, Ledger},
     token::StellarAssetClient,
     Address, Env,
 };
@@ -20,9 +20,9 @@ fn setup() -> TestEnv {
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
+    let token = env.register_stellar_asset_contract_v2(token_admin.clone());
+    token.issuer().set_flag(IssuerFlags::ClawbackEnabledFlag);
+    let token_id = token.address();
 
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
@@ -62,19 +62,36 @@ fn default_params() -> crate::types::CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
-
         tags: None,
         metadata_uri: None,
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Issue #506: TTL Extension Strategy Tests
+// Issue #620: minimum stream duration (end_time - start_time >= 1) enforced
 // ─────────────────────────────────────────────────────────────────────────
-// Test that stream ledger entries have their TTL extended on mutating operations.
 
 #[test]
-fn test_issue_506_ttl_extension_on_withdraw() {
+fn test_issue_620_zero_duration_stream_is_rejected() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let result = c.try_create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &100_000i128,
+        &0u64,
+        &false,
+        &default_params(),
+    );
+
+    assert_eq!(result, Err(Ok(StreamError::MinimumDurationNotMet)));
+}
+
+#[test]
+fn test_issue_620_one_second_duration_is_accepted() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
@@ -83,102 +100,33 @@ fn test_issue_506_ttl_extension_on_withdraw() {
         &t.sender,
         &t.recipient,
         &t.token_id,
-        &500_000,
-        &5000u64,
+        &100_000i128,
+        &1u64,
         &false,
         &default_params(),
     );
 
-    // Advance time and withdraw
-    t.env.ledger().set_timestamp(1000);
-    c.withdraw(&stream_id, &t.recipient);
-
-    // Stream should still exist and be retrievable
     let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.status, StreamStatus::Active);
-    assert!(stream.options.total_withdrawn > 0, "Total withdrawn should increase");
+    assert_eq!(stream.end_time, stream.start_time + 1);
 }
 
 #[test]
-fn test_issue_506_ttl_extension_on_cancel() {
+fn test_issue_620_zero_duration_rejected_independent_of_configured_minimum() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let stream_id = c.create_stream(
+    // Minimum duration is already 0 (set in `setup`), so the admin-configured
+    // floor cannot be what blocks this — the hard zero-duration check must.
+    let result = c.try_create_stream(
         &t.sender,
         &t.recipient,
         &t.token_id,
-        &500_000,
-        &5000u64,
+        &100_000i128,
+        &0u64,
         &false,
         &default_params(),
     );
 
-    // Advance time significantly
-    t.env.ledger().set_timestamp(2000);
-
-    // Cancel should still work without storage expiry
-    c.cancel_stream(&stream_id, &t.sender);
-
-    // Stream should be marked as cancelled (or removed if completed)
-    let result = c.try_get_stream(&stream_id);
-    // Either stream is removed or marked cancelled - both indicate successful cancellation
-    assert!(result.is_err() || c.get_stream(&stream_id).status == StreamStatus::Cancelled);
-}
-
-#[test]
-fn test_issue_506_ttl_extension_on_metadata_update() {
-    let t = setup();
-    let c = client(&t);
-
-    let stream_id = c.create_stream(
-        &t.sender,
-        &t.recipient,
-        &t.token_id,
-        &500_000,
-        &5000u64,
-        &false,
-        &default_params(),
-    );
-
-    let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
-    c.update_metadata_uri(&t.sender, &stream_id, &uri);
-
-    // Stream should still be retrievable
-    let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.options.metadata_uri, uri);
-}
-
-#[test]
-fn test_issue_506_multiple_mutating_calls_extend_ttl() {
-    let t = setup();
-    let c = client(&t);
-    t.env.ledger().set_timestamp(0);
-
-    let stream_id = c.create_stream(
-        &t.sender,
-        &t.recipient,
-        &t.token_id,
-        &1_000_000,
-        &100_000u64,
-        &false,
-        &default_params(),
-    );
-
-    // Perform multiple mutating operations at different times
-    for i in 1..5 {
-        t.env.ledger().set_timestamp(i * 10_000);
-
-        if i % 2 == 0 {
-            c.withdraw(&stream_id, &t.recipient);
-        } else {
-            let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
-            c.update_metadata_uri(&t.sender, &stream_id, &uri);
-        }
-
-        // Stream should still exist after each operation
-        let stream = c.get_stream(&stream_id);
-        assert_eq!(stream.status, StreamStatus::Active);
-    }
+    assert_eq!(result, Err(Ok(StreamError::MinimumDurationNotMet)));
 }
