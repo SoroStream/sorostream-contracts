@@ -169,6 +169,22 @@ pub trait SoroStreamInterface {
     fn approve_release(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
 
     fn withdraw(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+
+    /// Clones an existing active stream into a new stream.
+    ///
+    /// For a pure clone (no overrides) the new stream continues the source at
+    /// the same flow rate for the source's remaining duration and is funded
+    /// with the source's remaining unstreamed balance rather than its original
+    /// deposit, so a clone created mid-stream cannot over-pay.
+    fn clone_stream(
+        env: Env,
+        source_stream_id: u64,
+        caller: Address,
+        recipient_override: Option<Address>,
+        token_override: Option<Address>,
+        rate_override: Option<i128>,
+        duration_override: Option<u64>,
+    ) -> Result<u64, StreamError>;
     fn cancel_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
     fn stop_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
     fn transfer_sender(env: Env, stream_id: u64, current_sender: Address, new_sender: Address) -> Result<(), StreamError>;
@@ -248,6 +264,10 @@ pub trait SoroStreamInterface {
     fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError>;
     fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError>;
     fn execute_fee_change(env: Env) -> Result<(), StreamError>;
+
+    /// Returns the pending protocol-fee update as `(new_fee_bps, unlock_time)`,
+    /// or `None` when no change is waiting out the 48-hour timelock.
+    fn get_pending_fee_update(env: Env) -> Option<(u32, u64)>;
     fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError>;
     fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>);
     fn get_stats(env: Env) -> Stats;
@@ -331,6 +351,15 @@ pub trait SoroStreamInterface {
     fn is_fee_exempt(env: Env, addr: Address) -> bool;
     fn get_fees_collected(env: Env, token: Address) -> i128;
     fn sweep_fees(env: Env, token: Address, destination: Address) -> Result<(), StreamError>;
+
+    /// Returns the reward points accumulated by an address (issue #516).
+    fn get_reward_points(env: Env, address: Address) -> i128;
+
+    /// Returns the pending stream-creation fee discount (bps) for an address.
+    fn get_fee_discount(env: Env, address: Address) -> u32;
+
+    /// Redeems reward points for a discount on the caller's next stream creation.
+    fn redeem_points(env: Env, caller: Address, points: i128) -> Result<u32, StreamError>;
 
     fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError>;
     fn get_guardian(env: Env) -> Option<Address>;
