@@ -7,6 +7,8 @@ extern crate std;
 
 mod errors;
 mod events;
+#[cfg(debug_assertions)]
+mod invariants;
 mod interface;
 pub mod oracle;
 mod storage;
@@ -31,7 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
-#[cfg(test)] mod issue_523_tests;
+#[cfg(test)] mod issue_521_tests;
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -391,10 +393,29 @@ fn check_no_circular_redirect(env: &Env, source_id: u64, target_id: u64) -> Resu
 }
 
 #[contract]
-pub struct SoroStreamContract;
-
-#[contractimpl]
+pub struct SoroStreamContract;#[contractimpl]
 impl SoroStreamContract {
+    /// Runs the debug-only accounting invariant checks (issue #521) after a
+    /// state-changing entry point has finished.
+    ///
+    /// Compiled out of release builds: the workspace release profile disables
+    /// `debug_assertions`, so the body below disappears and the optimizer drops
+    /// every call site, leaving production bytecode unchanged. Test and audit
+    /// builds (debug assertions on) execute it on every mutation.
+    #[cfg(debug_assertions)]
+    fn debug_check_invariants(env: &Env, stream_id: Option<u64>) {
+        if let Some(id) = stream_id {
+            if let Some(stream) = load_stream(env, id) {
+                invariants::assert_stream_invariants(&stream);
+            }
+        }
+        invariants::assert_token_conservation(env);
+    }
+
+    /// Release-build counterpart of [`Self::debug_check_invariants`]: a no-op so
+    /// call sites stay unconditional and cost nothing.
+    #[cfg(not(debug_assertions))]
+    fn debug_check_invariants(_env: &Env, _stream_id: Option<u64>) {}
 
     // ─────────────────────────────────────────────────────────────────────────
     // Admin / lifecycle
@@ -1557,6 +1578,8 @@ impl SoroStreamContract {
         if let Some(ref t) = tag {
             events::stream_created_with_allowlist_enforcement(&env, stream_id, &recipient);
         }
+
+        Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(stream_id)
     }
@@ -4084,6 +4107,8 @@ impl SoroStreamContract {
             save_stream(&env, &s);
         }
 
+        Self::debug_check_invariants(&env, Some(stream_id));
+
         Ok(())
     }
 
@@ -4408,6 +4433,7 @@ impl SoroStreamContract {
         events::stream_cancelled(&env, stream_id, &stream.sender, total_refund, recipient_amount);
 
         clear_reentrancy_lock(&env);
+        Self::debug_check_invariants(&env, Some(stream_id));
         Ok(())
     }
 
@@ -5501,6 +5527,8 @@ impl SoroStreamContract {
             new_deposit,
         );
 
+        Self::debug_check_invariants(&env, Some(new_stream_id));
+
         Ok(new_stream_id)
     }
 
@@ -5579,6 +5607,8 @@ impl SoroStreamContract {
         save_stream(&env, &stream);
 
         events::stream_topped_up(&env, stream_id, effective_amount, new_end_time);
+
+        Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(())
     }
@@ -5834,6 +5864,8 @@ impl SoroStreamContract {
             new_end_time,
             remaining_balance,
         );
+
+        Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(())
     }
@@ -6574,6 +6606,7 @@ impl SoroStreamContract {
         decrement_active_stream_count(&env);
 
         events::stream_paused(&env, stream.id, &sender);
+        Self::debug_check_invariants(&env, Some(stream_id));
         Ok(())
     }
 
@@ -6609,6 +6642,7 @@ impl SoroStreamContract {
         increment_active_stream_count(&env);
 
         events::stream_resumed(&env, stream.id, &sender);
+        Self::debug_check_invariants(&env, Some(stream_id));
         Ok(())
     }
 
