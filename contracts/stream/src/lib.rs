@@ -20,7 +20,7 @@ pub mod roles;
 
 pub use interface::SoroStreamInterface;
 pub use errors::StreamError;
-pub use types::{AuditEntry, CreateStreamOptions, CreateStreamParams, HealthStatus, Stats, Stream, StreamHealth, StreamOptions, StreamStatus, StreamTransition, VestingCurve, StreamQueryFilter};
+pub use types::{AuditEntry, CreateStreamOptions, CreateStreamParams, HealthStatus, Stats, Stream, StreamHealth, StreamOptions, StreamStatus, StreamTransition, VestingCurve, StreamQueryFilter, WithdrawalProof, WithdrawalRecord};
 pub use oracle::IPriceOracle;
 pub use composability::ISoroStreamComposability;
 pub use roles::AdminRole;
@@ -290,6 +290,47 @@ fn refreshed_stream_view(env: &Env, mut stream: Stream) -> Stream {
 
 fn stream_refund_recipient(stream: &Stream) -> Address {
     stream.sponsor.clone().unwrap_or_else(|| stream.sender.clone())
+}
+
+fn withdrawal_record_hash(env: &Env, record: &types::WithdrawalRecord) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    bytes.push_back(0);
+    bytes.append(&Bytes::from_array(env, &record.stream_id.to_be_bytes()));
+    bytes.append(&Bytes::from_array(env, &record.amount.to_be_bytes()));
+    bytes.append(&Bytes::from_array(env, &record.timestamp.to_be_bytes()));
+    bytes.append(&Bytes::from_array(env, &record.index.to_be_bytes()));
+    env.crypto().sha256(&bytes)
+}
+
+fn withdrawal_parent_hash(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    bytes.push_back(1);
+    bytes.append(&Bytes::from_array(env, &left.to_array()));
+    bytes.append(&Bytes::from_array(env, &right.to_array()));
+    env.crypto().sha256(&bytes)
+}
+
+fn withdrawal_merkle_root(env: &Env, records: &Vec<types::WithdrawalRecord>) -> BytesN<32> {
+    let mut level = Vec::new(env);
+    for record in records.iter() {
+        level.push_back(withdrawal_record_hash(env, &record));
+    }
+    if level.is_empty() {
+        return env.crypto().sha256(&Bytes::new(env));
+    }
+
+    while level.len() > 1 {
+        let mut next_level = Vec::new(env);
+        let mut index = 0;
+        while index < level.len() {
+            let left = level.get(index).unwrap();
+            let right = level.get((index + 1).min(level.len() - 1)).unwrap();
+            next_level.push_back(withdrawal_parent_hash(env, &left, &right));
+            index += 2;
+        }
+        level = next_level;
+    }
+    level.get(0).unwrap()
 }
 
 // ── Feature (a): maybe emit StreamExpiryWarning ───────────────────────────────
@@ -3594,6 +3635,7 @@ impl SoroStreamContract {
             }
 
             award_stream_reward_points(&env, &stream, available);
+            storage::append_withdrawal_record(&env, stream_id, available, now);
             events::stream_withdrawn(&env, stream_id, &recipient, available, now, stream.options.total_withdrawn);
             return Ok(());
         }
@@ -3726,6 +3768,7 @@ impl SoroStreamContract {
             if tranches_newly_claimed > 0 {
                 events::tranches_withdrawn(&env, stream_id, &recipient, tranches_newly_claimed, claimable);
             }
+            storage::append_withdrawal_record(&env, stream_id, claimable, now);
             events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
             if all_claimed {
                 events::stream_completed(&env, stream_id);
@@ -4103,6 +4146,9 @@ impl SoroStreamContract {
         }
 
         award_stream_reward_points(&env, &stream, claimable);
+        if claimable > 0 {
+            storage::append_withdrawal_record(&env, stream_id, claimable, now);
+        }
         events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
 
         // Clear stream-specific reentrancy lock only if the stream still exists.
@@ -5289,6 +5335,7 @@ impl SoroStreamContract {
                             &recipient_amount,
                         );
                     }
+                    storage::append_withdrawal_record(&env, stream_id, claimable, now);
                     events::stream_withdrawn(&env, stream_id, &current_recipient, claimable, now, stream.options.total_withdrawn);
                 }
             }
@@ -7124,6 +7171,7 @@ impl SoroStreamContract {
 
             award_stream_reward_points(&env, &stream, claimable);
             amounts.push_back(claimable);
+            storage::append_withdrawal_record(&env, stream_id, claimable, now);
             events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
         }
 
@@ -7890,6 +7938,112 @@ impl SoroStreamContract {
         
         events::collateral_yield_claimed(&env, stream_id, &vault_config.vault_address, sender_yield, recipient_yield);
         Ok((sender_yield, recipient_yield))
+    }
+
+    pub fn get_withdrawal_history_root(env: Env, stream_id: u64) -> Result<BytesN<32>, StreamError> {
+        let records = storage::load_withdrawal_records(&env, stream_id);
+        if records.is_empty() {
+            return if load_stream(&env, stream_id).is_some() {
+                Err(StreamError::InvalidParameter)
+            } else {
+                Err(StreamError::StreamNotFound)
+            };
+        }
+        Ok(withdrawal_merkle_root(&env, &records))
+    }
+
+    pub fn get_withdrawal_proof(
+        env: Env,
+        stream_id: u64,
+        withdrawal_index: u32,
+    ) -> Result<types::WithdrawalProof, StreamError> {
+        let records = storage::load_withdrawal_records(&env, stream_id);
+        if records.is_empty() && load_stream(&env, stream_id).is_none() {
+            return Err(StreamError::StreamNotFound);
+        }
+        let record = records
+            .get(withdrawal_index)
+            .ok_or(StreamError::InvalidParameter)?;
+        let mut level = Vec::new(&env);
+        for item in records.iter() {
+            level.push_back(withdrawal_record_hash(&env, &item));
+        }
+
+        let mut position = withdrawal_index;
+        let mut siblings = Vec::new(&env);
+        while level.len() > 1 {
+            let sibling_index = if position % 2 == 0 {
+                (position + 1).min(level.len() - 1)
+            } else {
+                position - 1
+            };
+            siblings.push_back(level.get(sibling_index).unwrap());
+
+            let mut next_level = Vec::new(&env);
+            let mut index = 0;
+            while index < level.len() {
+                let left = level.get(index).unwrap();
+                let right = level.get((index + 1).min(level.len() - 1)).unwrap();
+                next_level.push_back(withdrawal_parent_hash(&env, &left, &right));
+                index += 2;
+            }
+            position /= 2;
+            level = next_level;
+        }
+
+        Ok(types::WithdrawalProof {
+            stream_id,
+            withdrawal_index,
+            amount: record.amount,
+            timestamp: record.timestamp,
+            leaf_hash: withdrawal_record_hash(&env, &record),
+            siblings,
+            leaf_count: records.len(),
+            root: level.get(0).unwrap(),
+        })
+    }
+
+    pub fn verify_withdrawal_proof(env: Env, proof: types::WithdrawalProof) -> bool {
+        if proof.leaf_count == 0 || proof.withdrawal_index >= proof.leaf_count {
+            return false;
+        }
+        let record = types::WithdrawalRecord {
+            stream_id: proof.stream_id,
+            amount: proof.amount,
+            timestamp: proof.timestamp,
+            index: proof.withdrawal_index,
+        };
+        let mut hash = withdrawal_record_hash(&env, &record);
+        if hash != proof.leaf_hash {
+            return false;
+        }
+
+        let mut position = proof.withdrawal_index;
+        let mut width = proof.leaf_count;
+        let mut sibling_index = 0;
+        while width > 1 {
+            let Some(sibling) = proof.siblings.get(sibling_index) else {
+                return false;
+            };
+            if position % 2 == 0 {
+                if position + 1 >= width && sibling != hash {
+                    return false;
+                }
+                hash = withdrawal_parent_hash(&env, &hash, &sibling);
+            } else {
+                hash = withdrawal_parent_hash(&env, &sibling, &hash);
+            }
+            position /= 2;
+            width = (width + 1) / 2;
+            sibling_index += 1;
+        }
+        if sibling_index != proof.siblings.len() || hash != proof.root {
+            return false;
+        }
+
+        Self::get_withdrawal_history_root(env, proof.stream_id)
+            .map(|root| root == proof.root)
+            .unwrap_or(false)
     }
 }
 
