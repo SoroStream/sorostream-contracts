@@ -113,9 +113,9 @@ use storage::{
     // feat/37 — per-sender active stream cap
     get_sender_stream_cap, set_sender_stream_cap,
     get_sender_active_count, increment_sender_active_count, decrement_sender_active_count,
+    // feat/35 — multi-tag support (issue #635)
+    get_stream_tags, set_stream_tags_storage, remove_stream_tags,
 };
-
-const MAX_STREAM_METADATA_BYTES: u32 = 256;
 
 // ── Helper: checked multiply ──────────────────────────────────────────────────
 fn checked_flow_amount(flow_rate: i128, elapsed: u64) -> Result<i128, StreamError> {
@@ -1243,6 +1243,7 @@ impl SoroStreamContract {
         let options = &params;
         let renewal_cap = options.effective_renew_count();
         let tag: Option<String> = None;
+        let tags: Option<Vec<Bytes>> = params.tags.clone();
         let on_complete_contract: Option<Address> = None;
         let on_complete_function: Option<Symbol> = None;
         let enforce_recipient_allowlist = false;
@@ -1276,6 +1277,19 @@ impl SoroStreamContract {
         if let Some(ref c) = comment {
             if c.len() > 256 {
                 return Err(StreamError::CommentTooLong);
+            }
+        }
+        // ── Validate stream tags (issue #635) ────────────────────────────────
+        // Optional list of categorisation labels. At most 3 tags; each must be
+        // at most 32 bytes long.
+        if let Some(ref ts) = tags {
+            if ts.len() > 3 {
+                return Err(StreamError::TooManyTags);
+            }
+            for t in ts.iter() {
+                if t.len() > 32 {
+                    return Err(StreamError::TagTooLong);
+                }
             }
         }
         validate_recipient_address(&env, &sender, &recipient)?;
@@ -1508,6 +1522,12 @@ impl SoroStreamContract {
             index_by_tag(&env, t, stream_id);
             set_stream_tag_storage(&env, stream_id, t);
         }
+        // feat/35: store multi-tags and index each one
+        if let Some(ref ts) = tags {
+            if !ts.is_empty() {
+                set_stream_tags_storage(&env, stream_id, ts);
+            }
+        }
         index_global_stream(&env, stream_id);
         // Only count as active immediately if no approval is required.
         if !options.requires_recipient_approval {
@@ -1599,6 +1619,8 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 sponsor: None,
                 requires_recipient_approval: false,
+
+                tags: None,
             },
         )
     }
@@ -1806,6 +1828,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2075,6 +2098,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2285,6 +2309,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2482,6 +2507,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -5103,7 +5129,9 @@ impl SoroStreamContract {
                     min_withdrawal_amount: None,
                     sponsor: None,
                     requires_recipient_approval: false,
-                },
+
+                tags: None,
+            },
             )?;
 
             new_stream_ids.push_back(new_stream_id);
@@ -5442,6 +5470,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -6395,6 +6424,13 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Returns the multi-tag list for a stream (issue #635).
+    ///
+    /// Returns an empty Vec if no tags have been set.
+    pub fn get_stream_tags(env: Env, stream_id: u64) -> Vec<Bytes> {
+        get_stream_tags(&env, stream_id)
+    }
+
     /// Returns only active streams created by a sender address.
     pub fn get_active_streams_by_sender(env: Env, sender: Address) -> Vec<Stream> {
         let ids = get_active_ids_by_sender(&env, &sender);
@@ -6768,7 +6804,8 @@ impl SoroStreamContract {
                     min_withdrawal_amount: None,
                     non_transferable,
                     requires_recipient_approval: false,
-                    approval_timestamp: 0,
+
+                approval_timestamp: 0,
                     escrow_sender_approved: false,
                     escrow_recipient_approved: false,
                     sender_locked: false,

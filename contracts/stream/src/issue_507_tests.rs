@@ -62,6 +62,8 @@ fn default_params() -> crate::types::CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
+
+        tags: None,
     }
 }
 
@@ -163,7 +165,9 @@ fn test_issue_507_completed_streams_reduce_storage_footprint() {
                 min_withdrawal_amount: None,
                 sponsor: None,
                 requires_recipient_approval: false,
-            },
+
+        tags: None,
+    },
         );
 
         completed_stream_ids.push(stream_id);
