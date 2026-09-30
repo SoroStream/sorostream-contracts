@@ -177,6 +177,13 @@ pub trait SoroStreamInterface {
     fn get_withdrawal_history_root(env: Env, stream_id: u64) -> Result<BytesN<32>, StreamError>;
     fn verify_withdrawal_proof(env: Env, proof: WithdrawalProof) -> bool;
 
+    fn partial_withdraw(
+        env: Env,
+        stream_id: u64,
+        amount: i128,
+        caller: Address,
+    ) -> Result<(), StreamError>;
+
     /// Clones an existing active stream into a new stream.
     ///
     /// For a pure clone (no overrides) the new stream continues the source at

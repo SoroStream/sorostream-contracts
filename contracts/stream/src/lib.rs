@@ -3671,6 +3671,10 @@ impl SoroStreamContract {
                 }
             }
 
+            claimable = claimable
+                .saturating_sub(storage::get_partial_withdrawal_carry(&env, stream_id))
+                .max(0);
+
             let tranches_newly_claimed = new_cursor - stream.options.tranches_claimed;
 
             if claimable == 0 {
@@ -3700,6 +3704,7 @@ impl SoroStreamContract {
 
             // EFFECTS — update cursor and total_withdrawn before any token transfer.
             stream.options.tranches_claimed = new_cursor;
+            storage::clear_partial_withdrawal_carry(&env, stream_id);
             if claimable > 0 {
                 stream.options.total_withdrawn = stream
                     .options.total_withdrawn
@@ -3818,6 +3823,9 @@ impl SoroStreamContract {
             }
         };
 
+        raw_claimable = raw_claimable
+            .saturating_add(storage::get_partial_withdrawal_carry(&env, stream_id));
+
         // If milestones are set, limit claimable to released milestone amounts
         if !stream.options.milestones.is_empty() {
             let mut milestone_claimable = 0i128;
@@ -3913,6 +3921,7 @@ impl SoroStreamContract {
                 .ok_or(StreamError::Overflow)?;
         }
         stream.last_withdraw_time = effective_now;
+        storage::clear_partial_withdrawal_carry(&env, stream_id);
 
         // Advance the step cursor when the recipient successfully withdraws at
         // or past a step boundary.  The cursor only moves on an actual transfer
@@ -6290,7 +6299,9 @@ impl SoroStreamContract {
                     break;
                 }
             }
-            return Ok(claimable);
+            return Ok(claimable
+                .saturating_sub(storage::get_partial_withdrawal_carry(&env, stream_id))
+                .max(0));
         }
 
         // ── Issue #13: Cliff enforcement ─────────────────────────────────────
@@ -6330,7 +6341,9 @@ impl SoroStreamContract {
         // the dust threshold. Sub-threshold amounts are treated as rounding
         // artifacts and returned as 0 to avoid failed micro-withdrawals.
         let available = stream.deposit.saturating_sub(stream.options.total_withdrawn);
-        let claimable = raw.min(available);
+        let claimable = raw
+            .saturating_add(storage::get_partial_withdrawal_carry(&env, stream_id))
+            .min(available);
 
         if claimable <= DUST_THRESHOLD {
             return Ok(0);
