@@ -33,6 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
+#[cfg(test)] mod issue_628_tests;
 #[cfg(test)] mod issue_523_tests;
 #[cfg(test)] mod issue_521_tests;
 #[cfg(test)] mod issue_402_tests;
@@ -6087,6 +6088,80 @@ impl SoroStreamContract {
             new_rate,
             new_end_time,
             remaining_balance,
+        );
+
+        Self::debug_check_invariants(&env, Some(stream_id));
+
+        Ok(())
+    }
+
+    /// Modifies flow_rate and end_time of an active stream without cancelling (Issue #628).
+    ///
+    /// Only the sender may call this. Preserves the recipient's already claimable balance
+    /// calculated at update time.
+    pub fn update_stream(
+        env: Env,
+        stream_id: u64,
+        new_flow_rate: i128,
+        new_end_time: u64,
+    ) -> Result<(), StreamError> {
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+
+        let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        stream.sender.require_auth();
+
+        if stream.options.is_step_vesting {
+            return Err(StreamError::InvalidDuration);
+        }
+
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+
+        validation::require_positive_rate(new_flow_rate)?;
+
+        let now = env.ledger().timestamp();
+        if new_end_time <= now {
+            return Err(StreamError::InvalidEndTime);
+        }
+
+        // Settle accrued balance at current rate so already claimable tokens are preserved
+        let claimable_at_old_rate = Self::get_claimable(env.clone(), stream_id)
+            .unwrap_or(0)
+            .max(0);
+
+        stream.last_withdraw_time = now;
+        let settled_withdrawn = stream
+            .options
+            .total_withdrawn
+            .checked_add(claimable_at_old_rate)
+            .ok_or(StreamError::Overflow)?;
+
+        let old_rate = stream.flow_rate;
+        stream.flow_rate = new_flow_rate;
+        stream.rate_per_second = new_flow_rate;
+        stream.end_time = new_end_time;
+        stream.options.total_withdrawn = settled_withdrawn;
+
+        let remaining_duration = new_end_time.saturating_sub(now);
+        let remaining_amount = new_flow_rate
+            .checked_mul(remaining_duration as i128)
+            .ok_or(StreamError::Overflow)?;
+        stream.deposit = settled_withdrawn
+            .checked_add(remaining_amount)
+            .ok_or(StreamError::Overflow)?;
+
+        save_stream(&env, &stream);
+
+        events::stream_rate_updated(
+            &env,
+            stream_id,
+            old_rate,
+            new_flow_rate,
+            new_end_time,
+            remaining_amount,
         );
 
         Self::debug_check_invariants(&env, Some(stream_id));

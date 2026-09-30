@@ -242,6 +242,7 @@ pub trait SoroStreamInterface {
     /// - `InsufficientBalance` — insufficient remaining balance to support the new rate until end_time.
     /// - `Overflow` — arithmetic overflow during calculations.
     fn update_stream_rate(env: Env, stream_id: u64, sender: Address, new_rate: i128) -> Result<(), StreamError>;
+    fn update_stream(env: Env, stream_id: u64, new_flow_rate: i128, new_end_time: u64) -> Result<(), StreamError>;
     
     fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
 
