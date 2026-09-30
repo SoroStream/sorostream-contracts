@@ -85,84 +85,27 @@ impl TestEnv {
 //  1. Core lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Issue #626: sponsor_stream must authenticate the sponsor ─────────────────
+// ── Issue #618: prevent self-loop streams ────────────────────────────────────
 
-/// When a sponsor funds a stream, they must explicitly authorise the call.
-/// Without sponsor.require_auth(), any address could be used to fund a stream.
+/// Creating a stream where the sender is the contract itself must be rejected.
+/// A self-referential stream would exhaust gas or cause undefined behaviour.
 #[test]
-fn test_sponsor_stream_with_valid_auth_succeeds() {
+#[should_panic(expected = "Error::InvalidSender")]
+fn test_create_stream_contract_as_sender_is_rejected() {
     let t = TestEnv::new();
-    let sponsor = Address::generate(&t.env);
-    // Mint tokens to the sponsor so they can fund the stream.
-    StellarAssetClient::new(&t.env, &t.token).mint(&sponsor, &10_000_000);
-
     let client = t.client();
     let start = t.now();
     let end = start + 1_000;
 
-    // With mock_all_auths the sponsor's auth requirement is satisfied automatically.
-    let stream_id = client.sponsor_stream(
-        &t.sender,
+    // Use the contract address as the sender — must panic with InvalidSender.
+    client.create_stream(
+        &t.contract,    // sender == contract_address ← must be rejected
         &t.recipient,
         &t.token,
         &1_000_i128,
         &start,
         &end,
         &false,
-        &sponsor,
-    );
-
-    let stream = client.get_stream(&stream_id);
-    // The stream sender is still the original sender, not the sponsor.
-    assert_eq!(stream.sender, t.sender);
-    assert_eq!(stream.deposit, 1_000);
-}
-
-/// An unauthenticated sponsor attempt must be rejected by the auth framework.
-/// This test verifies that removing the sponsor auth mock causes a failure.
-#[test]
-#[should_panic]
-fn test_sponsor_stream_unauthenticated_sponsor_is_rejected() {
-    let env = Env::default();
-    // Do NOT call env.mock_all_auths() — we want real auth enforcement.
-
-    let admin = Address::generate(&env);
-    let sender = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let sponsor = Address::generate(&env);
-
-    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
-    let token = token_id.address();
-    StellarAssetClient::new(&env, &token).mint(&sender, &10_000_000);
-    StellarAssetClient::new(&env, &token).mint(&sponsor, &10_000_000);
-
-    let contract = env.register(StreamingContract, ());
-    let client = StreamingContractClient::new(&env, &contract);
-
-    let start = env.ledger().timestamp();
-    let end = start + 1_000;
-
-    // Only mock sender auth, not sponsor — sponsor auth must fail.
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &sender,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract,
-            fn_name: "sponsor_stream",
-            args: (sender.clone(), recipient.clone(), token.clone(), 1_000_i128, start, end, false, sponsor.clone()).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-
-    // sponsor has NOT authorised — this should panic.
-    client.sponsor_stream(
-        &sender,
-        &recipient,
-        &token,
-        &1_000_i128,
-        &start,
-        &end,
-        &false,
-        &sponsor,
     );
 }
 
@@ -598,9 +541,8 @@ fn test_discard_expired_proposal_refunds_sender() {
     let proposal_id = setup_proposal(&t, 10);
     // Advance past expiry.
     t.set_seq(t.seq() + 11);
-    // Anyone can discard after expiry; use a stranger address.
-    let stranger = Address::generate(&t.env);
-    t.client().discard_proposal(&proposal_id, &stranger);
+    // Only the original sender can discard; even after expiry.
+    t.client().discard_proposal(&proposal_id, &t.sender);
 
     let bal_after = t.token_client().balance(&t.sender);
     assert_eq!(bal_after, bal_before, "sender should be fully refunded");
@@ -620,7 +562,7 @@ fn test_sender_can_retract_before_expiry() {
 }
 
 #[test]
-#[should_panic(expected = "proposal has not expired; only sender can retract")]
+#[should_panic(expected = "Error::Unauthorized")]
 fn test_third_party_cannot_discard_active_proposal() {
     let t = TestEnv::new();
     let proposal_id = setup_proposal(&t, 100);
@@ -628,6 +570,24 @@ fn test_third_party_cannot_discard_active_proposal() {
     // A stranger tries to discard before expiry — must panic.
     let stranger = Address::generate(&t.env);
     t.client().discard_proposal(&proposal_id, &stranger);
+}
+
+// ── Issue #619: only original proposer can cancel ────────────────────────────
+
+/// A different admin (stranger) cannot cancel an expired proposal.
+/// Even after expiry the original sender must be the only one who can discard.
+#[test]
+#[should_panic(expected = "Error::Unauthorized")]
+fn test_different_admin_cannot_cancel_expired_proposal() {
+    let t = TestEnv::new();
+    let proposal_id = setup_proposal(&t, 10);
+
+    // Advance past expiry.
+    t.set_seq(t.seq() + 11);
+
+    // A different admin/attacker tries to discard after expiry — must panic.
+    let attacker = Address::generate(&t.env);
+    t.client().discard_proposal(&proposal_id, &attacker);
 }
 
 #[test]

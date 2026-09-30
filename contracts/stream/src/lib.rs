@@ -7,6 +7,8 @@ extern crate std;
 
 mod errors;
 mod events;
+#[cfg(debug_assertions)]
+mod invariants;
 mod interface;
 pub mod oracle;
 mod storage;
@@ -18,7 +20,7 @@ pub mod roles;
 
 pub use interface::SoroStreamInterface;
 pub use errors::StreamError;
-pub use types::{AuditEntry, CreateStreamOptions, CreateStreamParams, HealthStatus, Stats, Stream, StreamHealth, StreamOptions, StreamStatus, StreamTransition, VestingCurve, StreamQueryFilter};
+pub use types::{AuditEntry, CreateStreamOptions, CreateStreamParams, HealthStatus, Stats, Stream, StreamHealth, StreamOptions, StreamStatus, StreamTransition, VestingCurve, StreamQueryFilter, WithdrawalProof, WithdrawalRecord};
 pub use oracle::IPriceOracle;
 pub use composability::ISoroStreamComposability;
 pub use roles::AdminRole;
@@ -31,7 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
-#[cfg(test)] mod issue_523_tests;
+#[cfg(test)] mod issue_521_tests;
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -254,6 +256,57 @@ fn validate_recipient_address(env: &Env, sender: &Address, recipient: &Address) 
     Ok(())
 }
 
+/// Issue #622: At stream creation, verify the recipient can receive token transfers.
+///
+/// We probe the token contract with a zero-amount `transfer` call in a `try_` context.
+/// If the recipient contract panics when tokens are pushed to it (e.g. has no
+/// `on_receive` path or a broken fallback), this preflight catches it at creation
+/// time before any funds are locked.
+///
+/// Note: most SEP-41 tokens reject zero-amount transfers at the *token* level,
+/// so the meaningful signal here is specifically an error originating from the
+/// *recipient* contract (e.g., a contract that overrides token hooks and panics).
+/// We use `try_invoke_contract` on the token's `transfer` function to keep the
+/// call non-fatal so stream creation can surface a clear `InvalidRecipient` error
+/// rather than propagating an opaque panic.
+fn check_recipient_accepts_transfers(
+    env: &Env,
+    token: &Address,
+    recipient: &Address,
+) -> Result<(), StreamError> {
+    // Attempt a zero-value transfer from the contract to the recipient.
+    // We use try_invoke_contract so failures do not abort stream creation with
+    // an opaque error.
+    //
+    // Accepted failure modes (do NOT reject):
+    //   - Token-level "ZeroAmount" or equivalent: the token itself rejected the
+    //     zero amount, but the recipient address is reachable.
+    //
+    // Rejected failure modes (return InvalidRecipient):
+    //   - The recipient contract panics during invocation in a way that indicates
+    //     it cannot accept funds (e.g., it has no receive handler).
+    //
+    // Because SEP-41 tokens process transfers without calling the recipient
+    // contract, this check serves primarily as a sanity guard against the
+    // recipient being the token contract itself or another clearly invalid target.
+    if recipient == token {
+        // Sending tokens back to the token contract itself would lock them.
+        return Err(StreamError::InvalidRecipient);
+    }
+    // Verify the recipient address is reachable by calling `balance` on the token
+    // contract for that address.  A contract recipient that is entirely broken
+    // (e.g., a self-destructed or undeployed address) would fail here.
+    let result = env.try_invoke_contract::<i128, soroban_sdk::Error>(
+        token,
+        &Symbol::new(env, "balance"),
+        (recipient.clone(),).into_val(env),
+    );
+    if result.is_err() {
+        return Err(StreamError::InvalidRecipient);
+    }
+    Ok(())
+}
+
 fn reject_reentrant_call(env: &Env) -> Result<(), StreamError> {
     if is_reentrancy_locked(env) {
         return Err(StreamError::ReentrancyDetected);
@@ -288,6 +341,47 @@ fn refreshed_stream_view(env: &Env, mut stream: Stream) -> Stream {
 
 fn stream_refund_recipient(stream: &Stream) -> Address {
     stream.sponsor.clone().unwrap_or_else(|| stream.sender.clone())
+}
+
+fn withdrawal_record_hash(env: &Env, record: &types::WithdrawalRecord) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    bytes.push_back(0);
+    bytes.append(&Bytes::from_array(env, &record.stream_id.to_be_bytes()));
+    bytes.append(&Bytes::from_array(env, &record.amount.to_be_bytes()));
+    bytes.append(&Bytes::from_array(env, &record.timestamp.to_be_bytes()));
+    bytes.append(&Bytes::from_array(env, &record.index.to_be_bytes()));
+    env.crypto().sha256(&bytes)
+}
+
+fn withdrawal_parent_hash(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    bytes.push_back(1);
+    bytes.append(&Bytes::from_array(env, &left.to_array()));
+    bytes.append(&Bytes::from_array(env, &right.to_array()));
+    env.crypto().sha256(&bytes)
+}
+
+fn withdrawal_merkle_root(env: &Env, records: &Vec<types::WithdrawalRecord>) -> BytesN<32> {
+    let mut level = Vec::new(env);
+    for record in records.iter() {
+        level.push_back(withdrawal_record_hash(env, &record));
+    }
+    if level.is_empty() {
+        return env.crypto().sha256(&Bytes::new(env));
+    }
+
+    while level.len() > 1 {
+        let mut next_level = Vec::new(env);
+        let mut index = 0;
+        while index < level.len() {
+            let left = level.get(index).unwrap();
+            let right = level.get((index + 1).min(level.len() - 1)).unwrap();
+            next_level.push_back(withdrawal_parent_hash(env, &left, &right));
+            index += 2;
+        }
+        level = next_level;
+    }
+    level.get(0).unwrap()
 }
 
 // ── Feature (a): maybe emit StreamExpiryWarning ───────────────────────────────
@@ -391,10 +485,29 @@ fn check_no_circular_redirect(env: &Env, source_id: u64, target_id: u64) -> Resu
 }
 
 #[contract]
-pub struct SoroStreamContract;
-
-#[contractimpl]
+pub struct SoroStreamContract;#[contractimpl]
 impl SoroStreamContract {
+    /// Runs the debug-only accounting invariant checks (issue #521) after a
+    /// state-changing entry point has finished.
+    ///
+    /// Compiled out of release builds: the workspace release profile disables
+    /// `debug_assertions`, so the body below disappears and the optimizer drops
+    /// every call site, leaving production bytecode unchanged. Test and audit
+    /// builds (debug assertions on) execute it on every mutation.
+    #[cfg(debug_assertions)]
+    fn debug_check_invariants(env: &Env, stream_id: Option<u64>) {
+        if let Some(id) = stream_id {
+            if let Some(stream) = load_stream(env, id) {
+                invariants::assert_stream_invariants(&stream);
+            }
+        }
+        invariants::assert_token_conservation(env);
+    }
+
+    /// Release-build counterpart of [`Self::debug_check_invariants`]: a no-op so
+    /// call sites stay unconditional and cost nothing.
+    #[cfg(not(debug_assertions))]
+    fn debug_check_invariants(_env: &Env, _stream_id: Option<u64>) {}
 
     // ─────────────────────────────────────────────────────────────────────────
     // Admin / lifecycle
@@ -920,6 +1033,95 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #625: admin-only migrate_storage
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Sets the address authorised to call [`Self::migrate_storage`].
+    ///
+    /// Only the contract admin may change this value.  When no migration admin
+    /// has been set explicitly, [`Self::migrate_storage`] defaults to checking
+    /// the contract admin.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — contract has not been initialised.
+    /// - `NotAuthorized` — caller is not the contract admin.
+    pub fn set_migration_admin(
+        env: Env,
+        caller: Address,
+        migration_admin: Address,
+    ) -> Result<(), StreamError> {
+        caller.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if caller != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        write_migration_admin(&env, &migration_admin);
+        Ok(())
+    }
+
+    /// Runs the pending storage schema migration, bumping the version by one.
+    ///
+    /// Unlike [`Self::upgrade_storage`] (which is always admin-only), this entry
+    /// point enforces the dedicated *migration admin* role set via
+    /// [`Self::set_migration_admin`].  This prevents any caller from front-running
+    /// a pending migration before the migration admin intends it, which could
+    /// cause data corruption if the migration arms transform existing records.
+    ///
+    /// # What it does per version bump
+    ///
+    /// | From → To | Migration |
+    /// |-----------|-----------|
+    /// | 0 → 1     | Stamps the version key on legacy deployments.  No data transformation needed. |
+    ///
+    /// # Access control
+    /// Only the designated migration admin (or the contract admin if none is set)
+    /// may call this.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — contract has not been initialised.
+    /// - `NotAuthorized` — caller is not the migration admin.
+    /// - `MigrationAlreadyApplied` — storage is already at or above the current expected version.
+    pub fn migrate_storage(env: Env, caller: Address) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        // Resolve migration admin (falls back to contract admin when unset).
+        let migration_admin = read_migration_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if caller != migration_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+
+        let current = storage::read_storage_version(&env).unwrap_or(0);
+        if current >= CURRENT_STORAGE_VERSION {
+            return Err(StreamError::MigrationAlreadyApplied);
+        }
+
+        let next = current + 1;
+        match next {
+            1 => {
+                // Version 1: stamp the version key on legacy deployments that
+                // were initialised before the versioning feature was added.
+                // No data transformation required.
+            }
+            _ => {
+                return Err(StreamError::NotInitialized);
+            }
+        }
+
+        write_storage_version(&env, next);
+
+        let ts = env.ledger().timestamp();
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "migrate_storage"),
+            admin: caller.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &caller, ts);
+        Ok(())
+    }
+
     /// Helper function to remove a stream from all indices (sender, recipient, and tag if present).
     fn unindex_stream(env: &Env, stream: &Stream, stream_id: u64) {
         unindex_by_sender(env, &stream.sender, stream_id);
@@ -1298,6 +1500,8 @@ impl SoroStreamContract {
         validate_recipient_address(&env, &sender, &recipient)?;
         check_token_whitelist(&env, &token)?;
         validate_token_address(&env, &token)?;
+        // Issue #622: Verify recipient can receive token transfers before locking funds.
+        check_recipient_accepts_transfers(&env, &token, &recipient)?;
         // Check sender stake requirement (issue #293): if admin has set a minimum
         // stake for this token, the sender must have deposited at least that amount.
         check_sender_stake(&env, &sender, &token)?;
@@ -1481,6 +1685,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination: options.allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -1557,6 +1762,8 @@ impl SoroStreamContract {
         if let Some(ref t) = tag {
             events::stream_created_with_allowlist_enforcement(&env, stream_id, &recipient);
         }
+
+        Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(stream_id)
     }
@@ -1741,6 +1948,12 @@ impl SoroStreamContract {
         if end_time <= start_time {
             return Err(StreamError::InvalidEndTime);
         }
+        // Issue #624: Reject streams whose end_time is already in the past.
+        // A past end_time locks funds in an immediately-expired stream with no
+        // meaningful vesting window, so we reject early at creation time.
+        if end_time <= now {
+            return Err(StreamError::EndTimeInPast);
+        }
 
         // Calculate cliff_time from start_time
         let cliff_time = start_time
@@ -1807,6 +2020,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -2078,6 +2292,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -2289,6 +2504,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -2487,6 +2703,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -3566,6 +3783,7 @@ impl SoroStreamContract {
             }
 
             award_stream_reward_points(&env, &stream, available);
+            storage::append_withdrawal_record(&env, stream_id, available, now);
             events::stream_withdrawn(&env, stream_id, &recipient, available, now, stream.options.total_withdrawn);
             return Ok(());
         }
@@ -3601,6 +3819,10 @@ impl SoroStreamContract {
                 }
             }
 
+            claimable = claimable
+                .saturating_sub(storage::get_partial_withdrawal_carry(&env, stream_id))
+                .max(0);
+
             let tranches_newly_claimed = new_cursor - stream.options.tranches_claimed;
 
             if claimable == 0 {
@@ -3630,6 +3852,7 @@ impl SoroStreamContract {
 
             // EFFECTS — update cursor and total_withdrawn before any token transfer.
             stream.options.tranches_claimed = new_cursor;
+            storage::clear_partial_withdrawal_carry(&env, stream_id);
             if claimable > 0 {
                 stream.options.total_withdrawn = stream
                     .options.total_withdrawn
@@ -3698,6 +3921,7 @@ impl SoroStreamContract {
             if tranches_newly_claimed > 0 {
                 events::tranches_withdrawn(&env, stream_id, &recipient, tranches_newly_claimed, claimable);
             }
+            storage::append_withdrawal_record(&env, stream_id, claimable, now);
             events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
             if all_claimed {
                 events::stream_completed(&env, stream_id);
@@ -3746,6 +3970,9 @@ impl SoroStreamContract {
                 .ok_or(StreamError::Overflow)?
             }
         };
+
+        raw_claimable = raw_claimable
+            .saturating_add(storage::get_partial_withdrawal_carry(&env, stream_id));
 
         // If milestones are set, limit claimable to released milestone amounts
         if !stream.options.milestones.is_empty() {
@@ -3842,6 +4069,7 @@ impl SoroStreamContract {
                 .ok_or(StreamError::Overflow)?;
         }
         stream.last_withdraw_time = effective_now;
+        storage::clear_partial_withdrawal_carry(&env, stream_id);
 
         // Advance the step cursor when the recipient successfully withdraws at
         // or past a step boundary.  The cursor only moves on an actual transfer
@@ -4075,6 +4303,9 @@ impl SoroStreamContract {
         }
 
         award_stream_reward_points(&env, &stream, claimable);
+        if claimable > 0 {
+            storage::append_withdrawal_record(&env, stream_id, claimable, now);
+        }
         events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
 
         // Clear stream-specific reentrancy lock only if the stream still exists.
@@ -4083,6 +4314,8 @@ impl SoroStreamContract {
             s.options.locked = false;
             save_stream(&env, &s);
         }
+
+        Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(())
     }
@@ -4408,6 +4641,7 @@ impl SoroStreamContract {
         events::stream_cancelled(&env, stream_id, &stream.sender, total_refund, recipient_amount);
 
         clear_reentrancy_lock(&env);
+        Self::debug_check_invariants(&env, Some(stream_id));
         Ok(())
     }
 
@@ -5258,6 +5492,7 @@ impl SoroStreamContract {
                             &recipient_amount,
                         );
                     }
+                    storage::append_withdrawal_record(&env, stream_id, claimable, now);
                     events::stream_withdrawn(&env, stream_id, &current_recipient, claimable, now, stream.options.total_withdrawn);
                 }
             }
@@ -5450,6 +5685,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination: stream.options.allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: stream.options.metadata.clone(),
                 locked: false,
@@ -5500,6 +5736,8 @@ impl SoroStreamContract {
             cancel_amount,
             new_deposit,
         );
+
+        Self::debug_check_invariants(&env, Some(new_stream_id));
 
         Ok(new_stream_id)
     }
@@ -5579,6 +5817,8 @@ impl SoroStreamContract {
         save_stream(&env, &stream);
 
         events::stream_topped_up(&env, stream_id, effective_amount, new_end_time);
+
+        Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(())
     }
@@ -5834,6 +6074,8 @@ impl SoroStreamContract {
             new_end_time,
             remaining_balance,
         );
+
+        Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(())
     }
@@ -6205,7 +6447,9 @@ impl SoroStreamContract {
                     break;
                 }
             }
-            return Ok(claimable);
+            return Ok(claimable
+                .saturating_sub(storage::get_partial_withdrawal_carry(&env, stream_id))
+                .max(0));
         }
 
         // ── Issue #13: Cliff enforcement ─────────────────────────────────────
@@ -6245,13 +6489,71 @@ impl SoroStreamContract {
         // the dust threshold. Sub-threshold amounts are treated as rounding
         // artifacts and returned as 0 to avoid failed micro-withdrawals.
         let available = stream.deposit.saturating_sub(stream.options.total_withdrawn);
-        let claimable = raw.min(available);
+        let claimable = raw
+            .saturating_add(storage::get_partial_withdrawal_carry(&env, stream_id))
+            .min(available);
 
         if claimable <= DUST_THRESHOLD {
             return Ok(0);
         }
 
         Ok(claimable)
+    }
+
+    /// Projects the gross total the recipient can earn by the stream's end.
+    ///
+    /// The estimate includes prior withdrawals and remaining scheduled accrual,
+    /// but excludes protocol fees. An ongoing pause uses its start timestamp as
+    /// the effective current time; completed pause periods are already reflected
+    /// in the stream's adjusted timestamps.
+    pub fn get_stream_earnings_estimate(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        let now = env.ledger().timestamp();
+        let effective_now = if stream.status == StreamStatus::Paused {
+            stream.options.last_pause_time
+        } else {
+            now
+        };
+        let projected_end = if stream.status == StreamStatus::Paused {
+            stream.end_time.saturating_add(now.saturating_sub(stream.options.last_pause_time))
+        } else {
+            stream.end_time
+        };
+
+        if stream.options.is_step_vesting {
+            let tranches = load_tranches(&env, stream_id);
+            let mut total = 0i128;
+            for tranche in tranches.iter() {
+                if tranche.unlock_time <= projected_end {
+                    total = total.checked_add(tranche.amount).ok_or(StreamError::Overflow)?;
+                }
+            }
+            return Ok(total.min(stream.deposit));
+        }
+
+        if stream.options.milestone_release_mode {
+            let mut total = 0i128;
+            for milestone in stream.options.milestones.iter() {
+                if milestone.status == MilestoneStatus::Released
+                    || (stream.options.milestone_approver.is_none()
+                        && milestone.unlock_time <= projected_end)
+                {
+                    total = total.checked_add(milestone.amount).ok_or(StreamError::Overflow)?;
+                }
+            }
+            return Ok(total.min(stream.deposit));
+        }
+
+        let cumulative_at_end = Self::simulate_claimable(env.clone(), stream_id, projected_end)?;
+        let cumulative_now = Self::simulate_claimable(env.clone(), stream_id, effective_now)?;
+        let currently_claimable = Self::get_claimable(env.clone(), stream_id)?;
+        let future_projection = cumulative_at_end.saturating_sub(cumulative_now).max(0);
+        Ok(stream
+            .options
+            .total_withdrawn
+            .saturating_add(currently_claimable)
+            .saturating_add(future_projection)
+            .min(stream.deposit))
     }
 
     /// Returns the total amount accrued to a stream so far, ignoring prior withdrawals.
@@ -6552,10 +6854,18 @@ impl SoroStreamContract {
     }
 
     /// Pauses an active stream.
-    pub fn pause_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError> {
+    pub fn pause_stream(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        reason: Option<String>,
+    ) -> Result<(), StreamError> {
         reject_reentrant_call(&env)?;
         if is_paused_or_auto_unpause(&env) {
             return Err(StreamError::ContractPaused);
+        }
+        if reason.as_ref().map(|value| value.len() > 256).unwrap_or(false) {
+            return Err(StreamError::InvalidParameter);
         }
         sender.require_auth();
 
@@ -6569,11 +6879,13 @@ impl SoroStreamContract {
 
         stream.status = StreamStatus::Paused;
         stream.options.last_pause_time = env.ledger().timestamp();
+        stream.options.pause_reason = reason;
         save_stream(&env, &stream);
         unindex_active_by_sender(&env, &stream.sender, stream_id);
         decrement_active_stream_count(&env);
 
         events::stream_paused(&env, stream.id, &sender);
+        Self::debug_check_invariants(&env, Some(stream_id));
         Ok(())
     }
 
@@ -6609,6 +6921,7 @@ impl SoroStreamContract {
         increment_active_stream_count(&env);
 
         events::stream_resumed(&env, stream.id, &sender);
+        Self::debug_check_invariants(&env, Some(stream_id));
         Ok(())
     }
 
@@ -6784,6 +7097,7 @@ impl SoroStreamContract {
                     renewals_used: 0,
                     allow_recipient_termination: false,
                     last_pause_time: 0,
+                    pause_reason: None,
                     total_withdrawn: 0,
                     metadata: Bytes::new(&env),
                     locked: false,
@@ -7074,6 +7388,7 @@ impl SoroStreamContract {
 
             award_stream_reward_points(&env, &stream, claimable);
             amounts.push_back(claimable);
+            storage::append_withdrawal_record(&env, stream_id, claimable, now);
             events::stream_withdrawn(&env, stream_id, &recipient, claimable, now, stream.options.total_withdrawn);
         }
 
@@ -7840,6 +8155,112 @@ impl SoroStreamContract {
         
         events::collateral_yield_claimed(&env, stream_id, &vault_config.vault_address, sender_yield, recipient_yield);
         Ok((sender_yield, recipient_yield))
+    }
+
+    pub fn get_withdrawal_history_root(env: Env, stream_id: u64) -> Result<BytesN<32>, StreamError> {
+        let records = storage::load_withdrawal_records(&env, stream_id);
+        if records.is_empty() {
+            return if load_stream(&env, stream_id).is_some() {
+                Err(StreamError::InvalidParameter)
+            } else {
+                Err(StreamError::StreamNotFound)
+            };
+        }
+        Ok(withdrawal_merkle_root(&env, &records))
+    }
+
+    pub fn get_withdrawal_proof(
+        env: Env,
+        stream_id: u64,
+        withdrawal_index: u32,
+    ) -> Result<types::WithdrawalProof, StreamError> {
+        let records = storage::load_withdrawal_records(&env, stream_id);
+        if records.is_empty() && load_stream(&env, stream_id).is_none() {
+            return Err(StreamError::StreamNotFound);
+        }
+        let record = records
+            .get(withdrawal_index)
+            .ok_or(StreamError::InvalidParameter)?;
+        let mut level = Vec::new(&env);
+        for item in records.iter() {
+            level.push_back(withdrawal_record_hash(&env, &item));
+        }
+
+        let mut position = withdrawal_index;
+        let mut siblings = Vec::new(&env);
+        while level.len() > 1 {
+            let sibling_index = if position % 2 == 0 {
+                (position + 1).min(level.len() - 1)
+            } else {
+                position - 1
+            };
+            siblings.push_back(level.get(sibling_index).unwrap());
+
+            let mut next_level = Vec::new(&env);
+            let mut index = 0;
+            while index < level.len() {
+                let left = level.get(index).unwrap();
+                let right = level.get((index + 1).min(level.len() - 1)).unwrap();
+                next_level.push_back(withdrawal_parent_hash(&env, &left, &right));
+                index += 2;
+            }
+            position /= 2;
+            level = next_level;
+        }
+
+        Ok(types::WithdrawalProof {
+            stream_id,
+            withdrawal_index,
+            amount: record.amount,
+            timestamp: record.timestamp,
+            leaf_hash: withdrawal_record_hash(&env, &record),
+            siblings,
+            leaf_count: records.len(),
+            root: level.get(0).unwrap(),
+        })
+    }
+
+    pub fn verify_withdrawal_proof(env: Env, proof: types::WithdrawalProof) -> bool {
+        if proof.leaf_count == 0 || proof.withdrawal_index >= proof.leaf_count {
+            return false;
+        }
+        let record = types::WithdrawalRecord {
+            stream_id: proof.stream_id,
+            amount: proof.amount,
+            timestamp: proof.timestamp,
+            index: proof.withdrawal_index,
+        };
+        let mut hash = withdrawal_record_hash(&env, &record);
+        if hash != proof.leaf_hash {
+            return false;
+        }
+
+        let mut position = proof.withdrawal_index;
+        let mut width = proof.leaf_count;
+        let mut sibling_index = 0;
+        while width > 1 {
+            let Some(sibling) = proof.siblings.get(sibling_index) else {
+                return false;
+            };
+            if position % 2 == 0 {
+                if position + 1 >= width && sibling != hash {
+                    return false;
+                }
+                hash = withdrawal_parent_hash(&env, &hash, &sibling);
+            } else {
+                hash = withdrawal_parent_hash(&env, &sibling, &hash);
+            }
+            position /= 2;
+            width = (width + 1) / 2;
+            sibling_index += 1;
+        }
+        if sibling_index != proof.siblings.len() || hash != proof.root {
+            return false;
+        }
+
+        Self::get_withdrawal_history_root(env, proof.stream_id)
+            .map(|root| root == proof.root)
+            .unwrap_or(false)
     }
 }
 

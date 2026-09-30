@@ -1131,7 +1131,7 @@ fn bench_pause_stream() {
         &0i128,
     );
 
-    c.pause_stream(&stream_id, &b.sender);
+    c.pause_stream(&stream_id, &b.sender, &None);
     assert_within_limits(&b.env, "pause_stream (single stream)");
 }
 
@@ -1148,7 +1148,7 @@ fn bench_resume_stream() {
         &0i128,
     );
 
-    c.pause_stream(&stream_id, &b.sender);
+    c.pause_stream(&stream_id, &b.sender, &None);
     c.resume_stream(&stream_id, &b.sender);
     assert_within_limits(&b.env, "resume_stream (single stream)");
 }
