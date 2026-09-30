@@ -85,6 +85,30 @@ impl TestEnv {
 //  1. Core lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Issue #618: prevent self-loop streams ────────────────────────────────────
+
+/// Creating a stream where the sender is the contract itself must be rejected.
+/// A self-referential stream would exhaust gas or cause undefined behaviour.
+#[test]
+#[should_panic(expected = "Error::InvalidSender")]
+fn test_create_stream_contract_as_sender_is_rejected() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+
+    // Use the contract address as the sender — must panic with InvalidSender.
+    client.create_stream(
+        &t.contract,    // sender == contract_address ← must be rejected
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &false,
+    );
+}
+
 #[test]
 fn test_create_stream_stores_correct_fields() {
     let t = TestEnv::new();

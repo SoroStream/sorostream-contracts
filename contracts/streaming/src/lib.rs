@@ -41,6 +41,14 @@ impl StreamingContract {
     ) -> u64 {
         sender.require_auth();
 
+        // Prevent self-loop streams: the contract itself cannot be the sender.
+        // A self-referential stream would exhaust gas or cause undefined behaviour
+        // because the contract would be transferring tokens to/from itself.
+        assert!(
+            sender != env.current_contract_address(),
+            "Error::InvalidSender: sender must not be the contract itself"
+        );
+
         assert!(end_time > start_time, "end_time must be after start_time");
         assert!(deposit > 0, "deposit must be positive");
 
