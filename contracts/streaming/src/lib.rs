@@ -283,22 +283,20 @@ impl StreamingContract {
 
     /// Discard an expired (or otherwise unwanted) proposal and return the deposit.
     ///
-    /// - Before expiry: only the original sender can call this (requires auth).
-    /// - After expiry: anyone can call this; no auth required.
+    /// Only the original sender who created the proposal can discard it, both
+    /// before and after expiry. This prevents a compromised admin from cancelling
+    /// an active proposal and replacing it with a malicious one.
     pub fn discard_proposal(env: Env, proposal_id: u64, caller: Address) {
         let proposal = storage::get_proposal(&env, proposal_id);
 
-        let is_expired = env.ledger().sequence() > proposal.expiry_ledger;
-
-        if !is_expired {
-            // Only the sender can retract before expiry.
-            assert!(
-                caller == proposal.sender,
-                "proposal has not expired; only sender can retract"
-            );
-            proposal.sender.require_auth();
-        }
-        // After expiry anyone may discard — no auth needed.
+        // Only the original proposer (sender) may ever cancel this proposal.
+        // A different admin cannot override an existing proposal, ensuring the
+        // timelock's intent is preserved even if admin credentials are compromised.
+        assert!(
+            caller == proposal.sender,
+            "Error::Unauthorized: only the original proposer can cancel this proposal"
+        );
+        caller.require_auth();
 
         // Return escrowed deposit to sender.
         token::Client::new(&env, &proposal.token).transfer(
