@@ -655,6 +655,12 @@ pub struct CreateStreamParams {
     /// Optional list of categorisation tags (max 3 entries, each at most 32 bytes).
     /// Tags are used for off-chain filtering (e.g. "payroll", "vesting", "subscription").
     pub tags: Option<Vec<Bytes>>,
+    /// Optional off-chain metadata URI or short string (IPFS or HTTPS, max 128
+    /// bytes) to associate with the stream at creation — e.g. an invoice
+    /// reference or payment description (issue #402). Stored as
+    /// `StreamOptions::metadata_uri` and can also be set later via
+    /// `update_metadata_uri`.
+    pub metadata_uri: Option<String>,
 }
 
 impl CreateStreamParams {

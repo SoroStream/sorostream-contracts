@@ -1,39 +1,46 @@
 #![allow(dead_code)]
 use crate::types::{AuditEntry, Stream, StreamTransition, VestingTranche};
-use soroban_sdk::{Address, Bytes, BytesN, Env, String, Symbol, Vec, xdr::ToXdr};
+use soroban_sdk::{symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec, xdr::ToXdr};
 
-const ADMIN_KEY: &str = "admin";
-const PAUSED_KEY: &str = "paused";
-const PROTOCOL_FEE_KEY: &str = "fee_bps";
-const TREASURY_KEY: &str = "treasury";
-const MIN_DURATION_KEY: &str = "min_dur";
-const MAX_DURATION_KEY: &str = "max_dur";
-const VERSION_KEY: &str = "version";
-const MAX_STREAMS_KEY: &str = "max_str";
-const STREAM_COUNT_KEY: &str = "str_cnt";
-const PENDING_FEE_KEY: &str = "pnd_fee";
-const WITHDRAWAL_COOLDOWN_KEY: &str = "wd_cd";
-const WHITELIST_ENABLED_KEY: &str = "wl_en";
-const GUARDIAN_KEY: &str = "guardian";
+const ADMIN_KEY: Symbol = symbol_short!("admin");
+const PAUSED_KEY: Symbol = symbol_short!("paused");
+const PROTOCOL_FEE_KEY: Symbol = symbol_short!("fee_bps");
+const TREASURY_KEY: Symbol = symbol_short!("treasury");
+const MIN_DURATION_KEY: Symbol = symbol_short!("min_dur");
+const MAX_DURATION_KEY: Symbol = symbol_short!("max_dur");
+const VERSION_KEY: Symbol = symbol_short!("version");
+const MAX_STREAMS_KEY: Symbol = symbol_short!("max_str");
+const STREAM_COUNT_KEY: Symbol = symbol_short!("str_cnt");
+const PENDING_FEE_KEY: Symbol = symbol_short!("pnd_fee");
+const WITHDRAWAL_COOLDOWN_KEY: Symbol = symbol_short!("wd_cd");
+const WHITELIST_ENABLED_KEY: Symbol = symbol_short!("wl_en");
+const GUARDIAN_KEY: Symbol = symbol_short!("guardian");
+// 10 bytes exceeds symbol_short!'s 9-byte limit; stays a runtime Symbol::new.
 const GOVERNANCE_KEY: &str = "governance";
-const PAUSE_EXPIRES_KEY: &str = "p_exp";
+const PAUSE_EXPIRES_KEY: Symbol = symbol_short!("p_exp");
+const PAUSE_EFFECTIVE_LEDGER_KEY: Symbol = symbol_short!("p_eff");
 /// Maximum pause duration in seconds (72 hours). After this the contract auto-unpauses.
 pub const MAX_PAUSE_DURATION: u64 = 72 * 60 * 60;
-const CREATION_FEE_XLM_KEY: &str = "cf_xlm";
+/// Minimum number of ledgers that must elapse between a pause being requested
+/// and it actually taking effect (issue #617). Gives users a guaranteed window
+/// to withdraw before the contract locks, rather than being frozen instantly
+/// in the same ledger the admin calls `emergency_pause`.
+pub const PAUSE_ACTIVATION_DELAY_LEDGERS: u32 = 1;
+const CREATION_FEE_XLM_KEY: Symbol = symbol_short!("cf_xlm");
 /// Default maximum start-time offset: 365 days in seconds.
 pub const DEFAULT_MAX_FUTURE_START_OFFSET: u64 = 365 * 24 * 60 * 60;
-const MAX_FUTURE_OFFSET_KEY: &str = "mf_start";
+const MAX_FUTURE_OFFSET_KEY: Symbol = symbol_short!("mf_start");
 
 /// Stores the contract admin address.
 pub fn write_admin(env: &Env, admin: &Address) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, ADMIN_KEY), admin);
+        .set(&ADMIN_KEY, admin);
 }
 
 /// Loads the contract admin address.
 pub fn read_admin(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, ADMIN_KEY))
+    env.storage().instance().get(&ADMIN_KEY)
 }
 
 /// Asserts that the current caller is the admin. Panics otherwise.
@@ -77,9 +84,9 @@ pub fn stream_exists(env: &Env, stream_id: u64) -> bool {
 
 /// Indexes a stream ID in the global enumeration list.
 pub fn index_global_stream(env: &Env, stream_id: u64) {
-    let cnt_key = Symbol::new(env, STREAM_COUNT_KEY);
+    let cnt_key = STREAM_COUNT_KEY;
     let idx: u32 = env.storage().instance().get(&cnt_key).unwrap_or(0u32);
-    let slot_key = (Symbol::new(env, "gi"), idx);
+    let slot_key = (symbol_short!("gi"), idx);
     env.storage().persistent().set(&slot_key, &stream_id);
     env.storage().instance().set(&cnt_key, &(idx + 1));
 }
@@ -88,13 +95,13 @@ pub fn index_global_stream(env: &Env, stream_id: u64) {
 pub fn get_global_stream_count(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, STREAM_COUNT_KEY))
+        .get(&STREAM_COUNT_KEY)
         .unwrap_or(0u32)
 }
 
 /// Returns the stream ID at a given position in the global index.
 pub fn get_global_stream_at(env: &Env, idx: u32) -> Option<u64> {
-    let slot_key = (Symbol::new(env, "gi"), idx);
+    let slot_key = (symbol_short!("gi"), idx);
     env.storage().persistent().get(&slot_key)
 }
 
@@ -134,19 +141,19 @@ pub fn remove_stream(env: &Env, stream_id: u64) {
 /// This allows `cancel_stream` to distinguish "already cancelled" from "never existed"
 /// and return `StreamAlreadyCancelled` on a second call.
 pub fn mark_stream_cancelled(env: &Env, stream_id: u64) {
-    let key = (Symbol::new(env, "xcl"), stream_id);
+    let key = (symbol_short!("xcl"), stream_id);
     env.storage().persistent().set(&key, &true);
 }
 
 /// Returns true if the stream was previously cancelled (sentinel is present).
 pub fn is_stream_cancelled(env: &Env, stream_id: u64) -> bool {
-    let key = (Symbol::new(env, "xcl"), stream_id);
+    let key = (symbol_short!("xcl"), stream_id);
     env.storage().persistent().get::<_, bool>(&key).unwrap_or(false)
 }
 
 /// Key for the monotonic event sequence number associated with a stream.
 pub fn stream_event_nonce_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "evn"), stream_id)
+    (symbol_short!("evn"), stream_id)
 }
 
 /// Reads the last emitted event nonce for a stream. Starts at 0 before any
@@ -175,19 +182,19 @@ pub fn next_stream_event_nonce(env: &Env, stream_id: u64) -> u64 {
 // --- Counter helpers (persistent, O(1) per write) ---
 
 pub fn sender_count_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "sc"), addr.clone())
+    (symbol_short!("sc"), addr.clone())
 }
 
 pub fn recipient_count_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "rc"), addr.clone())
+    (symbol_short!("rc"), addr.clone())
 }
 
 pub fn sender_slot_key(env: &Env, addr: &Address, idx: u32) -> (Symbol, Address, u32) {
-    (Symbol::new(env, "s"), addr.clone(), idx)
+    (symbol_short!("s"), addr.clone(), idx)
 }
 
 pub fn recipient_slot_key(env: &Env, addr: &Address, idx: u32) -> (Symbol, Address, u32) {
-    (Symbol::new(env, "r"), addr.clone(), idx)
+    (symbol_short!("r"), addr.clone(), idx)
 }
 
 /// Appends a stream ID to the sender's index using counter+slot keys.
@@ -246,11 +253,11 @@ pub fn unindex_by_sender(env: &Env, sender: &Address, stream_id: u64) {
 // --- Active sender index ---
 
 fn active_sender_count_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "asc"), addr.clone())
+    (symbol_short!("asc"), addr.clone())
 }
 
 fn active_sender_slot_key(env: &Env, addr: &Address, idx: u32) -> (Symbol, Address, u32) {
-    (Symbol::new(env, "as"), addr.clone(), idx)
+    (symbol_short!("as"), addr.clone(), idx)
 }
 
 /// Adds a stream to the sender's active-only index.
@@ -366,11 +373,11 @@ pub fn get_ids_by_recipient(env: &Env, recipient: &Address) -> Vec<u64> {
 // ── Tag index helpers ────────────────────────────────────────────────────────
 
 fn tag_count_key(env: &Env, tag: &String) -> (Symbol, String) {
-    (Symbol::new(env, "tc"), tag.clone())
+    (symbol_short!("tc"), tag.clone())
 }
 
 fn tag_slot_key(env: &Env, tag: &String, idx: u32) -> (Symbol, String, u32) {
-    (Symbol::new(env, "t"), tag.clone(), idx)
+    (symbol_short!("t"), tag.clone(), idx)
 }
 
 pub fn index_by_tag(env: &Env, tag: &String, stream_id: u64) {
@@ -414,24 +421,24 @@ pub fn get_ids_by_tag(env: &Env, tag: &String) -> Vec<u64> {
 
 /// Returns the current batch nonce for a sender (next expected value).
 pub fn get_batch_nonce(env: &Env, sender: &Address) -> u64 {
-    let key = (Symbol::new(env, "bn"), sender.clone());
+    let key = (symbol_short!("bn"), sender.clone());
     env.storage().persistent().get(&key).unwrap_or(0u64)
 }
 
 /// Increments and stores the batch nonce for a sender.
 pub fn increment_batch_nonce(env: &Env, sender: &Address) {
-    let key = (Symbol::new(env, "bn"), sender.clone());
+    let key = (symbol_short!("bn"), sender.clone());
     let next = get_batch_nonce(env, sender).checked_add(1).expect("batch nonce overflow");
     env.storage().persistent().set(&key, &next);
 }
 pub fn nonce_used(env: &Env, sender: &Address, nonce: u64) -> bool {
-    let key = (Symbol::new(env, "n"), sender.clone(), nonce);
+    let key = (symbol_short!("n"), sender.clone(), nonce);
     env.storage().persistent().has(&key)
 }
 
 /// Records a (sender, nonce) pair as used.
 pub fn mark_nonce_used(env: &Env, sender: &Address, nonce: u64) {
-    let key = (Symbol::new(env, "n"), sender.clone(), nonce);
+    let key = (symbol_short!("n"), sender.clone(), nonce);
     env.storage().persistent().set(&key, &true);
 }
 
@@ -440,40 +447,76 @@ pub fn mark_nonce_used(env: &Env, sender: &Address, nonce: u64) {
 pub fn is_paused(env: &Env) -> bool {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, PAUSED_KEY))
+        .get(&PAUSED_KEY)
         .unwrap_or(false)
 }
 
 /// Sets the paused state.
+///
+/// Transitioning into a paused state (`paused == true`) schedules activation
+/// `PAUSE_ACTIVATION_DELAY_LEDGERS` ledgers in the future rather than
+/// instantly — see `is_paused_or_auto_unpause`, which is the gate every
+/// mutating entry point consults. Transitioning out clears that schedule.
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, PAUSED_KEY), &paused);
+        .set(&PAUSED_KEY, &paused);
+    if paused {
+        let effective_ledger = env
+            .ledger()
+            .sequence()
+            .saturating_add(PAUSE_ACTIVATION_DELAY_LEDGERS);
+        env.storage()
+            .instance()
+            .set(&PAUSE_EFFECTIVE_LEDGER_KEY, &effective_ledger);
+    } else {
+        env.storage()
+            .instance()
+            .set(&PAUSE_EFFECTIVE_LEDGER_KEY, &0u32);
+    }
+}
+
+/// Returns the ledger sequence at which a requested pause actually takes
+/// effect (0 if the contract is not currently paused or pending a pause).
+pub fn get_pause_effective_ledger(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&PAUSE_EFFECTIVE_LEDGER_KEY)
+        .unwrap_or(0u32)
 }
 
 /// Sets the timestamp at which the contract auto-unpauses (0 = no expiry).
 pub fn set_pause_expiry(env: &Env, expiry: u64) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, PAUSE_EXPIRES_KEY), &expiry);
+        .set(&PAUSE_EXPIRES_KEY, &expiry);
 }
 
 /// Returns the pause expiry timestamp (0 if not set).
 pub fn get_pause_expiry(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, PAUSE_EXPIRES_KEY))
+        .get(&PAUSE_EXPIRES_KEY)
         .unwrap_or(0u64)
 }
 
 /// Returns whether the contract is currently paused, auto-unpausing if the
 /// maximum pause duration has elapsed.
+///
+/// A pause that was requested but has not yet reached its
+/// `PAUSE_ACTIVATION_DELAY_LEDGERS`-ledger activation point (issue #617)
+/// reads as not-paused here, so callers — including `withdraw` — proceed
+/// normally during that delay window.
 pub fn is_paused_or_auto_unpause(env: &Env) -> bool {
     let paused: bool = env.storage()
         .instance()
-        .get(&Symbol::new(env, PAUSED_KEY))
+        .get(&PAUSED_KEY)
         .unwrap_or(false);
     if !paused {
+        return false;
+    }
+    let effective_ledger = get_pause_effective_ledger(env);
+    if effective_ledger > 0 && env.ledger().sequence() < effective_ledger {
         return false;
     }
     let expiry = get_pause_expiry(env);
@@ -481,10 +524,10 @@ pub fn is_paused_or_auto_unpause(env: &Env) -> bool {
         // Auto-unpause: clear flags without emitting an event (event is emitted by caller)
         env.storage()
             .instance()
-            .set(&Symbol::new(env, PAUSED_KEY), &false);
+            .set(&PAUSED_KEY, &false);
         env.storage()
             .instance()
-            .set(&Symbol::new(env, PAUSE_EXPIRES_KEY), &0u64);
+            .set(&PAUSE_EXPIRES_KEY, &0u64);
         return false;
     }
     true
@@ -494,12 +537,12 @@ pub fn is_paused_or_auto_unpause(env: &Env) -> bool {
 pub fn write_guardian(env: &Env, guardian: &Address) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, GUARDIAN_KEY), guardian);
+        .set(&GUARDIAN_KEY, guardian);
 }
 
 /// Returns the guardian address, if set.
 pub fn read_guardian(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, GUARDIAN_KEY))
+    env.storage().instance().get(&GUARDIAN_KEY)
 }
 
 /// Stores the governance address (can call `unpause`).
@@ -516,44 +559,44 @@ pub fn read_governance(env: &Env) -> Option<Address> {
 
 /// Gets the protocol fee in basis points (0 = no fee).
 pub fn get_protocol_fee(env: &Env) -> u32 {
-    env.storage().instance().get(&Symbol::new(env, PROTOCOL_FEE_KEY)).unwrap_or(0u32)
+    env.storage().instance().get(&PROTOCOL_FEE_KEY).unwrap_or(0u32)
 }
 
 /// Sets the protocol fee in basis points.
 pub fn set_protocol_fee(env: &Env, fee_bps: u32) {
-    env.storage().instance().set(&Symbol::new(env, PROTOCOL_FEE_KEY), &fee_bps);
+    env.storage().instance().set(&PROTOCOL_FEE_KEY, &fee_bps);
 }
 
 /// Reads the pending fee proposal (new_fee_bps, unlock_time) if any.
 pub fn read_pending_fee_proposal(env: &Env) -> Option<(u32, u64)> {
-    env.storage().instance().get(&Symbol::new(env, PENDING_FEE_KEY))
+    env.storage().instance().get(&PENDING_FEE_KEY)
 }
 
 /// Writes a pending fee proposal.
 pub fn write_pending_fee_proposal(env: &Env, new_fee_bps: u32, unlock_time: u64) {
-    env.storage().instance().set(&Symbol::new(env, PENDING_FEE_KEY), &(new_fee_bps, unlock_time));
+    env.storage().instance().set(&PENDING_FEE_KEY, &(new_fee_bps, unlock_time));
 }
 
 /// Clears the pending fee proposal.
 pub fn clear_pending_fee_proposal(env: &Env) {
-    env.storage().instance().remove(&Symbol::new(env, PENDING_FEE_KEY));
+    env.storage().instance().remove(&PENDING_FEE_KEY);
 }
 
 /// Gets the treasury address for protocol fees.
 pub fn get_treasury(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, TREASURY_KEY))
+    env.storage().instance().get(&TREASURY_KEY)
 }
 
 /// Sets the treasury address for protocol fees.
 pub fn set_treasury(env: &Env, treasury: &Address) {
-    env.storage().instance().set(&Symbol::new(env, TREASURY_KEY), treasury);
+    env.storage().instance().set(&TREASURY_KEY, treasury);
 }
 
 /// Gets the minimum stream duration in seconds (default 3600 if not set).
 pub fn read_min_duration(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, MIN_DURATION_KEY))
+        .get(&MIN_DURATION_KEY)
         .unwrap_or(3600u64)
 }
 
@@ -561,7 +604,7 @@ pub fn read_min_duration(env: &Env) -> u64 {
 pub fn write_min_duration(env: &Env, duration: u64) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, MIN_DURATION_KEY), &duration);
+        .set(&MIN_DURATION_KEY, &duration);
 }
 
 /// Gets the maximum stream duration in seconds.
@@ -571,7 +614,7 @@ pub fn write_min_duration(env: &Env, duration: u64) {
 pub fn read_max_duration(env: &Env) -> u64 {
     let configured = env.storage()
         .instance()
-        .get(&Symbol::new(env, MAX_DURATION_KEY))
+        .get(&MAX_DURATION_KEY)
         .unwrap_or(crate::MAX_STREAM_DURATION_SECONDS);
     if configured == 0 {
         crate::MAX_STREAM_DURATION_SECONDS
@@ -592,7 +635,7 @@ pub fn write_max_duration(env: &Env, duration: u64) {
     };
     env.storage()
         .instance()
-        .set(&Symbol::new(env, MAX_DURATION_KEY), &capped);
+        .set(&MAX_DURATION_KEY, &capped);
 }
 
 /// Gets the maximum allowed future start-time offset in seconds.
@@ -603,7 +646,7 @@ pub fn write_max_duration(env: &Env, duration: u64) {
 pub fn read_max_future_start_offset(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, MAX_FUTURE_OFFSET_KEY))
+        .get(&MAX_FUTURE_OFFSET_KEY)
         .unwrap_or(DEFAULT_MAX_FUTURE_START_OFFSET)
 }
 
@@ -612,13 +655,13 @@ pub fn read_max_future_start_offset(env: &Env) -> u64 {
 pub fn write_max_future_start_offset(env: &Env, offset_seconds: u64) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, MAX_FUTURE_OFFSET_KEY), &offset_seconds);
+        .set(&MAX_FUTURE_OFFSET_KEY, &offset_seconds);
 }
 
 // --- Delegate helpers ---
 
 fn delegate_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "del"), stream_id)
+    (symbol_short!("del"), stream_id)
 }
 
 /// Gets the authorized delegate for a stream.
@@ -642,14 +685,14 @@ pub fn remove_delegate(env: &Env, stream_id: u64) {
 pub fn write_version(env: &Env, version: &soroban_sdk::String) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, VERSION_KEY), version);
+        .set(&VERSION_KEY, version);
 }
 
 /// Reads the contract version string.
 pub fn read_version(env: &Env) -> Option<soroban_sdk::String> {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, VERSION_KEY))
+        .get(&VERSION_KEY)
 }
 
 // --- Rate limiting ---
@@ -658,7 +701,7 @@ pub fn read_version(env: &Env) -> Option<soroban_sdk::String> {
 pub fn get_max_streams_per_sender(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, MAX_STREAMS_KEY))
+        .get(&MAX_STREAMS_KEY)
         .unwrap_or(1000u32)
 }
 
@@ -666,14 +709,14 @@ pub fn get_max_streams_per_sender(env: &Env) -> u32 {
 pub fn set_max_streams_per_sender(env: &Env, max_streams: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, MAX_STREAMS_KEY), &max_streams);
+        .set(&MAX_STREAMS_KEY, &max_streams);
 }
 
 /// Gets the global withdrawal cooldown in seconds (default: 0).
 pub fn get_withdrawal_cooldown(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, WITHDRAWAL_COOLDOWN_KEY))
+        .get(&WITHDRAWAL_COOLDOWN_KEY)
         .unwrap_or(0u64)
 }
 
@@ -681,14 +724,14 @@ pub fn get_withdrawal_cooldown(env: &Env) -> u64 {
 pub fn set_withdrawal_cooldown(env: &Env, cooldown: u64) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, WITHDRAWAL_COOLDOWN_KEY), &cooldown);
+        .set(&WITHDRAWAL_COOLDOWN_KEY, &cooldown);
 }
 
 /// Returns whether recipient whitelisting is enabled.
 pub fn is_whitelist_enabled(env: &Env) -> bool {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, WHITELIST_ENABLED_KEY))
+        .get(&WHITELIST_ENABLED_KEY)
         .unwrap_or(false)
 }
 
@@ -696,11 +739,11 @@ pub fn is_whitelist_enabled(env: &Env) -> bool {
 pub fn set_whitelist_enabled(env: &Env, enabled: bool) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, WHITELIST_ENABLED_KEY), &enabled);
+        .set(&WHITELIST_ENABLED_KEY, &enabled);
 }
 
 fn whitelist_key(env: &Env, recipient: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "wl"), recipient.clone())
+    (symbol_short!("wl"), recipient.clone())
 }
 
 /// Returns whether a recipient is whitelisted.
@@ -720,13 +763,13 @@ pub fn remove_from_whitelist(env: &Env, recipient: &Address) {
 
 // --- Recipient allowlist (for regulated payment scenarios) ---
 
-const RECIPIENT_ALLOWLIST_ENABLED_KEY: &str = "ral_en";
+const RECIPIENT_ALLOWLIST_ENABLED_KEY: Symbol = symbol_short!("ral_en");
 
 /// Returns whether recipient allowlisting is globally enabled.
 pub fn is_recipient_allowlist_enabled(env: &Env) -> bool {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, RECIPIENT_ALLOWLIST_ENABLED_KEY))
+        .get(&RECIPIENT_ALLOWLIST_ENABLED_KEY)
         .unwrap_or(false)
 }
 
@@ -734,11 +777,11 @@ pub fn is_recipient_allowlist_enabled(env: &Env) -> bool {
 pub fn set_recipient_allowlist_enabled(env: &Env, enabled: bool) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, RECIPIENT_ALLOWLIST_ENABLED_KEY), &enabled);
+        .set(&RECIPIENT_ALLOWLIST_ENABLED_KEY, &enabled);
 }
 
 fn recipient_allowlist_key(env: &Env, recipient: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "ral"), recipient.clone())
+    (symbol_short!("ral"), recipient.clone())
 }
 
 /// Returns whether a recipient is on the allowlist.
@@ -759,7 +802,7 @@ pub fn remove_from_recipient_allowlist(env: &Env, recipient: &Address) {
 // --- Fee exemption list ---
 
 fn fee_exempt_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "fe"), addr.clone())
+    (symbol_short!("fe"), addr.clone())
 }
 
 /// Returns whether `addr` is exempt from the protocol fee.
@@ -778,7 +821,7 @@ pub fn remove_fee_exempt(env: &Env, addr: &Address) {
 }
 
 fn sender_limit_key(env: &Env, sender: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "sl"), sender.clone())
+    (symbol_short!("sl"), sender.clone())
 }
 
 /// Gets the per-sender stream limit override, if set.
@@ -802,32 +845,32 @@ pub fn effective_sender_limit(env: &Env, sender: &Address) -> u32 {
 
 // --- Audit log helpers (circular buffer, capacity = 20) ---
 
-const AUDIT_HEAD_KEY: &str = "al_head";
-const AUDIT_LEN_KEY: &str = "al_len";
+const AUDIT_HEAD_KEY: Symbol = symbol_short!("al_head");
+const AUDIT_LEN_KEY: Symbol = symbol_short!("al_len");
 const AUDIT_CAP: u32 = 20;
 
 fn audit_slot_key(env: &Env, idx: u32) -> (Symbol, u32) {
-    (Symbol::new(env, "al"), idx)
+    (symbol_short!("al"), idx)
 }
 
 /// Appends an audit entry to the circular buffer.
 pub fn append_audit_entry(env: &Env, entry: &AuditEntry) {
-    let head: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_HEAD_KEY)).unwrap_or(0u32);
-    let len: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_LEN_KEY)).unwrap_or(0u32);
+    let head: u32 = env.storage().instance().get(&AUDIT_HEAD_KEY).unwrap_or(0u32);
+    let len: u32 = env.storage().instance().get(&AUDIT_LEN_KEY).unwrap_or(0u32);
 
     let write_idx = head % AUDIT_CAP;
     env.storage().instance().set(&audit_slot_key(env, write_idx), entry);
 
     let new_head = (head + 1) % AUDIT_CAP;
     let new_len = (len + 1).min(AUDIT_CAP);
-    env.storage().instance().set(&Symbol::new(env, AUDIT_HEAD_KEY), &new_head);
-    env.storage().instance().set(&Symbol::new(env, AUDIT_LEN_KEY), &new_len);
+    env.storage().instance().set(&AUDIT_HEAD_KEY, &new_head);
+    env.storage().instance().set(&AUDIT_LEN_KEY, &new_len);
 }
 
 /// Returns all audit entries in chronological order (oldest first).
 pub fn read_audit_log(env: &Env) -> Vec<AuditEntry> {
-    let head: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_HEAD_KEY)).unwrap_or(0u32);
-    let len: u32 = env.storage().instance().get(&Symbol::new(env, AUDIT_LEN_KEY)).unwrap_or(0u32);
+    let head: u32 = env.storage().instance().get(&AUDIT_HEAD_KEY).unwrap_or(0u32);
+    let len: u32 = env.storage().instance().get(&AUDIT_LEN_KEY).unwrap_or(0u32);
     let mut result = Vec::new(env);
     for i in 0..len {
         // oldest entry is at (head - len + i) mod CAP
@@ -843,7 +886,7 @@ pub fn read_audit_log(env: &Env) -> Vec<AuditEntry> {
 pub fn get_creation_fee_xlm(env: &Env) -> i128 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, CREATION_FEE_XLM_KEY))
+        .get(&CREATION_FEE_XLM_KEY)
         .unwrap_or(0i128)
 }
 
@@ -851,45 +894,45 @@ pub fn get_creation_fee_xlm(env: &Env) -> i128 {
 pub fn set_creation_fee_xlm(env: &Env, fee: i128) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, CREATION_FEE_XLM_KEY), &fee);
+        .set(&CREATION_FEE_XLM_KEY, &fee);
 }
 
-const XLM_TOKEN_KEY: &str = "xlm_tok";
+const XLM_TOKEN_KEY: Symbol = symbol_short!("xlm_tok");
 
-const ACTIVE_STREAM_COUNT_KEY: &str = "act_cnt";
+const ACTIVE_STREAM_COUNT_KEY: Symbol = symbol_short!("act_cnt");
 
 /// Gets the XLM SAC token contract address used for creation fee collection.
 pub fn get_xlm_token(env: &Env) -> Option<Address> {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, XLM_TOKEN_KEY))
+        .get(&XLM_TOKEN_KEY)
 }
 
 /// Sets the XLM SAC token contract address.
 pub fn set_xlm_token(env: &Env, xlm_token: &Address) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, XLM_TOKEN_KEY), xlm_token);
+        .set(&XLM_TOKEN_KEY, xlm_token);
 }
 
 /// Returns the current count of active streams.
 pub fn get_active_stream_count(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, ACTIVE_STREAM_COUNT_KEY))
+        .get(&ACTIVE_STREAM_COUNT_KEY)
         .unwrap_or(0u32)
 }
 
 /// Increments the active stream count by 1.
 pub fn increment_active_stream_count(env: &Env) {
-    let key = Symbol::new(env, ACTIVE_STREAM_COUNT_KEY);
+    let key = ACTIVE_STREAM_COUNT_KEY;
     let current: u32 = env.storage().instance().get(&key).unwrap_or(0u32);
     env.storage().instance().set(&key, &(current + 1));
 }
 
 /// Decrements the active stream count by 1 (saturates at 0).
 pub fn decrement_active_stream_count(env: &Env) {
-    let key = Symbol::new(env, ACTIVE_STREAM_COUNT_KEY);
+    let key = ACTIVE_STREAM_COUNT_KEY;
     let current: u32 = env.storage().instance().get(&key).unwrap_or(0u32);
     if current > 0 {
         env.storage().instance().set(&key, &(current - 1));
@@ -898,19 +941,19 @@ pub fn decrement_active_stream_count(env: &Env) {
 
 /// Sets the active stream count directly (for recalibration).
 pub fn set_active_stream_count(env: &Env, count: u32) {
-    let key = Symbol::new(env, ACTIVE_STREAM_COUNT_KEY);
+    let key = ACTIVE_STREAM_COUNT_KEY;
     env.storage().instance().set(&key, &count);
 }
 
 // --- Reentrancy guard ---
 
-const REENTRANCY_LOCK_KEY: &str = "re_lk";
+const REENTRANCY_LOCK_KEY: Symbol = symbol_short!("re_lk");
 
 /// Returns true if the reentrancy lock is currently held.
 pub fn is_reentrancy_locked(env: &Env) -> bool {
     env.storage()
         .temporary()
-        .get(&Symbol::new(env, REENTRANCY_LOCK_KEY))
+        .get(&REENTRANCY_LOCK_KEY)
         .unwrap_or(false)
 }
 
@@ -918,18 +961,19 @@ pub fn is_reentrancy_locked(env: &Env) -> bool {
 pub fn set_reentrancy_lock(env: &Env) {
     env.storage()
         .temporary()
-        .set(&Symbol::new(env, REENTRANCY_LOCK_KEY), &true);
+        .set(&REENTRANCY_LOCK_KEY, &true);
 }
 
 /// Releases the reentrancy lock.
 pub fn clear_reentrancy_lock(env: &Env) {
     env.storage()
         .temporary()
-        .remove(&Symbol::new(env, REENTRANCY_LOCK_KEY));
+        .remove(&REENTRANCY_LOCK_KEY);
 }
 
 // --- Migration helpers ---
 
+// 10 bytes exceeds symbol_short!'s 9-byte limit; stays a runtime Symbol::new.
 const APPLIED_MIGRATIONS_KEY: &str = "migrations";
 
 /// Returns the set of applied migration version strings.
@@ -950,7 +994,7 @@ pub fn record_migration(env: &Env, version: &soroban_sdk::String) {
 // --- Token fee tier helpers ---
 
 fn token_fee_tier_key(env: &Env, token: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "tft"), token.clone())
+    (symbol_short!("tft"), token.clone())
 }
 
 /// Gets the fee tier (in basis points) for a specific token, if set.
@@ -982,7 +1026,7 @@ pub fn get_effective_fee_tier(env: &Env, token: &Address) -> u32 {
 // --- Holdback escrow helpers ---
 
 fn holdback_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "hb"), stream_id)
+    (symbol_short!("hb"), stream_id)
 }
 
 /// Returns the holdback escrow amount for a stream (0 if not set).
@@ -1013,7 +1057,7 @@ pub fn remove_holdback(env: &Env, stream_id: u64) {
 
 /// Storage key for a stream's tranche list: ("vt", stream_id).
 fn tranche_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "vt"), stream_id)
+    (symbol_short!("vt"), stream_id)
 }
 
 /// Persists the tranche list for a step-vesting stream.
@@ -1040,12 +1084,12 @@ pub fn remove_tranches(env: &Env, stream_id: u64) {
 
 // --- Rate Limiting ---
 
-const RATE_LIMIT_WINDOW_KEY: &str = "rl_win";
-const RATE_LIMIT_MAX_KEY: &str = "rl_max";
-const RATE_LIMIT_EXEMPT_KEY: &str = "rl_ex";
+const RATE_LIMIT_WINDOW_KEY: Symbol = symbol_short!("rl_win");
+const RATE_LIMIT_MAX_KEY: Symbol = symbol_short!("rl_max");
+const RATE_LIMIT_EXEMPT_KEY: Symbol = symbol_short!("rl_ex");
 
 /// Key for the ledger-sequence-based rate limit window size.
-const RATE_LIMIT_WINDOW_LEDGERS_KEY: &str = "rl_wl";
+const RATE_LIMIT_WINDOW_LEDGERS_KEY: Symbol = symbol_short!("rl_wl");
 
 /// Default rate limit window: 720 ledgers ≈ 1 hour at ~5 s/ledger.
 pub const DEFAULT_RATE_LIMIT_WINDOW_LEDGERS: u32 = 720;
@@ -1054,7 +1098,7 @@ pub const DEFAULT_RATE_LIMIT_WINDOW_LEDGERS: u32 = 720;
 pub fn get_rate_limit_window(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, RATE_LIMIT_WINDOW_LEDGERS_KEY))
+        .get(&RATE_LIMIT_WINDOW_LEDGERS_KEY)
         .unwrap_or(DEFAULT_RATE_LIMIT_WINDOW_LEDGERS)
 }
 
@@ -1062,14 +1106,14 @@ pub fn get_rate_limit_window(env: &Env) -> u32 {
 pub fn set_rate_limit_window(env: &Env, window_ledgers: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, RATE_LIMIT_WINDOW_LEDGERS_KEY), &window_ledgers);
+        .set(&RATE_LIMIT_WINDOW_LEDGERS_KEY, &window_ledgers);
 }
 
 /// Gets the max creations per window (default: 20).
 pub fn get_rate_limit_max_creations(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, RATE_LIMIT_MAX_KEY))
+        .get(&RATE_LIMIT_MAX_KEY)
         .unwrap_or(20u32)
 }
 
@@ -1077,11 +1121,11 @@ pub fn get_rate_limit_max_creations(env: &Env) -> u32 {
 pub fn set_rate_limit_max_creations(env: &Env, max_creations: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, RATE_LIMIT_MAX_KEY), &max_creations);
+        .set(&RATE_LIMIT_MAX_KEY, &max_creations);
 }
 
 fn rate_limit_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "rl"), addr.clone())
+    (symbol_short!("rl"), addr.clone())
 }
 
 /// Gets rate-limit state: `(window_start_ledger, count_in_window)` from temporary storage.
@@ -1130,7 +1174,7 @@ pub fn get_remaining_quota(env: &Env, addr: &Address) -> u32 {
 }
 
 fn rate_limit_exempt_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "rle"), addr.clone())
+    (symbol_short!("rle"), addr.clone())
 }
 
 /// Returns whether an address is exempt from rate limiting.
@@ -1160,7 +1204,7 @@ pub fn remove_rate_limit_exempt(env: &Env, addr: &Address) {
 const READ_RATE_LIMIT_MAX: u32 = 10;
 
 fn read_rate_limit_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "rl_read"), addr.clone())
+    (symbol_short!("rl_read"), addr.clone())
 }
 
 /// Retrieves the last recorded ledger sequence and call count for read rate limiting.
@@ -1199,17 +1243,17 @@ pub fn check_read_rate_limit(env: &Env, caller: &Address) -> Result<(), crate::e
 
 // --- Token Whitelist (for tokens, not recipients) ---
 
-const TOKEN_WHITELIST_ENABLED_KEY: &str = "twl_en";
+const TOKEN_WHITELIST_ENABLED_KEY: Symbol = symbol_short!("twl_en");
 
 fn token_whitelist_key(env: &Env, token: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "twl"), token.clone())
+    (symbol_short!("twl"), token.clone())
 }
 
 /// Returns whether token whitelisting is enabled.
 pub fn is_token_whitelist_enabled(env: &Env) -> bool {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, TOKEN_WHITELIST_ENABLED_KEY))
+        .get(&TOKEN_WHITELIST_ENABLED_KEY)
         .unwrap_or(false)
 }
 
@@ -1217,7 +1261,7 @@ pub fn is_token_whitelist_enabled(env: &Env) -> bool {
 pub fn set_token_whitelist_enabled(env: &Env, enabled: bool) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, TOKEN_WHITELIST_ENABLED_KEY), &enabled);
+        .set(&TOKEN_WHITELIST_ENABLED_KEY, &enabled);
 }
 
 /// Returns whether a token is whitelisted.
@@ -1244,10 +1288,10 @@ pub fn remove_token_from_whitelist(env: &Env, token: &Address) {
 
 // --- Fee Sweep Tracking ---
 
-const FEES_COLLECTED_KEY: &str = "fees_coll";
+const FEES_COLLECTED_KEY: Symbol = symbol_short!("fees_coll");
 
 fn fees_collected_key(env: &Env, token: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, FEES_COLLECTED_KEY), token.clone())
+    (FEES_COLLECTED_KEY, token.clone())
 }
 
 /// Gets accumulated fees for a token.
@@ -1302,7 +1346,7 @@ pub fn increment_fees_collected(env: &Env, token: &Address, amount: i128) -> Res
 // --- Slippage Protection ---
 
 fn slippage_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "slip"), stream_id)
+    (symbol_short!("slip"), stream_id)
 }
 
 /// Gets slippage parameters for a stream: (reference_price_bps, max_slippage_bps).
@@ -1321,17 +1365,17 @@ pub fn set_slippage_params(env: &Env, stream_id: u64, reference_price: i128, max
 
 // --- Stream Creation Cooldown ---
 
-const STREAM_CREATION_COOLDOWN_KEY: &str = "sc_cd";
+const STREAM_CREATION_COOLDOWN_KEY: Symbol = symbol_short!("sc_cd");
 
 fn sender_last_creation_key(env: &Env, sender: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "lc"), sender.clone())
+    (symbol_short!("lc"), sender.clone())
 }
 
 /// Gets the global stream creation cooldown in seconds (0 = disabled).
 pub fn get_stream_creation_cooldown(env: &Env) -> u64 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, STREAM_CREATION_COOLDOWN_KEY))
+        .get(&STREAM_CREATION_COOLDOWN_KEY)
         .unwrap_or(0u64)
 }
 
@@ -1339,7 +1383,7 @@ pub fn get_stream_creation_cooldown(env: &Env) -> u64 {
 pub fn set_stream_creation_cooldown(env: &Env, cooldown_seconds: u64) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, STREAM_CREATION_COOLDOWN_KEY), &cooldown_seconds);
+        .set(&STREAM_CREATION_COOLDOWN_KEY, &cooldown_seconds);
 }
 
 /// Gets the last stream creation time for a sender (0 if never created).
@@ -1360,7 +1404,7 @@ pub fn set_sender_last_creation_time(env: &Env, sender: &Address, timestamp: u64
 // --- Federation Address Registry (Issue #238) ---
 
 fn federation_registry_key(env: &Env, federation_name: &String) -> (Symbol, String) {
-    (Symbol::new(env, "fed"), federation_name.clone())
+    (symbol_short!("fed"), federation_name.clone())
 }
 
 /// Gets the Stellar address registered for a federation name.
@@ -1388,13 +1432,13 @@ pub fn unregister_federation_address(env: &Env, federation_name: &String) {
 // Feature (a): StreamExpiryWarning
 // ═══════════════════════════════════════════════════════════════════════════
 
-const EXPIRY_WARNING_WINDOW_KEY: &str = "exp_win";
+const EXPIRY_WARNING_WINDOW_KEY: Symbol = symbol_short!("exp_win");
 
 /// Gets the expiry warning window in ledgers (default: 17280 = ~24 hours).
 pub fn get_expiry_warning_window(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, EXPIRY_WARNING_WINDOW_KEY))
+        .get(&EXPIRY_WARNING_WINDOW_KEY)
         .unwrap_or(17_280u32)
 }
 
@@ -1402,25 +1446,25 @@ pub fn get_expiry_warning_window(env: &Env) -> u32 {
 pub fn set_expiry_warning_window(env: &Env, ledgers: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, EXPIRY_WARNING_WINDOW_KEY), &ledgers);
+        .set(&EXPIRY_WARNING_WINDOW_KEY, &ledgers);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Feature (b): Sender reputation cap
 // ═══════════════════════════════════════════════════════════════════════════
 
-const NEW_SENDER_STREAM_CAP_KEY: &str = "ns_cap";
-const SENDER_PROMOTION_THRESHOLD_KEY: &str = "sp_thr";
+const NEW_SENDER_STREAM_CAP_KEY: Symbol = symbol_short!("ns_cap");
+const SENDER_PROMOTION_THRESHOLD_KEY: Symbol = symbol_short!("sp_thr");
 
 fn sender_lifetime_count_key(env: &Env, sender: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "sl_cnt"), sender.clone())
+    (symbol_short!("sl_cnt"), sender.clone())
 }
 
 /// Gets the stream cap for new senders (default: 10).
 pub fn get_new_sender_stream_cap(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, NEW_SENDER_STREAM_CAP_KEY))
+        .get(&NEW_SENDER_STREAM_CAP_KEY)
         .unwrap_or(10u32)
 }
 
@@ -1428,7 +1472,7 @@ pub fn get_new_sender_stream_cap(env: &Env) -> u32 {
 pub fn set_new_sender_stream_cap(env: &Env, cap: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, NEW_SENDER_STREAM_CAP_KEY), &cap);
+        .set(&NEW_SENDER_STREAM_CAP_KEY, &cap);
 }
 
 /// Gets the sender promotion threshold (number of streams after which cap no longer applies).
@@ -1436,7 +1480,7 @@ pub fn set_new_sender_stream_cap(env: &Env, cap: u32) {
 pub fn get_sender_promotion_threshold(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, SENDER_PROMOTION_THRESHOLD_KEY))
+        .get(&SENDER_PROMOTION_THRESHOLD_KEY)
         .unwrap_or(50u32)
 }
 
@@ -1444,7 +1488,7 @@ pub fn get_sender_promotion_threshold(env: &Env) -> u32 {
 pub fn set_sender_promotion_threshold(env: &Env, threshold: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, SENDER_PROMOTION_THRESHOLD_KEY), &threshold);
+        .set(&SENDER_PROMOTION_THRESHOLD_KEY, &threshold);
 }
 
 /// Gets the lifetime stream count for a sender (total streams ever created).
@@ -1489,17 +1533,17 @@ pub fn extend_instance_ttl(env: &Env) {
 // Feature (g): Per-token stream count cap
 // ═══════════════════════════════════════════════════════════════════════════
 
-const MAX_STREAMS_PER_TOKEN_KEY: &str = "max_tok";
+const MAX_STREAMS_PER_TOKEN_KEY: Symbol = symbol_short!("max_tok");
 
 fn token_stream_count_key(env: &Env, token: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "tsc"), token.clone())
+    (symbol_short!("tsc"), token.clone())
 }
 
 /// Gets the per-token stream cap (0 = unlimited).
 pub fn get_max_streams_per_token(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, MAX_STREAMS_PER_TOKEN_KEY))
+        .get(&MAX_STREAMS_PER_TOKEN_KEY)
         .unwrap_or(0u32)
 }
 
@@ -1507,7 +1551,7 @@ pub fn get_max_streams_per_token(env: &Env) -> u32 {
 pub fn set_max_streams_per_token(env: &Env, max: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, MAX_STREAMS_PER_TOKEN_KEY), &max);
+        .set(&MAX_STREAMS_PER_TOKEN_KEY, &max);
 }
 
 /// Returns the current active stream count for the given token.
@@ -1539,7 +1583,7 @@ pub fn decrement_token_stream_count(env: &Env, token: &Address) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn blocklist_key(env: &Env, addr: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "bl"), addr.clone())
+    (symbol_short!("bl"), addr.clone())
 }
 
 /// Adds an address to the blocklist.
@@ -1561,13 +1605,13 @@ pub fn is_blocked(env: &Env, addr: &Address) -> bool {
 // Feature (i): Post-expiry grace period
 // ═══════════════════════════════════════════════════════════════════════════
 
-const GRACE_PERIOD_LEDGERS_KEY: &str = "grace";
+const GRACE_PERIOD_LEDGERS_KEY: Symbol = symbol_short!("grace");
 
 /// Gets the grace period in ledgers (0 = no grace period).
 pub fn get_grace_period_ledgers(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, GRACE_PERIOD_LEDGERS_KEY))
+        .get(&GRACE_PERIOD_LEDGERS_KEY)
         .unwrap_or(0u32)
 }
 
@@ -1575,7 +1619,7 @@ pub fn get_grace_period_ledgers(env: &Env) -> u32 {
 pub fn set_grace_period_ledgers(env: &Env, ledgers: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, GRACE_PERIOD_LEDGERS_KEY), &ledgers);
+        .set(&GRACE_PERIOD_LEDGERS_KEY, &ledgers);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1583,7 +1627,7 @@ pub fn set_grace_period_ledgers(env: &Env, ledgers: u32) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn max_deposit_per_token_key(env: &Env, token: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "max_dep"), token.clone())
+    (symbol_short!("max_dep"), token.clone())
 }
 
 /// Gets the maximum single-stream deposit amount for a token (0 = unlimited).
@@ -1606,15 +1650,15 @@ pub fn set_max_deposit_per_token(env: &Env, token: &Address, max_deposit: i128) 
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn dual_stream_token2_key(env: &Env, stream_id: u64) -> (Symbol, u64, Symbol) {
-    (Symbol::new(env, "ds"), stream_id, Symbol::new(env, "tok2"))
+    (symbol_short!("ds"), stream_id, symbol_short!("tok2"))
 }
 
 fn dual_stream_deposit2_key(env: &Env, stream_id: u64) -> (Symbol, u64, Symbol) {
-    (Symbol::new(env, "ds"), stream_id, Symbol::new(env, "dep2"))
+    (symbol_short!("ds"), stream_id, symbol_short!("dep2"))
 }
 
 fn dual_stream_withdrawn2_key(env: &Env, stream_id: u64) -> (Symbol, u64, Symbol) {
-    (Symbol::new(env, "ds"), stream_id, Symbol::new(env, "wd2"))
+    (symbol_short!("ds"), stream_id, symbol_short!("wd2"))
 }
 
 /// Gets the second token address for a dual stream.
@@ -1702,7 +1746,7 @@ pub fn cleanup_dual_stream_storage(env: &Env, stream_id: u64) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn expiry_warning_emitted_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "exp_em"), stream_id)
+    (symbol_short!("exp_em"), stream_id)
 }
 
 /// Returns whether the expiry warning event has already been emitted for a stream.
@@ -1725,7 +1769,7 @@ pub fn set_expiry_warning_emitted(env: &Env, stream_id: u64, val: bool) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn stream_tag_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "stag"), stream_id)
+    (symbol_short!("stag"), stream_id)
 }
 
 /// Returns the tag for a stream, or None if not set.
@@ -1754,7 +1798,7 @@ pub fn remove_stream_tag(env: &Env, stream_id: u64) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn stream_tags_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "stags"), stream_id)
+    (symbol_short!("stags"), stream_id)
 }
 
 /// Returns the multi-tag list for a stream, or an empty Vec if not set.
@@ -1784,11 +1828,11 @@ pub fn remove_stream_tags(env: &Env, stream_id: u64) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn upgrade_proposal_key(env: &Env) -> Symbol {
-    Symbol::new(env, "upg_prop")
+    symbol_short!("upg_prop")
 }
 
 fn upgrade_proposal_expiry_key(env: &Env) -> Symbol {
-    Symbol::new(env, "upg_exp")
+    symbol_short!("upg_exp")
 }
 
 #[derive(Clone, Debug)]
@@ -1867,6 +1911,7 @@ pub fn clear_upgrade_proposal(env: &Env) {
 }
 
 // ── Cancellation fee ─────────────────────────────────────────────────────────
+// 10 bytes exceeds symbol_short!'s 9-byte limit; stays a runtime Symbol::new.
 const CANCELLATION_FEE_KEY: &str = "cancel_fee";
 
 pub fn get_cancellation_fee_bps(env: &Env) -> i128 {
@@ -1884,7 +1929,7 @@ pub fn set_cancellation_fee_bps(env: &Env, bps: i128) {
 
 // ── Stake balance ─────────────────────────────────────────────────────────────
 pub fn get_stake_balance(env: &Env, staker: &Address, token: &Address) -> i128 {
-    let key = (Symbol::new(env, "stk"), staker.clone(), token.clone());
+    let key = (symbol_short!("stk"), staker.clone(), token.clone());
     env.storage()
         .persistent()
         .get::<_, i128>(&key)
@@ -1892,22 +1937,22 @@ pub fn get_stake_balance(env: &Env, staker: &Address, token: &Address) -> i128 {
 }
 
 pub fn add_stake_balance(env: &Env, staker: &Address, token: &Address, amount: i128) {
-    let key = (Symbol::new(env, "stk"), staker.clone(), token.clone());
+    let key = (symbol_short!("stk"), staker.clone(), token.clone());
     let current: i128 = env.storage().persistent().get::<_, i128>(&key).unwrap_or(0);
     env.storage().persistent().set(&key, &(current + amount));
 }
 
 pub fn sub_stake_balance(env: &Env, staker: &Address, token: &Address, amount: i128) {
-    let key = (Symbol::new(env, "stk"), staker.clone(), token.clone());
+    let key = (symbol_short!("stk"), staker.clone(), token.clone());
     let current: i128 = env.storage().persistent().get::<_, i128>(&key).unwrap_or(0);
     env.storage().persistent().set(&key, &(current - amount));
 }
 
 // ── Minimum stake ─────────────────────────────────────────────────────────────
-const MIN_STAKE_KEY: &str = "min_stake";
+const MIN_STAKE_KEY: Symbol = symbol_short!("min_stake");
 
 pub fn get_min_stake(env: &Env, token: &Address) -> i128 {
-    let key = (Symbol::new(env, MIN_STAKE_KEY), token.clone());
+    let key = (MIN_STAKE_KEY, token.clone());
     env.storage()
         .instance()
         .get::<_, i128>(&key)
@@ -1915,7 +1960,7 @@ pub fn get_min_stake(env: &Env, token: &Address) -> i128 {
 }
 
 pub fn set_min_stake(env: &Env, token: &Address, amount: i128) {
-    let key = (Symbol::new(env, MIN_STAKE_KEY), token.clone());
+    let key = (MIN_STAKE_KEY, token.clone());
     env.storage().instance().set(&key, &amount);
 }
 
@@ -1932,17 +1977,17 @@ pub const STAKE_UNLOCK_DELAY: u64 = 7 * 24 * 60 * 60;
 // `SenderStreamCapReached`.  The count is decremented on cancellation or
 // natural expiry/completion.
 
-const SENDER_STREAM_CAP_KEY: &str = "ss_cap";
+const SENDER_STREAM_CAP_KEY: Symbol = symbol_short!("ss_cap");
 
 fn sender_active_count_key(env: &Env, sender: &Address) -> (Symbol, Address) {
-    (Symbol::new(env, "sac"), sender.clone())
+    (symbol_short!("sac"), sender.clone())
 }
 
 /// Returns the global per-sender active stream cap (default 1000).
 pub fn get_sender_stream_cap(env: &Env) -> u32 {
     env.storage()
         .instance()
-        .get(&Symbol::new(env, SENDER_STREAM_CAP_KEY))
+        .get(&SENDER_STREAM_CAP_KEY)
         .unwrap_or(1_000u32)
 }
 
@@ -1950,7 +1995,7 @@ pub fn get_sender_stream_cap(env: &Env) -> u32 {
 pub fn set_sender_stream_cap(env: &Env, cap: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, SENDER_STREAM_CAP_KEY), &cap);
+        .set(&SENDER_STREAM_CAP_KEY, &cap);
 }
 
 /// Returns the current number of *active* streams for `sender`.
@@ -1992,7 +2037,7 @@ pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
 // Storage key: ("meta", stream_id)
 
 fn stream_metadata_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
-    (Symbol::new(env, "meta"), stream_id)
+    (symbol_short!("meta"), stream_id)
 }
 
 /// Writes `metadata` bytes to temporary storage for `stream_id`.

@@ -70,6 +70,7 @@ fn params(
         min_withdrawal_amount,
         sponsor: None,
         requires_recipient_approval: false,
+        metadata_uri: None,
     }
 }
 
@@ -123,7 +124,9 @@ fn test_issue_522_rejects_zero_duration() {
         &false,
         &params(1, 0, 0, None, None),
     );
-    assert_eq!(result, Err(Ok(StreamError::InvalidDuration)));
+    // Issue #620 gave zero-duration streams their own, more specific error
+    // (previously InvalidDuration, a catch-all shared with unrelated checks).
+    assert_eq!(result, Err(Ok(StreamError::MinimumDurationNotMet)));
 }
 
 #[test]

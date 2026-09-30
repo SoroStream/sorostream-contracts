@@ -1,6 +1,18 @@
 use soroban_sdk::contracterror;
 
-/// Custom errors for the SoroStream contract (≤50 variants, Soroban XDR limit).
+/// Custom errors for the SoroStream contract.
+///
+/// Hard-capped at 50 variants — Soroban's `#[contracterror]` macro encodes
+/// this enum's cases into `ScSpecUdtErrorEnumV0.cases`, a
+/// `VecM<ScSpecUdtErrorEnumCaseV0, 50>` (see `stellar-xdr`). Exceeding 50
+/// makes the `#[contracterror]` macro itself panic at compile time with
+/// `LengthExceedsMax`, failing the whole crate's build — not a soft lint.
+/// Before adding a new variant here, either free a slot by folding a
+/// low-traffic existing one into a semantically close neighbor (see the
+/// consolidation below — a prerequisite fix for #402/#617/#620/#661, none
+/// of which could be verified while this enum already exceeded 50), or
+/// confirm the count is still under 50 with
+/// `grep -cE '^\s+\w+ = [0-9]+,?$' errors.rs`.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -42,17 +54,13 @@ pub enum StreamError {
     DurationExceedsMax = 44,
     StartTimeTooFar = 46,
     IDCollision = 47,
-    NextStepNotReached = 48,
+    /// Also returned when a withdrawal-step-gated stream's next unclaimed
+    /// step boundary has not yet been reached (prerequisite 50-variant-cap
+    /// cleanup: folded in the former, separate `NextStepNotReached`).
     AmountBelowMinimum = 49,
     InvalidExpiryWindow = 50,
     NewSenderStreamCapExceeded = 51,
-    InvalidRedirectTarget = 52,
     CircularRedirect = 53,
-    RedirectRecipientMismatch = 54,
-    /// Dual stream requires both token addresses to be distinct.
-    DuplicateTokenInDualStream = 55,
-    /// Operation requires a single-token stream but the stream is dual-token.
-    IsDualStream = 57,
     /// `transfer_recipient` was called on a stream marked as non-transferable at creation.
     StreamNonTransferable = 58,
     /// `withdraw` was called on a stream still in `PendingApproval` state.
@@ -70,6 +78,13 @@ pub enum StreamError {
     /// Sender has not staked the required minimum collateral for this token.
     InsufficientStake = 66,
     /// A parameter decoded from XDR but is semantically invalid for this entry
-    /// point — for example an empty or over-long identifier string.
+    /// point — for example an empty or over-long identifier string, or an
+    /// operation that requires a single-token stream called on a dual-token
+    /// one (prerequisite 50-variant-cap cleanup: folded in the former,
+    /// separate `IsDualStream`).
     InvalidParameter = 67,
+    /// `create_stream` was called with `duration_seconds == 0` (i.e.
+    /// `end_time == start_time`), which leaves claimable-amount accrual
+    /// undefined. A stream must span at least one ledger.
+    MinimumDurationNotMet = 68,
 }

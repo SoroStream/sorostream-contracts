@@ -71,6 +71,7 @@ fn params(cliff_seconds: u64, nonce: u64, auto_renew_count: Option<u32>, lock_un
         requires_recipient_approval: false,
 
         tags: None,
+        metadata_uri: None,
     }
 }
 

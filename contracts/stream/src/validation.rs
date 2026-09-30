@@ -57,13 +57,14 @@ pub fn require_rate_for_deposit(deposit: i128, flow_rate: i128) -> Result<(), St
     }
 }
 
-/// Rejects a zero duration.
+/// Rejects a zero duration (issue #620).
 ///
 /// Durations decode as `u64`, so zero is the only degenerate value XDR can
-/// deliver in this type; it would produce `end_time == start_time`.
+/// deliver in this type; it would produce `end_time == start_time`, a
+/// zero-ledger stream whose claimable-amount accrual is undefined.
 pub fn require_positive_duration(duration_seconds: u64) -> Result<(), StreamError> {
     if duration_seconds == 0 {
-        Err(StreamError::InvalidDuration)
+        Err(StreamError::MinimumDurationNotMet)
     } else {
         Ok(())
     }

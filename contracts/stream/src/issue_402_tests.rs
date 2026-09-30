@@ -1,8 +1,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    token::StellarAssetClient,
+    testutils::{Address as _, IssuerFlags, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
 
@@ -20,9 +20,9 @@ fn setup() -> TestEnv {
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
+    let token = env.register_stellar_asset_contract_v2(token_admin.clone());
+    token.issuer().set_flag(IssuerFlags::ClawbackEnabledFlag);
+    let token_id = token.address();
 
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
@@ -48,7 +48,10 @@ fn client(t: &TestEnv) -> SoroStreamContractClient<'_> {
     SoroStreamContractClient::new(&t.env, &t.contract_id)
 }
 
-fn default_params() -> crate::types::CreateStreamParams {
+fn params_with_metadata_uri(
+    t: &TestEnv,
+    metadata_uri: Option<soroban_sdk::String>,
+) -> crate::types::CreateStreamParams {
     crate::types::CreateStreamParams {
         cliff_seconds: 0,
         nonce: 0,
@@ -62,19 +65,37 @@ fn default_params() -> crate::types::CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
-
         tags: None,
-        metadata_uri: None,
+        metadata_uri,
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Issue #506: TTL Extension Strategy Tests
+// Issue #402: on-chain metadata field for arbitrary annotations
 // ─────────────────────────────────────────────────────────────────────────
-// Test that stream ledger entries have their TTL extended on mutating operations.
 
 #[test]
-fn test_issue_506_ttl_extension_on_withdraw() {
+fn test_issue_402_metadata_uri_can_be_set_at_creation() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let uri = soroban_sdk::String::from_str(&t.env, "ipfs://invoice-42");
+    let stream_id = c.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &500_000,
+        &1000u64,
+        &false,
+        &params_with_metadata_uri(&t, Some(uri.clone())),
+    );
+
+    assert_eq!(c.get_metadata_uri(&stream_id), Some(uri));
+}
+
+#[test]
+fn test_issue_402_metadata_uri_defaults_to_none_when_omitted() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
@@ -84,23 +105,41 @@ fn test_issue_506_ttl_extension_on_withdraw() {
         &t.recipient,
         &t.token_id,
         &500_000,
-        &5000u64,
+        &1000u64,
         &false,
-        &default_params(),
+        &params_with_metadata_uri(&t, None),
     );
 
-    // Advance time and withdraw
-    t.env.ledger().set_timestamp(1000);
-    c.withdraw(&stream_id, &t.recipient);
-
-    // Stream should still exist and be retrievable
-    let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.status, StreamStatus::Active);
-    assert!(stream.options.total_withdrawn > 0, "Total withdrawn should increase");
+    assert_eq!(c.get_metadata_uri(&stream_id), None);
 }
 
 #[test]
-fn test_issue_506_ttl_extension_on_cancel() {
+fn test_issue_402_metadata_uri_over_128_bytes_rejected_at_creation() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let too_long = soroban_sdk::String::from_str(
+        &t.env,
+        &"a".repeat(129),
+    );
+    let result = c.try_create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &500_000,
+        &1000u64,
+        &false,
+        &params_with_metadata_uri(&t, Some(too_long)),
+    );
+
+    assert_eq!(result, Err(Ok(StreamError::InvalidMetadataUri)));
+}
+
+#[test]
+fn test_issue_402_metadata_uri_settable_post_creation_still_works() {
+    // Guards against a regression where wiring the creation-time path breaks
+    // the pre-existing post-creation update_metadata_uri entry point.
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
@@ -110,75 +149,13 @@ fn test_issue_506_ttl_extension_on_cancel() {
         &t.recipient,
         &t.token_id,
         &500_000,
-        &5000u64,
+        &1000u64,
         &false,
-        &default_params(),
+        &params_with_metadata_uri(&t, None),
     );
+    assert_eq!(c.get_metadata_uri(&stream_id), None);
 
-    // Advance time significantly
-    t.env.ledger().set_timestamp(2000);
-
-    // Cancel should still work without storage expiry
-    c.cancel_stream(&stream_id, &t.sender);
-
-    // Stream should be marked as cancelled (or removed if completed)
-    let result = c.try_get_stream(&stream_id);
-    // Either stream is removed or marked cancelled - both indicate successful cancellation
-    assert!(result.is_err() || c.get_stream(&stream_id).status == StreamStatus::Cancelled);
-}
-
-#[test]
-fn test_issue_506_ttl_extension_on_metadata_update() {
-    let t = setup();
-    let c = client(&t);
-
-    let stream_id = c.create_stream(
-        &t.sender,
-        &t.recipient,
-        &t.token_id,
-        &500_000,
-        &5000u64,
-        &false,
-        &default_params(),
-    );
-
-    let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
-    c.update_metadata_uri(&t.sender, &stream_id, &uri);
-
-    // Stream should still be retrievable
-    let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.options.metadata_uri, uri);
-}
-
-#[test]
-fn test_issue_506_multiple_mutating_calls_extend_ttl() {
-    let t = setup();
-    let c = client(&t);
-    t.env.ledger().set_timestamp(0);
-
-    let stream_id = c.create_stream(
-        &t.sender,
-        &t.recipient,
-        &t.token_id,
-        &1_000_000,
-        &100_000u64,
-        &false,
-        &default_params(),
-    );
-
-    // Perform multiple mutating operations at different times
-    for i in 1..5 {
-        t.env.ledger().set_timestamp(i * 10_000);
-
-        if i % 2 == 0 {
-            c.withdraw(&stream_id, &t.recipient);
-        } else {
-            let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
-            c.update_metadata_uri(&t.sender, &stream_id, &uri);
-        }
-
-        // Stream should still exist after each operation
-        let stream = c.get_stream(&stream_id);
-        assert_eq!(stream.status, StreamStatus::Active);
-    }
+    let uri = soroban_sdk::String::from_str(&t.env, "https://example.com/receipt/7");
+    c.update_metadata_uri(&t.sender, &stream_id, &Some(uri.clone()));
+    assert_eq!(c.get_metadata_uri(&stream_id), Some(uri));
 }

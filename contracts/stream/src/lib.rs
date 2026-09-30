@@ -32,6 +32,10 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
 #[cfg(test)] mod issue_523_tests;
+#[cfg(test)] mod issue_402_tests;
+#[cfg(test)] mod issue_617_tests;
+#[cfg(test)] mod issue_620_tests;
+#[cfg(test)] mod issue_661_tests;
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -1001,7 +1005,7 @@ impl SoroStreamContract {
             return Err(StreamError::StreamNotActive);
         }
         if source.options.is_dual_stream {
-            return Err(StreamError::IsDualStream);
+            return Err(StreamError::InvalidParameter);
         }
         // Milestone-gated and step-vesting streams carry a zero flow rate and a
         // separate release schedule; they are not cloneable through this path.
@@ -1244,6 +1248,8 @@ impl SoroStreamContract {
         let renewal_cap = options.effective_renew_count();
         let tag: Option<String> = None;
         let tags: Option<Vec<Bytes>> = params.tags.clone();
+        // Optional off-chain metadata URI, settable at creation (issue #402).
+        let metadata_uri: Option<String> = params.metadata_uri.clone();
         let on_complete_contract: Option<Address> = None;
         let on_complete_function: Option<Symbol> = None;
         let enforce_recipient_allowlist = false;
@@ -1292,6 +1298,11 @@ impl SoroStreamContract {
                 }
             }
         }
+        // ── Validate stream metadata URI (issue #402) ────────────────────────
+        // Reuses the same validator `update_metadata_uri` applies post-creation,
+        // so a URI is held to the same length/format rule whether set at
+        // creation or afterward.
+        validate_metadata_uri(&metadata_uri)?;
         validate_recipient_address(&env, &sender, &recipient)?;
         check_token_whitelist(&env, &token)?;
         validate_token_address(&env, &token)?;
@@ -1484,7 +1495,7 @@ impl SoroStreamContract {
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
-                metadata_uri: None,
+                metadata_uri: metadata_uri.clone(),
                 milestones: Vec::new(&env),
                 milestone_release_mode: false,
                 milestone_approver: None,
@@ -1621,6 +1632,7 @@ impl SoroStreamContract {
                 requires_recipient_approval: false,
 
                 tags: None,
+                metadata_uri: None,
             },
         )
     }
@@ -2800,8 +2812,8 @@ impl SoroStreamContract {
         recipient.require_auth();
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
         if stream.recipient != recipient { return Err(StreamError::NotRecipient); }
-        let target = load_stream(&env, target_stream_id).ok_or(StreamError::InvalidRedirectTarget)?;
-        if target.recipient != recipient { return Err(StreamError::RedirectRecipientMismatch); }
+        let target = load_stream(&env, target_stream_id).ok_or(StreamError::StreamNotFound)?;
+        if target.recipient != recipient { return Err(StreamError::NotAuthorized); }
         check_no_circular_redirect(&env, stream_id, target_stream_id)?;
         stream.options.redirect_to_stream_id = Some(target_stream_id);
         save_stream(&env, &stream);
@@ -3784,7 +3796,7 @@ impl SoroStreamContract {
                     let next_threshold = stream.start_time
                         .saturating_add((stream.options.current_step as u64 + 1) * step_interval);
                     if now < next_threshold {
-                        return Err(StreamError::NextStepNotReached);
+                        return Err(StreamError::AmountBelowMinimum);
                     }
                 }
             }
@@ -5131,6 +5143,7 @@ impl SoroStreamContract {
                     requires_recipient_approval: false,
 
                 tags: None,
+                metadata_uri: stream.options.metadata_uri.clone(),
             },
             )?;
 
