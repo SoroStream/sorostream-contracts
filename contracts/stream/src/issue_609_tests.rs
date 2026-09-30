@@ -94,7 +94,7 @@ fn test_609_ring_buffer_evicts_oldest_and_stays_consistent() {
     for cycle in 0..6u64 {
         let pause_ts = 1 + cycle * 2;
         t.env.ledger().set_timestamp(pause_ts);
-        c.pause_stream(&stream_id, &t.sender);
+        c.pause_stream(&stream_id, &t.sender, &None);
 
         t.env.ledger().set_timestamp(pause_ts + 1);
         c.resume_stream(&stream_id, &t.sender);

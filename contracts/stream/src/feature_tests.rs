@@ -781,7 +781,7 @@ fn test_all_writes_blocked_when_paused() {
     assert_eq!(r, Err(Ok(StreamError::ContractPaused)), "top_up must be blocked when paused");
 
     // â”€â”€ pause_stream (stream-level, not contract-level) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    let r = c.try_pause_stream(&stream_id, &t.sender);
+    let r = c.try_pause_stream(&stream_id, &t.sender, &None);
     assert_eq!(r, Err(Ok(StreamError::ContractPaused)), "pause_stream must be blocked when paused");
 
     // â”€â”€ resume_stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1193,7 +1193,7 @@ fn test_paused_then_cancelled_refund_correct() {
 
     // Pause at t=300.
     t.env.ledger().set_timestamp(300);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Cancel immediately while paused.
     c.cancel_stream(&stream_id, &t.sender);
@@ -1223,7 +1223,7 @@ fn test_paused_duration_seconds_accumulated_on_resume() {
     let stream_id = make_plain_stream(&t, 5_001);
 
     t.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // 200 seconds of pause.
     t.env.ledger().set_timestamp(300);
@@ -1245,13 +1245,13 @@ fn test_multiple_pause_resume_accumulates_duration() {
 
     // First pause: 50 s
     t.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
     t.env.ledger().set_timestamp(150);
     c.resume_stream(&stream_id, &t.sender);
 
     // Second pause: 100 s
     t.env.ledger().set_timestamp(400);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
     t.env.ledger().set_timestamp(500);
     c.resume_stream(&stream_id, &t.sender);
 
@@ -1276,7 +1276,7 @@ fn test_paused_then_resumed_then_cancelled_refund_correct() {
     let stream_id = make_plain_stream(&t, 5_003);
 
     t.env.ledger().set_timestamp(200);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     t.env.ledger().set_timestamp(400);
     c.resume_stream(&stream_id, &t.sender);
@@ -1312,7 +1312,7 @@ fn test_get_claimable_zero_at_pause_time_when_just_withdrawn() {
     t.env.ledger().set_timestamp(300);
     c.withdraw(&stream_id, &t.recipient);
 
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Claimable should be 0 — paused right after a withdrawal.
     let claimable = c.get_claimable(&stream_id);
@@ -1331,7 +1331,7 @@ fn test_get_claimable_after_resume_excludes_paused_time() {
 
     // Pause at t=200 (200 s elapsed, 20_000 tokens accrued).
     t.env.ledger().set_timestamp(200);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Resume at t=500 (300 s of pause, timestamps shift +300).
     t.env.ledger().set_timestamp(500);

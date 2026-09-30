@@ -1456,7 +1456,7 @@ fn error_third_party_cannot_mutate_unowned_stream() {
 
     let results = [
         c.try_stop_stream(&stream_id, &other),
-        c.try_pause_stream(&stream_id, &other),
+        c.try_pause_stream(&stream_id, &other, &None),
         c.try_resume_stream(&stream_id, &other),
         c.try_lock_stream(&stream_id, &other),
         c.try_set_delegate(&other, &stream_id, &delegate),
@@ -1614,7 +1614,7 @@ fn success_top_up_paused_stream() {
     );
 
     // Pause the stream
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Topping up a paused stream should succeed
     let result = c.try_top_up(&stream_id, &t.sender, &t.token_id, &10_000);
@@ -2412,7 +2412,7 @@ fn test_pause_resume() {
         &false, &0i128, &None::<u32>, &None::<i128>, &None::<u32>);
 
     t.env.ledger().set_timestamp(200);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     let stream = c.get_stream(&stream_id);
     assert_eq!(stream.status, StreamStatus::Paused);
@@ -3201,7 +3201,7 @@ fn test_get_stats_pause_resume_counter() {
 
     assert_eq!(c.get_stats().active_streams, 1);
 
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
     assert_eq!(c.get_stats().active_streams, 0);
 
     c.resume_stream(&stream_id, &t.sender);
@@ -3312,7 +3312,7 @@ fn test_bump_stream_ttl_works_on_paused_stream() {
 
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false, &0i128, &None::<u32>, &None::<i128>, &None::<u32>);
     let stream_id = c.create_stream(&t.sender, &t.recipient, &t.token_id, &100_000, &1000, &0, &0u64, &false, &0u64, &false);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Should succeed â€” paused streams still need their TTL extended.
     let result = c.try_bump_stream_ttl(&stream_id);
@@ -5416,7 +5416,7 @@ fn test_transfer_sender_moves_management_and_sender_index() {
     let old_delegate_result = c.try_cancel_stream(&stream_id, &delegate);
     assert_eq!(old_delegate_result, Err(Ok(StreamError::NotAuthorized)));
 
-    c.pause_stream(&stream_id, &new_sender);
+    c.pause_stream(&stream_id, &new_sender, &None);
     c.resume_stream(&stream_id, &new_sender);
     c.cancel_stream(&stream_id, &new_sender);
     assert!(c.try_get_stream(&stream_id).is_err());
@@ -5943,14 +5943,14 @@ fn test_pause_resume_requires_sender_identity() {
         &None::<u32>, &None::<i128>, &false, &false,
     );
 
-    let pause_result = c.try_pause_stream(&stream_id, &t.recipient);
+    let pause_result = c.try_pause_stream(&stream_id, &t.recipient, &None);
     assert!(pause_result.is_err(), "recipient should not be able to pause another user's stream");
     match pause_result {
         Err(e) => assert_eq!(e, StreamError::NotSender),
         Ok(_) => panic!("Expected NotSender error for pause_stream"),
     }
 
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
     let resume_result = c.try_resume_stream(&stream_id, &t.recipient);
     assert!(resume_result.is_err(), "recipient should not be able to resume another user's stream");
     match resume_result {

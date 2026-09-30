@@ -95,7 +95,7 @@ fn revoke_manager_clears_rights() {
     assert_eq!(c.get_stream_manager(&stream_id), None);
 
     // Former manager can no longer pause.
-    let result = c.try_pause_stream(&stream_id, &t.manager);
+    let result = c.try_pause_stream(&stream_id, &t.manager, &None);
     assert_eq!(result, Err(Ok(StreamError::NotSender)));
 }
 
@@ -124,7 +124,7 @@ fn manager_can_pause_and_resume() {
     let stream_id = make_stream(&t, &c, 0);
     c.set_stream_manager(&t.sender, &stream_id, &t.manager);
 
-    c.pause_stream(&stream_id, &t.manager);
+    c.pause_stream(&stream_id, &t.manager, &None);
     assert_eq!(
         c.get_stream(&stream_id).status,
         crate::StreamStatus::Paused
@@ -196,7 +196,7 @@ fn stranger_cannot_pause_or_update_rate() {
     let stranger = Address::generate(&t.env);
 
     assert_eq!(
-        c.try_pause_stream(&stream_id, &stranger),
+        c.try_pause_stream(&stream_id, &stranger, &None),
         Err(Ok(StreamError::NotSender))
     );
     assert_eq!(

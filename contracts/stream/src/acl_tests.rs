@@ -339,7 +339,7 @@ fn test_acl_persists_across_pause_resume() {
     );
 
     // Pause stream
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // ACL should persist
     let stream = c.get_stream(&stream_id);
