@@ -33,6 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_39_tests;   // feat/39-create-stream-fuzz
 #[cfg(test)] mod issue_37_tests;   // feat/37-sender-stream-cap
 #[cfg(test)] mod duplicate_id_tests; // identical-param stream ID collision
+#[cfg(test)] mod issue_624_tests;    // feat/25-creation-time-future-check
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -1693,6 +1694,12 @@ impl SoroStreamContract {
             .ok_or(StreamError::Overflow)?;
         if end_time <= start_time {
             return Err(StreamError::InvalidEndTime);
+        }
+        // Issue #624: Reject streams whose end_time is already in the past.
+        // A past end_time locks funds in an immediately-expired stream with no
+        // meaningful vesting window, so we reject early at creation time.
+        if end_time <= now {
+            return Err(StreamError::EndTimeInPast);
         }
 
         // Calculate cliff_time from start_time
