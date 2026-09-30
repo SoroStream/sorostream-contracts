@@ -13,7 +13,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, Env, IntoVal,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -84,6 +84,87 @@ impl TestEnv {
 // ─────────────────────────────────────────────────────────────────────────────
 //  1. Core lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── Issue #626: sponsor_stream must authenticate the sponsor ─────────────────
+
+/// When a sponsor funds a stream, they must explicitly authorise the call.
+/// Without sponsor.require_auth(), any address could be used to fund a stream.
+#[test]
+fn test_sponsor_stream_with_valid_auth_succeeds() {
+    let t = TestEnv::new();
+    let sponsor = Address::generate(&t.env);
+    // Mint tokens to the sponsor so they can fund the stream.
+    StellarAssetClient::new(&t.env, &t.token).mint(&sponsor, &10_000_000);
+
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+
+    // With mock_all_auths the sponsor's auth requirement is satisfied automatically.
+    let stream_id = client.sponsor_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &false,
+        &sponsor,
+    );
+
+    let stream = client.get_stream(&stream_id);
+    // The stream sender is still the original sender, not the sponsor.
+    assert_eq!(stream.sender, t.sender);
+    assert_eq!(stream.deposit, 1_000);
+}
+
+/// An unauthenticated sponsor attempt must be rejected by the auth framework.
+/// This test verifies that removing the sponsor auth mock causes a failure.
+#[test]
+#[should_panic]
+fn test_sponsor_stream_unauthenticated_sponsor_is_rejected() {
+    let env = Env::default();
+    // Do NOT call env.mock_all_auths() — we want real auth enforcement.
+
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let sponsor = Address::generate(&env);
+
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token = token_id.address();
+    StellarAssetClient::new(&env, &token).mint(&sender, &10_000_000);
+    StellarAssetClient::new(&env, &token).mint(&sponsor, &10_000_000);
+
+    let contract = env.register(StreamingContract, ());
+    let client = StreamingContractClient::new(&env, &contract);
+
+    let start = env.ledger().timestamp();
+    let end = start + 1_000;
+
+    // Only mock sender auth, not sponsor — sponsor auth must fail.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &sender,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract,
+            fn_name: "sponsor_stream",
+            args: (sender.clone(), recipient.clone(), token.clone(), 1_000_i128, start, end, false, sponsor.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    // sponsor has NOT authorised — this should panic.
+    client.sponsor_stream(
+        &sender,
+        &recipient,
+        &token,
+        &1_000_i128,
+        &start,
+        &end,
+        &false,
+        &sponsor,
+    );
+}
 
 #[test]
 fn test_create_stream_stores_correct_fields() {

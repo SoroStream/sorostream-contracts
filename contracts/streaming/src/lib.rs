@@ -79,6 +79,78 @@ impl StreamingContract {
         stream_id
     }
 
+    /// Creates a new payment stream funded by a distinct sponsor address.
+    ///
+    /// The `sponsor` pays the deposit while `sender` remains the stream controller
+    /// (the one who can cancel or renew). The sponsor must explicitly authorise
+    /// this call; without `sponsor.require_auth()` an attacker could create funded
+    /// streams debited from a third party without their consent (issue #626).
+    ///
+    /// # Panics
+    /// Panics with `Error::Unauthorized` if the Soroban auth context does not
+    /// contain a valid signature from `sponsor`.
+    pub fn sponsor_stream(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit: i128,
+        start_time: u64,
+        end_time: u64,
+        auto_renew: bool,
+        sponsor: Address,
+    ) -> u64 {
+        // Both the sender and the sponsor must authorise this call.
+        // The sponsor auth is the critical gate: it prevents an attacker from
+        // creating a stream funded by an address that did not consent.
+        sender.require_auth();
+        sponsor.require_auth();
+
+        assert!(end_time > start_time, "end_time must be after start_time");
+        assert!(deposit > 0, "deposit must be positive");
+
+        let duration = (end_time - start_time) as i128;
+        assert!(
+            deposit % duration == 0,
+            "deposit must be exactly divisible by duration"
+        );
+
+        let rate_per_second = deposit / duration;
+
+        // The sponsor funds the escrow; the sender controls the stream lifecycle.
+        token::Client::new(&env, &token).transfer(
+            &sponsor,
+            &env.current_contract_address(),
+            &deposit,
+        );
+
+        let nonce = storage::next_nonce(&env);
+        let mut stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, nonce);
+        let mut retry = nonce + 1;
+        while storage::stream_id_exists(&env, stream_id) {
+            stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, retry);
+            retry += 1;
+        }
+
+        storage::save_stream(
+            &env,
+            stream_id,
+            &Stream {
+                sender,
+                recipient,
+                token,
+                deposit,
+                claimed: 0,
+                rate_per_second,
+                start_time,
+                end_time,
+                auto_renew,
+                cancelled: false,
+            },
+        );
+        stream_id
+    }
+
     /// Claim all vested tokens up to the current timestamp.
     pub fn claim(env: Env, stream_id: u64) -> i128 {
         let mut stream = storage::get_stream(&env, stream_id);
