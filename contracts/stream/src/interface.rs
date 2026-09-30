@@ -264,11 +264,21 @@ pub trait SoroStreamInterface {
     fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError>;
     fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError>;
     fn execute_fee_change(env: Env) -> Result<(), StreamError>;
+
+    /// Returns the pending protocol-fee update as `(new_fee_bps, unlock_time)`,
+    /// or `None` when no change is waiting out the 48-hour timelock.
+    fn get_pending_fee_update(env: Env) -> Option<(u32, u64)>;
     fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError>;
     fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>);
     fn get_stats(env: Env) -> Stats;
     fn get_protocol_stats(env: Env) -> ProtocolStats;
     fn recalibrate_stats(env: Env, admin: Address) -> Result<(), StreamError>;
+
+    /// Returns the total number of non-expired (active) streams across the protocol.
+    ///
+    /// Incremented on stream creation; decremented on cancellation / expiry.
+    /// Returns a `u64` for dashboard metrics and protocol health monitoring.
+    fn get_active_stream_count(env: Env) -> u64;
 
     fn min_duration(env: Env) -> u64;
     fn set_min_duration(env: Env, admin: Address, seconds: u64);
