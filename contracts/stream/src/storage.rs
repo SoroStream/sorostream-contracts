@@ -1948,3 +1948,30 @@ pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
         env.storage().persistent().set(&key, &(current - 1));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Issue #641: StreamExpiryNotification emitted flag
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Stored in persistent storage so that the notification is guaranteed to be
+// emitted at most once per stream lifetime, even across ledger gaps.
+
+fn expiry_notification_emitted_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "exp_notif"), stream_id)
+}
+
+/// Returns whether the StreamExpiryNotification event has already been emitted
+/// for `stream_id`.
+pub fn get_expiry_notification_emitted(env: &Env, stream_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&expiry_notification_emitted_key(env, stream_id))
+        .unwrap_or(false)
+}
+
+/// Marks the StreamExpiryNotification as emitted for `stream_id`.
+pub fn set_expiry_notification_emitted(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .set(&expiry_notification_emitted_key(env, stream_id), &true);
+}
