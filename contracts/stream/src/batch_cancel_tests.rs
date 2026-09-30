@@ -790,7 +790,7 @@ fn test_batch_cancel_paused_streams() {
     );
 
     // Pause stream
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     let stream_ids = Vec::from_array(&t.env, [stream_id]);
 

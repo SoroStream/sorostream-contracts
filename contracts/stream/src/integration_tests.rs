@@ -103,7 +103,7 @@ fn stream_transition_history_retains_last_ten_entries() {
     for cycle in 0..5u64 {
         let pause_time = 1 + cycle * 2;
         ie.env.ledger().set_timestamp(pause_time);
-        c.pause_stream(&ie.sender, &stream_id).unwrap();
+        c.pause_stream(&stream_id, &ie.sender, &None).unwrap();
         ie.env.ledger().set_timestamp(pause_time + 1);
         c.resume_stream(&ie.sender, &stream_id).unwrap();
     }
@@ -1586,7 +1586,7 @@ fn integration_complete_lifecycle_all_operations() {
 
     // 4. Pause the stream
     ie.env.ledger().set_timestamp(400);
-    c.pause_stream(&stream_id, &ie.sender);
+    c.pause_stream(&stream_id, &ie.sender, &None);
     let paused_stream = c.get_stream(&stream_id);
     assert_eq!(paused_stream.status, StreamStatus::Paused);
 
@@ -1659,7 +1659,7 @@ fn integration_lifecycle_with_multiple_pauses_and_resumes() {
 
     // First pause/resume cycle
     ie.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &ie.sender);
+    c.pause_stream(&stream_id, &ie.sender, &None);
     assert_eq!(c.get_stream(&stream_id).status, StreamStatus::Paused);
 
     ie.env.ledger().set_timestamp(200);
@@ -1668,7 +1668,7 @@ fn integration_lifecycle_with_multiple_pauses_and_resumes() {
 
     // Second pause/resume cycle
     ie.env.ledger().set_timestamp(300);
-    c.pause_stream(&stream_id, &ie.sender);
+    c.pause_stream(&stream_id, &ie.sender, &None);
 
     ie.env.ledger().set_timestamp(400);
     c.resume_stream(&stream_id, &ie.sender);
@@ -1702,7 +1702,7 @@ fn integration_lifecycle_with_topup_during_pause() {
 
     // Pause the stream
     ie.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &ie.sender);
+    c.pause_stream(&stream_id, &ie.sender, &None);
 
     // Top-up while paused
     let stream_before = c.get_stream(&stream_id);
