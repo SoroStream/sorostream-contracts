@@ -1,13 +1,13 @@
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
-    Address, Env,
+    Address, Env, Vec,
 };
 
 struct TestEnv {
     env: Env,
+    admin: Address,
     contract_id: Address,
     token_id: Address,
     sender: Address,
@@ -26,10 +26,10 @@ fn setup() -> TestEnv {
 
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
+    let admin = Address::generate(&env);
 
     StellarAssetClient::new(&env, &token_id).mint(&sender, &10_000_000);
 
-    let admin = Address::generate(&env);
     SoroStreamContractClient::new(&env, &contract_id)
         .initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
 
@@ -37,6 +37,7 @@ fn setup() -> TestEnv {
 
     TestEnv {
         env,
+        admin,
         contract_id,
         token_id,
         sender,
@@ -62,18 +63,15 @@ fn default_params() -> crate::types::CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
-
-        tags: None,
     }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Issue #506: TTL Extension Strategy Tests
+// Issue #401: Automatic Stream Expiry and Cleanup for Ended Streams
 // ─────────────────────────────────────────────────────────────────────────
-// Test that stream ledger entries have their TTL extended on mutating operations.
 
 #[test]
-fn test_issue_506_ttl_extension_on_withdraw() {
+fn test_issue_401_automatic_stream_expiry_view() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
@@ -83,23 +81,88 @@ fn test_issue_506_ttl_extension_on_withdraw() {
         &t.recipient,
         &t.token_id,
         &500_000,
+        &1000u64,
+        &false,
+        &default_params(),
+    );
+
+    // Mid-stream check
+    t.env.ledger().set_timestamp(500);
+    let stream_mid = c.get_stream(&stream_id);
+    assert_eq!(stream_mid.status, StreamStatus::Active);
+
+    // Advance past end_time
+    t.env.ledger().set_timestamp(1001);
+    let stream_ended = c.get_stream(&stream_id);
+    assert_eq!(stream_ended.status, StreamStatus::Expired);
+}
+
+#[test]
+fn test_issue_401_mark_expired_transition() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id = c.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &500_000,
+        &1000u64,
+        &false,
+        &default_params(),
+    );
+
+    t.env.ledger().set_timestamp(1005);
+    c.mark_expired(&stream_id);
+
+    let stream = c.get_stream(&stream_id);
+    assert_eq!(stream.status, StreamStatus::Expired);
+}
+
+#[test]
+fn test_issue_401_prune_expired_streams_by_admin() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_1 = c.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &200_000,
+        &500u64,
+        &false,
+        &default_params(),
+    );
+
+    let stream_2 = c.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &300_000,
         &5000u64,
         &false,
         &default_params(),
     );
 
-    // Advance time and withdraw
+    // Fast-forward to 1000s (stream 1 ended, stream 2 active)
     t.env.ledger().set_timestamp(1000);
-    c.withdraw(&stream_id, &t.recipient);
 
-    // Stream should still exist and be retrievable
-    let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.status, StreamStatus::Active);
-    assert!(stream.options.total_withdrawn > 0, "Total withdrawn should increase");
+    let ids_to_prune = soroban_sdk::vec![&t.env, stream_1, stream_2];
+    let pruned = c.prune_expired_streams(&t.admin, &ids_to_prune);
+    assert_eq!(pruned, 1);
+
+    // Stream 1 pruned and no longer in storage
+    assert!(c.try_get_stream(&stream_1).is_err());
+
+    // Stream 2 should still be in storage
+    let active_stream = c.get_stream(&stream_2);
+    assert_eq!(active_stream.status, StreamStatus::Active);
 }
 
 #[test]
-fn test_issue_506_ttl_extension_on_cancel() {
+fn test_issue_401_prune_expired_streams_unauthorized() {
     let t = setup();
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
@@ -108,76 +171,16 @@ fn test_issue_506_ttl_extension_on_cancel() {
         &t.sender,
         &t.recipient,
         &t.token_id,
-        &500_000,
-        &5000u64,
+        &200_000,
+        &500u64,
         &false,
         &default_params(),
     );
 
-    // Advance time significantly
-    t.env.ledger().set_timestamp(2000);
+    t.env.ledger().set_timestamp(1000);
 
-    // Cancel should still work without storage expiry
-    c.cancel_stream(&stream_id, &t.sender);
-
-    // Stream should be marked as cancelled (or removed if completed)
-    let result = c.try_get_stream(&stream_id);
-    // Either stream is removed or marked cancelled - both indicate successful cancellation
-    assert!(result.is_err() || c.get_stream(&stream_id).status == StreamStatus::Cancelled);
-}
-
-#[test]
-fn test_issue_506_ttl_extension_on_metadata_update() {
-    let t = setup();
-    let c = client(&t);
-
-    let stream_id = c.create_stream(
-        &t.sender,
-        &t.recipient,
-        &t.token_id,
-        &500_000,
-        &5000u64,
-        &false,
-        &default_params(),
-    );
-
-    let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
-    c.update_metadata_uri(&t.sender, &stream_id, &uri);
-
-    // Stream should still be retrievable
-    let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.options.metadata_uri, uri);
-}
-
-#[test]
-fn test_issue_506_multiple_mutating_calls_extend_ttl() {
-    let t = setup();
-    let c = client(&t);
-    t.env.ledger().set_timestamp(0);
-
-    let stream_id = c.create_stream(
-        &t.sender,
-        &t.recipient,
-        &t.token_id,
-        &1_000_000,
-        &100_000u64,
-        &false,
-        &default_params(),
-    );
-
-    // Perform multiple mutating operations at different times
-    for i in 1..5 {
-        t.env.ledger().set_timestamp(i * 10_000);
-
-        if i % 2 == 0 {
-            c.withdraw(&stream_id, &t.recipient);
-        } else {
-            let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
-            c.update_metadata_uri(&t.sender, &stream_id, &uri);
-        }
-
-        // Stream should still exist after each operation
-        let stream = c.get_stream(&stream_id);
-        assert_eq!(stream.status, StreamStatus::Active);
-    }
+    let non_admin = Address::generate(&t.env);
+    let ids = soroban_sdk::vec![&t.env, stream_id];
+    let res = c.try_prune_expired_streams(&non_admin, &ids);
+    assert!(res.is_err());
 }
