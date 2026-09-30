@@ -33,6 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_39_tests;   // feat/39-create-stream-fuzz
 #[cfg(test)] mod issue_37_tests;   // feat/37-sender-stream-cap
 #[cfg(test)] mod duplicate_id_tests; // identical-param stream ID collision
+#[cfg(test)] mod stream_priority_tests; // feat/45-priority-withdrawal-queue (issue #642)
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -106,6 +107,8 @@ use storage::{
     // feat/37 — per-sender active stream cap
     get_sender_stream_cap, set_sender_stream_cap,
     get_sender_active_count, increment_sender_active_count, decrement_sender_active_count,
+    // feat/45 — stream priority (issue #642)
+    get_stream_priority, set_stream_priority,
 };
 
 const MAX_STREAM_METADATA_BYTES: u32 = 256;
@@ -1481,6 +1484,12 @@ impl SoroStreamContract {
             index_by_tag(&env, t, stream_id);
             set_stream_tag_storage(&env, stream_id, t);
         }
+        // feat/45: store stream priority (issue #642)
+        if let Some(p) = params.priority {
+            if p > 0 {
+                set_stream_priority(&env, stream_id, p);
+            }
+        }
         index_global_stream(&env, stream_id);
         // Only count as active immediately if no approval is required.
         if !options.requires_recipient_approval {
@@ -1572,7 +1581,9 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 sponsor: None,
                 requires_recipient_approval: false,
-            },
+
+        priority: None,
+    },
         )
     }
 
@@ -1781,6 +1792,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2050,6 +2062,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2260,6 +2273,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2457,6 +2471,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -5075,7 +5090,9 @@ impl SoroStreamContract {
                     min_withdrawal_amount: None,
                     sponsor: None,
                     requires_recipient_approval: false,
-                },
+
+        priority: None,
+    },
             )?;
 
             new_stream_ids.push_back(new_stream_id);
@@ -5416,6 +5433,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -6214,6 +6232,75 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Returns the priority level for a stream (0 = lowest, 255 = highest).
+    ///
+    /// Streams with no explicit priority set return 0 (lowest).
+    /// Used by `batch_withdraw_by_priority` to order processing (issue #642).
+    pub fn get_stream_priority(env: Env, stream_id: u64) -> u8 {
+        get_stream_priority(&env, stream_id)
+    }
+
+    /// Processes withdrawals for a batch of stream IDs, ordering them by
+    /// priority (highest first) before executing each withdrawal (issue #642).
+    ///
+    /// This ensures high-priority streams are processed before low-priority ones
+    /// during congestion — useful for payroll or time-sensitive streams.
+    ///
+    /// Only streams where `recipient` is the current stream recipient are
+    /// processed; others are silently skipped. Returns the number of successful
+    /// withdrawals performed.
+    pub fn batch_withdraw_by_priority(
+        env: Env,
+        recipient: Address,
+        stream_ids: Vec<u64>,
+    ) -> Result<u32, StreamError> {
+        recipient.require_auth();
+
+        if stream_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Collect (priority, stream_id) pairs for streams belonging to recipient.
+        let mut pairs: Vec<(u8, u64)> = Vec::new(&env);
+        for id in stream_ids.iter() {
+            if let Some(s) = load_stream(&env, id) {
+                if s.recipient == recipient {
+                    let prio = get_stream_priority(&env, id);
+                    pairs.push_back((prio, id));
+                }
+            }
+        }
+
+        // Sort descending by priority using a simple insertion sort.
+        // The batch size is expected to be small (< 100), so O(n²) is acceptable.
+        let len = pairs.len();
+        for i in 1..len {
+            let mut j = i;
+            while j > 0 {
+                let (prio_j, id_j) = pairs.get(j).unwrap();
+                let (prio_prev, id_prev) = pairs.get(j - 1).unwrap();
+                if prio_j > prio_prev {
+                    pairs.set(j - 1, (prio_j, id_j));
+                    pairs.set(j, (prio_prev, id_prev));
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Execute withdrawals in priority order.
+        let mut successes: u32 = 0;
+        for (_prio, id) in pairs.iter() {
+            // Attempt withdrawal; skip streams that fail (e.g. nothing claimable).
+            if Self::withdraw(env.clone(), id, recipient.clone()).is_ok() {
+                successes = successes.saturating_add(1);
+            }
+        }
+
+        Ok(successes)
+    }
+
     /// Returns only active streams created by a sender address.
     pub fn get_active_streams_by_sender(env: Env, sender: Address) -> Vec<Stream> {
         let ids = get_active_ids_by_sender(&env, &sender);
@@ -6594,7 +6681,8 @@ impl SoroStreamContract {
                     min_withdrawal_amount: None,
                     non_transferable,
                     requires_recipient_approval: false,
-                    approval_timestamp: 0,
+
+                approval_timestamp: 0,
                     escrow_sender_approved: false,
                     escrow_recipient_approved: false,
                     sender_locked: false,

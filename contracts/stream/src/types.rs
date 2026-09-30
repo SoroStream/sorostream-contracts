@@ -652,6 +652,9 @@ pub struct CreateStreamParams {
     pub sponsor: Option<Address>,
     /// Whether this stream requires explicit recipient approval before tokens accrue.
     pub requires_recipient_approval: bool,
+    /// Optional priority level (0-255). Higher values are processed first in
+    /// batch withdrawal operations. `None` is treated as priority 0 (lowest).
+    pub priority: Option<u8>,
 }
 
 impl CreateStreamParams {

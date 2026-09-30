@@ -72,6 +72,8 @@ fn rl_params(nonce: u64) -> CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
+
+        priority: None,
     }
 }
 

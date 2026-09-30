@@ -1948,3 +1948,26 @@ pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
         env.storage().persistent().set(&key, &(current - 1));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Stream priority storage (issue #642)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn stream_priority_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "sprio"), stream_id)
+}
+
+/// Returns the priority for a stream (0 = lowest, 255 = highest). Defaults to 0.
+pub fn get_stream_priority(env: &Env, stream_id: u64) -> u8 {
+    env.storage()
+        .persistent()
+        .get(&stream_priority_key(env, stream_id))
+        .unwrap_or(0u8)
+}
+
+/// Sets the priority for a stream.
+pub fn set_stream_priority(env: &Env, stream_id: u64, priority: u8) {
+    env.storage()
+        .persistent()
+        .set(&stream_priority_key(env, stream_id), &priority);
+}

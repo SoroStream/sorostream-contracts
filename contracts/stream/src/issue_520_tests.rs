@@ -81,7 +81,9 @@ fn test_issue_520_cliff_prevents_early_withdrawal() {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     // Try to withdraw before cliff is reached
@@ -128,7 +130,9 @@ fn test_issue_520_cliff_zero_claimable_before_cliff_time() {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     // Move time to 1000 seconds (before cliff at 2000)
@@ -167,7 +171,9 @@ fn test_issue_520_cliff_exact_boundary() {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     // Withdraw one second before cliff — no tokens should accrue before cliff
@@ -202,7 +208,9 @@ fn test_auto_renew_resets_start_time_and_keeps_claimable_zero_immediately() {
             withdrawal_steps: None,
             min_withdrawal_amount: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     t.env.ledger().set_timestamp(1000);
@@ -238,7 +246,9 @@ fn test_same_ledger_withdraw_leaves_zero_claimable_immediately() {
             withdrawal_steps: None,
             min_withdrawal_amount: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     t.env.ledger().set_timestamp(500);

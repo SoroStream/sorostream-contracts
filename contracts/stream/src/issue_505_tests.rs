@@ -78,7 +78,9 @@ fn test_issue_505_storage_optimized_boolean_fields() {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     let stream = c.get_stream(&stream_id);
@@ -118,7 +120,9 @@ fn test_issue_505_storage_optimized_type_conversions() {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     let stream = c.get_stream(&stream_id);
@@ -154,7 +158,9 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     let other_recipient = Address::generate(&t.env);
@@ -180,7 +186,9 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
-        },
+
+        priority: None,
+    },
     );
 
     let s1 = c.get_stream(&stream_1);
