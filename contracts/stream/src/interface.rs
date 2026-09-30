@@ -191,6 +191,26 @@ pub trait SoroStreamInterface {
     fn transfer_recipient(env: Env, stream_id: u64, current_recipient: Address, new_recipient: Address) -> Result<(), StreamError>;
     fn partial_cancel_stream(env: Env, stream_id: u64, sender: Address, cancel_amount: i128) -> Result<u64, StreamError>;
     fn top_up(env: Env, stream_id: u64, sender: Address, token: Address, amount: i128) -> Result<(), StreamError>;
+
+    /// Adds funds to multiple streams atomically in a single transaction.
+    ///
+    /// All-or-none: if any individual top-up would fail, the entire batch is
+    /// rejected and no state is modified. Maximum 20 entries per call.
+    ///
+    /// # Parameters
+    /// - `sender`         — must be the sender (or delegate) of every stream.
+    /// - `token`          — all streams in the batch must use this token.
+    /// - `stream_amounts` — `Vec<(stream_id, amount)>` pairs; max 20 entries.
+    ///
+    /// # Errors
+    /// - `ContractPaused`, `StreamNotFound`, `NotAuthorized`, `StreamNotActive`,
+    ///   `StreamPaused`, `ZeroAmount`, `Overflow`, `BatchLengthMismatch`
+    fn batch_top_up_streams(
+        env: Env,
+        sender: Address,
+        token: Address,
+        stream_amounts: Vec<(u64, i128)>,
+    ) -> Result<(), StreamError>;
     
     /// Updates the token-per-second flow rate of an active stream.
     ///
