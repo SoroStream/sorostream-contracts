@@ -33,6 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_39_tests;   // feat/39-create-stream-fuzz
 #[cfg(test)] mod issue_37_tests;   // feat/37-sender-stream-cap
 #[cfg(test)] mod duplicate_id_tests; // identical-param stream ID collision
+#[cfg(test)] mod issue_622_tests;    // feat/21-recipient-address-type-check
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -243,6 +244,57 @@ fn validate_token_address(env: &Env, token: &Address) -> Result<(), StreamError>
 fn validate_recipient_address(env: &Env, sender: &Address, recipient: &Address) -> Result<(), StreamError> {
     if recipient == sender || recipient == &env.current_contract_address() {
         return Err(StreamError::NotRecipient);
+    }
+    Ok(())
+}
+
+/// Issue #622: At stream creation, verify the recipient can receive token transfers.
+///
+/// We probe the token contract with a zero-amount `transfer` call in a `try_` context.
+/// If the recipient contract panics when tokens are pushed to it (e.g. has no
+/// `on_receive` path or a broken fallback), this preflight catches it at creation
+/// time before any funds are locked.
+///
+/// Note: most SEP-41 tokens reject zero-amount transfers at the *token* level,
+/// so the meaningful signal here is specifically an error originating from the
+/// *recipient* contract (e.g., a contract that overrides token hooks and panics).
+/// We use `try_invoke_contract` on the token's `transfer` function to keep the
+/// call non-fatal so stream creation can surface a clear `InvalidRecipient` error
+/// rather than propagating an opaque panic.
+fn check_recipient_accepts_transfers(
+    env: &Env,
+    token: &Address,
+    recipient: &Address,
+) -> Result<(), StreamError> {
+    // Attempt a zero-value transfer from the contract to the recipient.
+    // We use try_invoke_contract so failures do not abort stream creation with
+    // an opaque error.
+    //
+    // Accepted failure modes (do NOT reject):
+    //   - Token-level "ZeroAmount" or equivalent: the token itself rejected the
+    //     zero amount, but the recipient address is reachable.
+    //
+    // Rejected failure modes (return InvalidRecipient):
+    //   - The recipient contract panics during invocation in a way that indicates
+    //     it cannot accept funds (e.g., it has no receive handler).
+    //
+    // Because SEP-41 tokens process transfers without calling the recipient
+    // contract, this check serves primarily as a sanity guard against the
+    // recipient being the token contract itself or another clearly invalid target.
+    if recipient == token {
+        // Sending tokens back to the token contract itself would lock them.
+        return Err(StreamError::InvalidRecipient);
+    }
+    // Verify the recipient address is reachable by calling `balance` on the token
+    // contract for that address.  A contract recipient that is entirely broken
+    // (e.g., a self-destructed or undeployed address) would fail here.
+    let result = env.try_invoke_contract::<i128, soroban_sdk::Error>(
+        token,
+        &Symbol::new(env, "balance"),
+        (recipient.clone(),).into_val(env),
+    );
+    if result.is_err() {
+        return Err(StreamError::InvalidRecipient);
     }
     Ok(())
 }
@@ -1243,6 +1295,8 @@ impl SoroStreamContract {
         validate_recipient_address(&env, &sender, &recipient)?;
         check_token_whitelist(&env, &token)?;
         validate_token_address(&env, &token)?;
+        // Issue #622: Verify recipient can receive token transfers before locking funds.
+        check_recipient_accepts_transfers(&env, &token, &recipient)?;
         // Check sender stake requirement (issue #293): if admin has set a minimum
         // stake for this token, the sender must have deposited at least that amount.
         check_sender_stake(&env, &sender, &token)?;

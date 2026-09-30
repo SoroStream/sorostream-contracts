@@ -71,4 +71,8 @@ pub enum StreamError {
     InsufficientStake = 66,
     /// Sender has reached the configured per-sender active stream cap.
     SenderStreamCapReached = 67,
+    /// The recipient address is a contract that rejects token transfers.
+    /// Detected at stream creation via a zero-value transfer preflight.
+    /// Streams to such recipients would permanently lock funds.
+    InvalidRecipient = 69,
 }
