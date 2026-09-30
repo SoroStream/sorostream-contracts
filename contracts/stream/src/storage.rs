@@ -2024,3 +2024,26 @@ pub fn remove_stream_metadata(env: &Env, stream_id: u64) {
         .temporary()
         .remove(&stream_metadata_key(env, stream_id));
 }
+
+fn partial_withdrawal_carry_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "pwc"), stream_id)
+}
+
+pub fn get_partial_withdrawal_carry(env: &Env, stream_id: u64) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&partial_withdrawal_carry_key(env, stream_id))
+        .unwrap_or(0)
+}
+
+pub fn set_partial_withdrawal_carry(env: &Env, stream_id: u64, amount: i128) {
+    env.storage()
+        .persistent()
+        .set(&partial_withdrawal_carry_key(env, stream_id), &amount);
+}
+
+pub fn clear_partial_withdrawal_carry(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&partial_withdrawal_carry_key(env, stream_id));
+}

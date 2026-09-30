@@ -32,6 +32,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
 #[cfg(test)] mod issue_523_tests;
+#[cfg(test)] mod issue_643_tests;
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -3601,6 +3602,10 @@ impl SoroStreamContract {
                 }
             }
 
+            claimable = claimable
+                .saturating_sub(storage::get_partial_withdrawal_carry(&env, stream_id))
+                .max(0);
+
             let tranches_newly_claimed = new_cursor - stream.options.tranches_claimed;
 
             if claimable == 0 {
@@ -3630,6 +3635,7 @@ impl SoroStreamContract {
 
             // EFFECTS — update cursor and total_withdrawn before any token transfer.
             stream.options.tranches_claimed = new_cursor;
+            storage::clear_partial_withdrawal_carry(&env, stream_id);
             if claimable > 0 {
                 stream.options.total_withdrawn = stream
                     .options.total_withdrawn
@@ -3747,6 +3753,9 @@ impl SoroStreamContract {
             }
         };
 
+        raw_claimable = raw_claimable
+            .saturating_add(storage::get_partial_withdrawal_carry(&env, stream_id));
+
         // If milestones are set, limit claimable to released milestone amounts
         if !stream.options.milestones.is_empty() {
             let mut milestone_claimable = 0i128;
@@ -3842,6 +3851,7 @@ impl SoroStreamContract {
                 .ok_or(StreamError::Overflow)?;
         }
         stream.last_withdraw_time = effective_now;
+        storage::clear_partial_withdrawal_carry(&env, stream_id);
 
         // Advance the step cursor when the recipient successfully withdraws at
         // or past a step boundary.  The cursor only moves on an actual transfer
@@ -6205,7 +6215,9 @@ impl SoroStreamContract {
                     break;
                 }
             }
-            return Ok(claimable);
+            return Ok(claimable
+                .saturating_sub(storage::get_partial_withdrawal_carry(&env, stream_id))
+                .max(0));
         }
 
         // ── Issue #13: Cliff enforcement ─────────────────────────────────────
@@ -6245,7 +6257,9 @@ impl SoroStreamContract {
         // the dust threshold. Sub-threshold amounts are treated as rounding
         // artifacts and returned as 0 to avoid failed micro-withdrawals.
         let available = stream.deposit.saturating_sub(stream.options.total_withdrawn);
-        let claimable = raw.min(available);
+        let claimable = raw
+            .saturating_add(storage::get_partial_withdrawal_carry(&env, stream_id))
+            .min(available);
 
         if claimable <= DUST_THRESHOLD {
             return Ok(0);
@@ -7840,6 +7854,171 @@ impl SoroStreamContract {
         
         events::collateral_yield_claimed(&env, stream_id, &vault_config.vault_address, sender_yield, recipient_yield);
         Ok((sender_yield, recipient_yield))
+    }
+
+    // ── Issue #643: Partial withdrawal ───────────────────────────────────────
+
+    /// Withdraws exactly `amount` tokens from the recipient's claimable balance,
+    /// leaving any remaining claimable amount to continue accruing in the stream.
+    ///
+    /// Unlike [`Self::withdraw`] which always claims the full available balance,
+    /// `partial_withdraw` lets the recipient take only a fraction of what is
+    /// currently claimable. This is useful when the recipient needs a specific
+    /// amount without fully draining the stream.
+    ///
+    /// # Validation
+    /// - Caller must be the stream recipient or its configured delegate (`require_auth`).
+    /// - Stream must be `Active`.
+    /// - `amount` must be > 0 and ≤ the current claimable balance.
+    ///
+    /// # Effects
+    /// - Accounts for `amount` in the recipient's gross withdrawals; protocol fees apply.
+    /// - Advances `stream.last_withdraw_time` to the current ledger timestamp.
+    /// - Increments `stream.options.total_withdrawn` by `amount`.
+    /// - Emits a `StreamWithdrawn` event.
+    pub fn partial_withdraw(
+        env: Env,
+        stream_id: u64,
+        amount: i128,
+        caller: Address,
+    ) -> Result<(), StreamError> {
+        reject_reentrant_call(&env)?;
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+        assert_storage_version(&env)?;
+
+        caller.require_auth();
+
+        if amount <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+
+        let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+
+        if stream.recipient != caller && get_delegate(&env, stream_id) != Some(caller.clone()) {
+            return Err(StreamError::NotAuthorized);
+        }
+        if stream.status == StreamStatus::PendingApproval || stream.status == StreamStatus::EscrowHold {
+            return Err(StreamError::AwaitingApproval);
+        }
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+        if stream.options.locked {
+            return Err(StreamError::ReentrancyDetected);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < stream.lock_until {
+            return Err(StreamError::StreamLocked);
+        }
+        if stream.end_time <= stream.start_time {
+            return Err(StreamError::InvalidEndTime);
+        }
+
+        let cooldown = get_withdrawal_cooldown(&env);
+        if cooldown > 0 && now < stream.last_withdraw_time.saturating_add(cooldown) {
+            return Err(StreamError::WithdrawalCooldownActive);
+        }
+
+        let claimable = Self::get_claimable(env.clone(), stream_id)?;
+
+        if claimable == 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+
+        if amount > claimable {
+            return Err(StreamError::AmountBelowMinimum);
+        }
+
+        if let Some(steps) = stream.options.withdrawal_steps {
+            if steps > 0 && stream.options.current_step + 1 < steps {
+                let duration = stream.end_time.saturating_sub(stream.start_time);
+                let step_interval = duration / steps as u64;
+                let next_threshold = stream.start_time.saturating_add(
+                    (stream.options.current_step as u64 + 1) * step_interval,
+                );
+                if now < next_threshold {
+                    return Err(StreamError::NextStepNotReached);
+                }
+            }
+        }
+
+        if let Some(floor) = stream.options.min_withdrawal_amount {
+            let available = stream.deposit.saturating_sub(stream.options.total_withdrawn);
+            if claimable < floor && claimable < available {
+                return Err(StreamError::AmountBelowMinimum);
+            }
+        }
+
+        if !stream.options.milestone_release_mode {
+            let carry = if stream.options.is_step_vesting {
+                storage::get_partial_withdrawal_carry(&env, stream_id)
+                    .checked_add(amount)
+                    .ok_or(StreamError::Overflow)?
+            } else {
+                claimable - amount
+            };
+            storage::set_partial_withdrawal_carry(&env, stream_id, carry);
+        }
+
+        stream.options.total_withdrawn = stream
+            .options
+            .total_withdrawn
+            .checked_add(amount)
+            .ok_or(StreamError::Overflow)?;
+        stream.last_withdraw_time = now;
+        save_stream(&env, &stream);
+
+        let fee_bps = storage::get_effective_fee_tier(&env, &stream.token);
+        let fee_amount = if fee_bps > 0 && !is_fee_exempt(&env, &stream.recipient) {
+            amount
+                .checked_mul(fee_bps as i128)
+                .ok_or(StreamError::Overflow)?
+                .checked_add(5_000)
+                .ok_or(StreamError::Overflow)?
+                / 10_000
+        } else {
+            0
+        };
+        let recipient_amount = amount - fee_amount;
+        let treasury = get_treasury(&env);
+
+        set_reentrancy_lock(&env);
+        ensure_not_paused(&env)?;
+
+        let token_client = token::Client::new(&env, &stream.token);
+        if recipient_amount > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &stream.recipient,
+                &recipient_amount,
+            );
+        }
+        if fee_amount > 0 {
+            if let Some(ref treasury_address) = treasury {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    treasury_address,
+                    &fee_amount,
+                );
+                events::fee_collected(&env, stream_id, fee_amount, treasury_address);
+            }
+        }
+
+        events::stream_withdrawn(
+            &env,
+            stream_id,
+            &stream.recipient,
+            amount,
+            now,
+            stream.options.total_withdrawn,
+        );
+        award_stream_reward_points(&env, &stream, amount);
+        clear_reentrancy_lock(&env);
+
+        Ok(())
     }
 }
 
