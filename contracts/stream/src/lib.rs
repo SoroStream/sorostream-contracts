@@ -9,6 +9,8 @@ mod errors;
 mod events;
 #[cfg(debug_assertions)]
 mod invariants;
+#[cfg(test)]
+pub mod chaos;
 mod interface;
 pub mod oracle;
 mod storage;
@@ -38,6 +40,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_402_tests;
 #[cfg(test)] mod issue_617_tests;
 #[cfg(test)] mod issue_620_tests;
+#[cfg(test)] mod issue_656_chaos_tests;
 #[cfg(test)] mod issue_661_tests;
 
 use soroban_sdk::{
