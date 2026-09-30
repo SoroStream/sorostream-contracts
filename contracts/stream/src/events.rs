@@ -1286,3 +1286,32 @@ pub fn stream_cloned(
         ),
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Issue #641: StreamExpiryNotification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emitted once per stream when the stream is within 10 ledgers of its
+/// `end_time`, allowing off-chain systems to prepare auto-renewal or archival.
+///
+/// This event is distinct from `StreamExpiryWarning`:
+/// - `StreamExpiryWarning` uses a configurable admin window (default 17 280 ledgers).
+/// - `StreamExpiryNotification` fires at a fixed threshold of **10 ledgers** and
+///   is intended for time-critical off-chain listeners (e.g. auto-renewal bots).
+///
+/// Emitted at most once per stream (guarded by the `exp_notif` storage flag).
+///
+/// # Event Data
+/// - `stream_id`: The stream that is imminently expiring
+/// - `ledgers_until_expiry`: Ledger distance to `end_time` at the time of emission
+pub fn stream_expiry_notification(
+    env: &Env,
+    stream_id: u64,
+    ledgers_until_expiry: u32,
+) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    env.events().publish(
+        (Symbol::new(env, "StreamExpiryNotif"), stream_id),
+        (ledgers_until_expiry, nonce),
+    );
+}
