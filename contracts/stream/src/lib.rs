@@ -58,7 +58,8 @@ use storage::{
     decrement_token_stream_count, derive_stream_id,
     drain_fees_collected, effective_sender_limit, extend_instance_ttl,
     get_active_stream_count, get_batch_nonce, get_creation_fee_xlm,
-    get_delegate,    get_expiry_warning_emitted, get_expiry_warning_window,
+    get_delegate,    get_expiry_notification_emitted, set_expiry_notification_emitted,
+    get_expiry_warning_emitted, get_expiry_warning_window,
     get_federation_address, get_max_deposit_per_token,
     get_fees_collected, get_global_stream_at, get_global_stream_count,
     get_grace_period_ledgers, get_holdback, get_ids_by_recipient,
@@ -303,6 +304,29 @@ fn maybe_emit_expiry_warning(env: &Env, stream: &mut Stream) {
         events::stream_expiry_warning(env, stream.id, &stream.sender, &stream.recipient,
             remaining_balance, remaining_ledgers);
         set_expiry_warning_emitted(env, stream.id, true);
+    }
+}
+
+// ── Issue #641: maybe emit StreamExpiryNotification ──────────────────────────
+//
+// Fires once per stream when the stream is within EXPIRY_NOTIFICATION_LEDGERS
+// ledgers of its end_time.  This is intentionally a fixed threshold (not
+// admin-configurable) so that off-chain listeners can rely on a predictable
+// lead time.  The threshold is expressed in ledgers (5 s each) and converts
+// end_time (seconds) to an approximate ledger number using the same 5 s/ledger
+// assumption used elsewhere in the protocol.
+const EXPIRY_NOTIFICATION_LEDGERS: u32 = 10;
+
+fn maybe_emit_expiry_notification(env: &Env, stream: &Stream) {
+    if get_expiry_notification_emitted(env, stream.id) { return; }
+    let now = env.ledger().timestamp();
+    if now >= stream.end_time { return; }
+    let remaining_seconds = stream.end_time - now;
+    // Convert remaining seconds to an approximate ledger count (5 s per ledger).
+    let remaining_ledgers = (remaining_seconds / 5) as u32;
+    if remaining_ledgers <= EXPIRY_NOTIFICATION_LEDGERS {
+        events::stream_expiry_notification(env, stream.id, remaining_ledgers);
+        set_expiry_notification_emitted(env, stream.id);
     }
 }
 
@@ -3412,6 +3436,9 @@ impl SoroStreamContract {
             return Err(StreamError::WithdrawalCooldownActive);
         }
 
+        // Issue #641: emit StreamExpiryNotification if within 10 ledgers of expiry.
+        maybe_emit_expiry_notification(&env, &stream);
+
         // ── Milestone-release-mode withdrawal path ───────────────────────────
         if stream.options.milestone_release_mode {
             // Auto-unlock milestones that have reached their unlock_time
@@ -5516,6 +5543,9 @@ impl SoroStreamContract {
             .deposit
             .checked_add(effective_amount)
             .ok_or(StreamError::Overflow)?;
+
+        // Issue #641: emit StreamExpiryNotification if within 10 ledgers of expiry.
+        maybe_emit_expiry_notification(&env, &stream);
 
         save_stream(&env, &stream);
 
