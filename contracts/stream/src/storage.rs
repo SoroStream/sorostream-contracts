@@ -679,6 +679,27 @@ pub fn remove_delegate(env: &Env, stream_id: u64) {
     env.storage().persistent().remove(&delegate_key(env, stream_id));
 }
 
+const RECIPIENT_DELEGATE_KEY: &str = "rdel";
+
+fn recipient_delegate_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, RECIPIENT_DELEGATE_KEY), stream_id)
+}
+
+/// Sets the authorized recipient delegate for a stream.
+pub fn set_recipient_delegate(env: &Env, stream_id: u64, delegate: &Address) {
+    env.storage().persistent().set(&recipient_delegate_key(env, stream_id), delegate);
+}
+
+/// Reads the authorized recipient delegate for a stream.
+pub fn get_recipient_delegate(env: &Env, stream_id: u64) -> Option<Address> {
+    env.storage().persistent().get(&recipient_delegate_key(env, stream_id))
+}
+
+/// Removes the authorized recipient delegate for a stream.
+pub fn remove_recipient_delegate(env: &Env, stream_id: u64) {
+    env.storage().persistent().remove(&recipient_delegate_key(env, stream_id));
+}
+
 // --- Version tracking ---
 
 /// Stores the contract version string.
