@@ -652,6 +652,9 @@ pub struct CreateStreamParams {
     pub sponsor: Option<Address>,
     /// Whether this stream requires explicit recipient approval before tokens accrue.
     pub requires_recipient_approval: bool,
+    /// Optional list of categorisation tags (max 3 entries, each at most 32 bytes).
+    /// Tags are used for off-chain filtering (e.g. "payroll", "vesting", "subscription").
+    pub tags: Option<Vec<Bytes>>,
 }
 
 impl CreateStreamParams {

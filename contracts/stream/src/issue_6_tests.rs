@@ -80,6 +80,8 @@ fn params_with_nonce(nonce: u64) -> crate::types::CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
+
+        tags: None,
     }
 }
 

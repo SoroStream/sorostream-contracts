@@ -13,6 +13,7 @@ mod interface;
 pub mod oracle;
 mod storage;
 mod types;
+mod validation;
 pub mod vesting_math;
 pub mod composability;
 pub mod roles;
@@ -28,6 +29,7 @@ pub use roles::AdminRole;
 // other test modules disabled during grace-period test restore
 #[cfg(test)] mod rate_limit_tests;
 #[cfg(test)] mod issue_520_tests;
+#[cfg(test)] mod issue_522_tests;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
@@ -39,7 +41,14 @@ use soroban_sdk::{
 use types::VestingTranche;
 use types::{Milestone, MilestoneStatus};
 
-const PROTOCOL_FEE_CHANGE_DELAY: u64 = 7 * 24 * 60 * 60;
+/// Mandatory timelock (48 hours, expressed in seconds) that must elapse between
+/// proposing a protocol-fee change with `set_protocol_fee`/`propose_fee_change`
+/// and committing it with `execute_fee_change`.
+///
+/// The pending window gives users and integrators a guaranteed period to observe
+/// the proposed change (through `get_pending_fee_update`) and react before the
+/// new rate takes effect, so the protocol fee can never be changed abruptly.
+const FEE_UPDATE_TIMELOCK_SECONDS: u64 = 48 * 60 * 60;
 
 use storage::{
     assert_storage_version,
@@ -51,7 +60,8 @@ use storage::{
     decrement_token_stream_count, derive_stream_id,
     drain_fees_collected, effective_sender_limit, extend_instance_ttl,
     get_active_stream_count, get_batch_nonce, get_creation_fee_xlm,
-    get_delegate,    get_expiry_warning_emitted, get_expiry_warning_window,
+    get_delegate,    get_expiry_notification_emitted, set_expiry_notification_emitted,
+    get_expiry_warning_emitted, get_expiry_warning_window,
     get_federation_address, get_max_deposit_per_token,
     get_fees_collected, get_global_stream_at, get_global_stream_count,
     get_grace_period_ledgers, get_holdback, get_ids_by_recipient,
@@ -105,9 +115,9 @@ use storage::{
     // feat/37 — per-sender active stream cap
     get_sender_stream_cap, set_sender_stream_cap,
     get_sender_active_count, increment_sender_active_count, decrement_sender_active_count,
+    // feat/35 — multi-tag support (issue #635)
+    get_stream_tags, set_stream_tags_storage, remove_stream_tags,
 };
-
-const MAX_STREAM_METADATA_BYTES: u32 = 256;
 
 // ── Helper: checked multiply ──────────────────────────────────────────────────
 fn checked_flow_amount(flow_rate: i128, elapsed: u64) -> Result<i128, StreamError> {
@@ -296,6 +306,29 @@ fn maybe_emit_expiry_warning(env: &Env, stream: &mut Stream) {
         events::stream_expiry_warning(env, stream.id, &stream.sender, &stream.recipient,
             remaining_balance, remaining_ledgers);
         set_expiry_warning_emitted(env, stream.id, true);
+    }
+}
+
+// ── Issue #641: maybe emit StreamExpiryNotification ──────────────────────────
+//
+// Fires once per stream when the stream is within EXPIRY_NOTIFICATION_LEDGERS
+// ledgers of its end_time.  This is intentionally a fixed threshold (not
+// admin-configurable) so that off-chain listeners can rely on a predictable
+// lead time.  The threshold is expressed in ledgers (5 s each) and converts
+// end_time (seconds) to an approximate ledger number using the same 5 s/ledger
+// assumption used elsewhere in the protocol.
+const EXPIRY_NOTIFICATION_LEDGERS: u32 = 10;
+
+fn maybe_emit_expiry_notification(env: &Env, stream: &Stream) {
+    if get_expiry_notification_emitted(env, stream.id) { return; }
+    let now = env.ledger().timestamp();
+    if now >= stream.end_time { return; }
+    let remaining_seconds = stream.end_time - now;
+    // Convert remaining seconds to an approximate ledger count (5 s per ledger).
+    let remaining_ledgers = (remaining_seconds / 5) as u32;
+    if remaining_ledgers <= EXPIRY_NOTIFICATION_LEDGERS {
+        events::stream_expiry_notification(env, stream.id, remaining_ledgers);
+        set_expiry_notification_emitted(env, stream.id);
     }
 }
 
@@ -805,6 +838,20 @@ impl SoroStreamContract {
         get_sender_active_count(&env, &sender)
     }
 
+    /// Returns the total number of non-expired (active) streams across the
+    /// entire protocol, expressed as a `u64` for dashboard metrics and
+    /// protocol health monitoring.
+    ///
+    /// The counter is incremented on every successful `create_stream` call and
+    /// decremented when a stream is cancelled, completed, or expired.
+    ///
+    /// # Returns
+    /// Current count of active streams as `u64`. Returns `0` before any
+    /// streams have been created.
+    pub fn get_active_stream_count(env: Env) -> u64 {
+        get_active_stream_count(&env) as u64
+    }
+
     pub fn migrate(env: Env, from_version: String, to_version: String) -> Result<(), StreamError> {
         check_admin(&env);
         let applied = read_applied_migrations(&env);
@@ -1217,6 +1264,7 @@ impl SoroStreamContract {
         let options = &params;
         let renewal_cap = options.effective_renew_count();
         let tag: Option<String> = None;
+        let tags: Option<Vec<Bytes>> = params.tags.clone();
         let on_complete_contract: Option<Address> = None;
         let on_complete_function: Option<Symbol> = None;
         let enforce_recipient_allowlist = false;
@@ -1237,22 +1285,32 @@ impl SoroStreamContract {
         if nonce_used(&env, &sender, nonce) {
             return Err(StreamError::DuplicateStream);
         }
-        if amount <= 0 {
-            return Err(StreamError::ZeroAmount);
-        }
-        // holdback must be non-negative and strictly less than total amount (0 = no holdback)
-        if options.holdback_amount < 0 || options.holdback_amount >= amount {
-            return Err(StreamError::ZeroAmount);
-        }
-        if cliff_seconds > duration_seconds {
-            return Err(StreamError::InvalidCliff);
-        }
+        // ── Parameter-boundary validation (issue #522) ───────────────────────
+        // XDR-decoded arguments are checked for semantic validity here, before
+        // any business logic or token movement. Each failure returns a typed
+        // error instead of panicking or persisting a nonsensical stream.
+        validation::require_positive_amount(amount)?;
+        validation::require_holdback_in_range(amount, options.holdback_amount)?;
+        validation::require_cliff_within_duration(cliff_seconds, duration_seconds)?;
         // ── Validate stream comment (issue #513) ─────────────────────────────
         // The comment is an optional human-readable payment reference. It must
         // not exceed 256 bytes of UTF-8 text.
         if let Some(ref c) = comment {
             if c.len() > 256 {
                 return Err(StreamError::CommentTooLong);
+            }
+        }
+        // ── Validate stream tags (issue #635) ────────────────────────────────
+        // Optional list of categorisation labels. At most 3 tags; each must be
+        // at most 32 bytes long.
+        if let Some(ref ts) = tags {
+            if ts.len() > 3 {
+                return Err(StreamError::TooManyTags);
+            }
+            for t in ts.iter() {
+                if t.len() > 32 {
+                    return Err(StreamError::TagTooLong);
+                }
             }
         }
         validate_recipient_address(&env, &sender, &recipient)?;
@@ -1277,23 +1335,17 @@ impl SoroStreamContract {
         // A stream must have positive duration. Zero duration would mean start_time == end_time,
         // which is invalid: the deposit would immediately fully accrue with flow_rate * 0 = 0,
         // but the constraint enforcement becomes ambiguous.
-        if duration_seconds == 0 {
-            return Err(StreamError::InvalidDuration);
-        }
+        validation::require_positive_duration(duration_seconds)?;
 
         let max_dur = read_max_duration(&env);
-        if max_dur > 0 && duration_seconds > max_dur {
-            return Err(StreamError::DurationExceedsMax);
-        }
+        validation::require_duration_within_cap(duration_seconds, max_dur)?;
 
         // The streaming portion is the total minus the holdback escrow.
         let streaming_amount = amount
             .checked_sub(options.holdback_amount)
             .ok_or(StreamError::Overflow)?;
         let flow_rate = streaming_amount / duration_seconds as i128;
-        if flow_rate == 0 {
-            return Err(StreamError::ZeroFlowRate);
-        }
+        validation::require_rate_for_deposit(streaming_amount, flow_rate)?;
 
         // ── Issue: Validate flow_rate bounds to prevent overflow during withdrawals ──
         // Ensure flow_rate is within safe bounds: flow_rate * any_elapsed_time <= i128::MAX
@@ -1305,19 +1357,11 @@ impl SoroStreamContract {
         // ── Validate withdrawal_steps ────────────────────────────────────────
         // Steps must be >= 1.  A value of 0 is nonsensical; callers should pass
         // None instead of Some(0).
-        if let Some(steps) = options.withdrawal_steps {
-            if steps == 0 {
-                return Err(StreamError::InvalidDuration);
-            }
-        }
+        validation::require_withdrawal_steps(options.withdrawal_steps)?;
 
         // ── Validate min_withdrawal_amount ───────────────────────────────────
         // The floor must be positive; 0 is indistinguishable from "no floor".
-        if let Some(floor) = options.min_withdrawal_amount {
-            if floor <= 0 {
-                return Err(StreamError::ZeroAmount);
-            }
-        }
+        validation::require_min_withdrawal_amount(options.min_withdrawal_amount)?;
 
         // ── Validate on_complete callback ────────────────────────────────────
         // Both contract and function must be provided together, or both must be None.
@@ -1499,6 +1543,12 @@ impl SoroStreamContract {
             index_by_tag(&env, t, stream_id);
             set_stream_tag_storage(&env, stream_id, t);
         }
+        // feat/35: store multi-tags and index each one
+        if let Some(ref ts) = tags {
+            if !ts.is_empty() {
+                set_stream_tags_storage(&env, stream_id, ts);
+            }
+        }
         index_global_stream(&env, stream_id);
         // Only count as active immediately if no approval is required.
         if !options.requires_recipient_approval {
@@ -1592,6 +1642,8 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 sponsor: None,
                 requires_recipient_approval: false,
+
+                tags: None,
             },
         )
     }
@@ -1685,9 +1737,7 @@ impl SoroStreamContract {
             .checked_sub(0i128)
             .ok_or(StreamError::Overflow)?;
         let flow_rate = streaming_amount / duration_seconds as i128;
-        if flow_rate == 0 {
-            return Err(StreamError::ZeroFlowRate);
-        }
+        validation::require_rate_for_deposit(streaming_amount, flow_rate)?;
         validate_flow_rate_bounds(flow_rate)?;
 
         let sender_count = get_sender_stream_count(&env, &sender);
@@ -1801,6 +1851,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2070,6 +2121,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2280,6 +2332,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2477,6 +2530,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -2626,6 +2680,7 @@ impl SoroStreamContract {
     ) -> Result<(), StreamError> {
         check_admin(&env);
         admin.require_auth();
+        validation::require_bounded_string(&federation_name, validation::MAX_FEDERATION_NAME_BYTES)?;
         register_federation_address(&env, &federation_name, &stellar_address);
         events::federation_registered(&env, &federation_name, &stellar_address);
         Ok(())
@@ -2640,6 +2695,7 @@ impl SoroStreamContract {
     ) -> Result<(), StreamError> {
         check_admin(&env);
         admin.require_auth();
+        validation::require_bounded_string(&federation_name, validation::MAX_FEDERATION_NAME_BYTES)?;
         unregister_federation_address(&env, &federation_name);
         events::federation_unregistered(&env, &federation_name);
         Ok(())
@@ -2955,9 +3011,7 @@ impl SoroStreamContract {
     ) -> Result<(), StreamError> {
         sender.require_auth();
 
-        if max_slippage_bps > 10000 {
-            return Err(StreamError::InvalidSlippage);
-        }
+        validation::require_bps_within(max_slippage_bps, 10_000, StreamError::InvalidSlippage)?;
 
         let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
         if stream.sender != sender {
@@ -3430,6 +3484,9 @@ impl SoroStreamContract {
         if cooldown > 0 && now < stream.last_withdraw_time.saturating_add(cooldown) {
             return Err(StreamError::WithdrawalCooldownActive);
         }
+
+        // Issue #641: emit StreamExpiryNotification if within 10 ledgers of expiry.
+        maybe_emit_expiry_notification(&env, &stream);
 
         // ── Milestone-release-mode withdrawal path ───────────────────────────
         if stream.options.milestone_release_mode {
@@ -5098,7 +5155,9 @@ impl SoroStreamContract {
                     min_withdrawal_amount: None,
                     sponsor: None,
                     requires_recipient_approval: false,
-                },
+
+                tags: None,
+            },
             )?;
 
             new_stream_ids.push_back(new_stream_id);
@@ -5349,9 +5408,7 @@ impl SoroStreamContract {
         if stream.status != StreamStatus::Active && stream.status != StreamStatus::Paused {
             return Err(StreamError::StreamNotActive);
         }
-        if cancel_amount <= 0 {
-            return Err(StreamError::ZeroAmount);
-        }
+        validation::require_positive_amount(cancel_amount)?;
 
         let now = if stream.status == StreamStatus::Paused {
             stream.options.last_pause_time
@@ -5439,6 +5496,7 @@ impl SoroStreamContract {
                 min_withdrawal_amount: None,
                 non_transferable: false,
                 requires_recipient_approval: false,
+
                 approval_timestamp: 0,
                 escrow_sender_approved: false,
                 escrow_recipient_approved: false,
@@ -5508,9 +5566,7 @@ impl SoroStreamContract {
         if stream.status != StreamStatus::Active {
             return Err(StreamError::StreamNotActive);
         }
-        if amount <= 0 {
-            return Err(StreamError::ZeroAmount);
-        }
+        validation::require_positive_amount(amount)?;
 
         let effective_amount = amount - (amount % stream.flow_rate);
 
@@ -5545,11 +5601,167 @@ impl SoroStreamContract {
             .checked_add(effective_amount)
             .ok_or(StreamError::Overflow)?;
 
+        // Issue #641: emit StreamExpiryNotification if within 10 ledgers of expiry.
+        maybe_emit_expiry_notification(&env, &stream);
+
         save_stream(&env, &stream);
 
         events::stream_topped_up(&env, stream_id, effective_amount, new_end_time);
 
         Self::debug_check_invariants(&env, Some(stream_id));
+
+        Ok(())
+    }
+
+    /// Adds funds to multiple streams atomically in a single transaction.
+    ///
+    /// Allows a sender to top up several streams at once — useful for payroll
+    /// adjustments — with **all-or-nothing** semantics: if any individual top-up
+    /// would fail, the entire batch is rejected and no state is modified.
+    ///
+    /// # Parameters
+    /// - `sender`         — address funding all top-ups; must be the sender of
+    ///                      every stream in `stream_amounts`.
+    /// - `token`          — the token used by all streams in this batch; every
+    ///                      stream must share this token.
+    /// - `stream_amounts` — pairs of `(stream_id, amount)` describing how much
+    ///                      to add to each stream. Maximum 20 entries.
+    ///
+    /// # Errors
+    /// - `ContractPaused`       — contract is paused.
+    /// - `StreamNotFound`       — a stream_id does not exist.
+    /// - `NotAuthorized`        — caller is not the sender of every stream.
+    /// - `StreamNotActive`      — a stream is not in Active state.
+    /// - `StreamPaused`         — a stream is individually paused.
+    /// - `ZeroAmount`           — an amount is ≤ 0, effective amount rounds to ≤ 0,
+    ///                            or sender has insufficient balance.
+    /// - `Overflow`             — arithmetic overflow on end_time or deposit.
+    /// - `BatchLengthMismatch`  — more than 20 entries provided.
+    pub fn batch_top_up_streams(
+        env: Env,
+        sender: Address,
+        token: Address,
+        stream_amounts: Vec<(u64, i128)>,
+    ) -> Result<(), StreamError> {
+        reject_reentrant_call(&env)?;
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+        assert_storage_version(&env)?;
+        sender.require_auth();
+
+        // Cap batch size to keep resource usage bounded.
+        if stream_amounts.len() > 20 {
+            return Err(StreamError::BatchLengthMismatch);
+        }
+
+        let now = env.ledger().timestamp();
+        let max_end_time = now
+            .checked_add(MAX_STREAM_DURATION_SECONDS)
+            .ok_or(StreamError::Overflow)?;
+
+        // ── Phase 1: validate every top-up before any state mutation ─────────
+        //
+        // Load every stream and compute effective_amount for each entry.
+        // If any validation fails the function returns an error and no
+        // storage or token transfer has taken place (all-or-none guarantee).
+        let mut effective_amounts: Vec<i128> = Vec::new(&env);
+        let mut total_needed: i128 = 0i128;
+
+        for i in 0..stream_amounts.len() {
+            let (stream_id, amount) = stream_amounts.get_unchecked(i);
+            let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+
+            // Authorization: caller must be the stream sender (or a delegate).
+            let is_sender = stream.sender == sender;
+            let is_delegate = Some(sender.clone()) == get_delegate(&env, stream_id);
+            if !is_sender && !is_delegate {
+                return Err(StreamError::NotAuthorized);
+            }
+
+            // Token consistency: all streams must use the same token.
+            if stream.token != token {
+                return Err(StreamError::TokenNotWhitelisted);
+            }
+            check_token_whitelist(&env, &token)?;
+            validate_token_address(&env, &token)?;
+
+            if stream.status == StreamStatus::Paused {
+                return Err(StreamError::StreamPaused);
+            }
+            if stream.status != StreamStatus::Active {
+                return Err(StreamError::StreamNotActive);
+            }
+            if amount <= 0 {
+                return Err(StreamError::ZeroAmount);
+            }
+
+            // Round down to nearest whole flow_rate period (same as top_up).
+            let effective = amount - (amount % stream.flow_rate);
+            if effective <= 0 {
+                return Err(StreamError::ZeroAmount);
+            }
+
+            // Verify the new end_time would not exceed the protocol max.
+            let extra_seconds_i128 = effective / stream.flow_rate;
+            let extra_seconds =
+                u64::try_from(extra_seconds_i128).map_err(|_| StreamError::Overflow)?;
+            let new_end_time = stream
+                .end_time
+                .checked_add(extra_seconds)
+                .ok_or(StreamError::Overflow)?;
+            if new_end_time > max_end_time {
+                return Err(StreamError::Overflow);
+            }
+
+            // Verify deposit addition would not overflow i128.
+            let _ = stream
+                .deposit
+                .checked_add(effective)
+                .ok_or(StreamError::Overflow)?;
+
+            effective_amounts.push_back(effective);
+            total_needed = total_needed
+                .checked_add(effective)
+                .ok_or(StreamError::Overflow)?;
+        }
+
+        // Verify the sender has enough balance to cover the entire batch.
+        let sender_balance = token::Client::new(&env, &token).balance(&sender);
+        if sender_balance < total_needed {
+            return Err(StreamError::ZeroAmount);
+        }
+
+        // ── Phase 2: transfer tokens and persist state ────────────────────────
+        //
+        // All validation passed. Transfer the full required amount from the
+        // sender in a single call, then update each stream record in sequence.
+        token::Client::new(&env, &token)
+            .transfer(&sender, &env.current_contract_address(), &total_needed);
+
+        for i in 0..stream_amounts.len() {
+            let (stream_id, _) = stream_amounts.get_unchecked(i);
+            let effective = effective_amounts.get_unchecked(i);
+            let mut stream = load_stream(&env, stream_id)
+                .ok_or(StreamError::StreamNotFound)?;
+
+            let extra_seconds_i128 = effective / stream.flow_rate;
+            let extra_seconds =
+                u64::try_from(extra_seconds_i128).map_err(|_| StreamError::Overflow)?;
+            let new_end_time = stream
+                .end_time
+                .checked_add(extra_seconds)
+                .ok_or(StreamError::Overflow)?;
+
+            stream.end_time = new_end_time;
+            stream.deposit = stream
+                .deposit
+                .checked_add(effective)
+                .ok_or(StreamError::Overflow)?;
+
+            save_stream(&env, &stream);
+            events::stream_topped_up(&env, stream_id, effective, new_end_time);
+        }
 
         Ok(())
     }
@@ -5585,9 +5797,7 @@ impl SoroStreamContract {
             return Err(StreamError::StreamNotActive);
         }
 
-        if new_rate <= 0 {
-            return Err(StreamError::ZeroFlowRate);
-        }
+        validation::require_positive_rate(new_rate)?;
 
         let now = env.ledger().timestamp();
 
@@ -6220,6 +6430,9 @@ impl SoroStreamContract {
     /// Sets or updates the tag for a stream. Only the sender may call this.
     pub fn set_stream_tag(env: Env, stream_id: u64, sender: Address, tag: Option<String>) -> Result<(), StreamError> {
         sender.require_auth();
+        if let Some(ref new_tag) = tag {
+            validation::require_bounded_string(new_tag, validation::MAX_STREAM_TAG_BYTES)?;
+        }
 
         let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
 
@@ -6241,6 +6454,13 @@ impl SoroStreamContract {
         }
 
         Ok(())
+    }
+
+    /// Returns the multi-tag list for a stream (issue #635).
+    ///
+    /// Returns an empty Vec if no tags have been set.
+    pub fn get_stream_tags(env: Env, stream_id: u64) -> Vec<Bytes> {
+        get_stream_tags(&env, stream_id)
     }
 
     /// Returns only active streams created by a sender address.
@@ -6457,12 +6677,9 @@ impl SoroStreamContract {
         }
         increment_batch_nonce(&env, &sender);
 
-        if recipients.len() > 20 {
-            return Err(StreamError::TooManyRecipients);
-        }
-        if recipients.len() != amounts.len() || recipients.len() != lock_untils.len() || recipients.len() != tokens.len() {
-            return Err(StreamError::BatchLengthMismatch);
-        }
+        validation::require_matching_lengths(recipients.len(), amounts.len())?;
+        validation::require_matching_lengths(recipients.len(), tokens.len())?;
+        validation::require_matching_lengths(recipients.len(), lock_untils.len())?;
 
         let end_time = now
             .checked_add(duration_seconds)
@@ -6499,13 +6716,9 @@ impl SoroStreamContract {
 
             validate_recipient_address(&env, &sender, &recipient)?;
             check_token_whitelist(&env, &token)?;
-            if amount <= 0 {
-                return Err(StreamError::ZeroAmount);
-            }
+            validation::require_positive_amount(amount)?;
             let flow_rate = amount / duration_seconds as i128;
-            if flow_rate == 0 {
-                return Err(StreamError::ZeroFlowRate);
-            }
+            validation::require_rate_for_deposit(amount, flow_rate)?;
 
             // ── Validate flow_rate bounds to prevent overflow during future withdrawals ──
             // Ensure flow_rate is within safe bounds: flow_rate * any_elapsed_time <= i128::MAX
@@ -6625,7 +6838,8 @@ impl SoroStreamContract {
                     min_withdrawal_amount: None,
                     non_transferable,
                     requires_recipient_approval: false,
-                    approval_timestamp: 0,
+
+                approval_timestamp: 0,
                     escrow_sender_approved: false,
                     escrow_recipient_approved: false,
                     sender_locked: false,
@@ -6982,17 +7196,17 @@ impl SoroStreamContract {
 
     /// Proposes a protocol fee change in basis points (100 bps = 1%).
     ///
-    /// The fee remains unchanged until the seven-day timelock expires and
-    /// `execute_fee_change` is called.
+    /// The fee remains unchanged until the 48-hour timelock expires and
+    /// `execute_fee_change` is called. While the proposal is pending it can be
+    /// inspected through [`Self::get_pending_fee_update`]. Re-proposing replaces
+    /// any existing proposal and restarts the 48-hour window.
     pub fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError> {
         let admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
         admin.require_auth();
-        if fee_bps > 10_000 {
-            return Err(StreamError::InvalidDuration);
-        }
+        validation::require_valid_fee_bps(fee_bps)?;
 
         let now = env.ledger().timestamp();
-        let unlock_time = now.saturating_add(PROTOCOL_FEE_CHANGE_DELAY);
+        let unlock_time = now.saturating_add(FEE_UPDATE_TIMELOCK_SECONDS);
         write_pending_fee_proposal(&env, fee_bps, unlock_time);
         events::fee_change_proposed(&env, fee_bps, unlock_time);
         Ok(())
@@ -7019,9 +7233,7 @@ impl SoroStreamContract {
         let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
         // Accept super-admin or fee-manager (issue #292)
         roles::require_fee_manager_or_admin(&env, &admin, &stored_admin)?;
-        if fee_bps > 10_000 {
-            return Err(StreamError::InvalidDuration);
-        }
+        validation::require_valid_fee_bps(fee_bps)?;
         set_cancellation_fee_bps(&env, fee_bps as i128);
         let ts = env.ledger().timestamp();
         let entry = AuditEntry {
@@ -7214,22 +7426,23 @@ impl SoroStreamContract {
         Ok(())
     }
 
-    /// Proposes a new protocol fee change with a 7-day timelock.
+    /// Proposes a new protocol fee change with a 48-hour timelock.
     ///
     /// After the timelock expires, anyone may call `execute_fee_change` to apply it.
     /// Only the super-admin may propose a fee change.
+    ///
+    /// The pending proposal (new rate and unlock time) is observable through
+    /// [`Self::get_pending_fee_update`] so users can react before it takes effect.
     pub fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError> {
         admin.require_auth();
         let current_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
         if admin != current_admin {
             return Err(StreamError::NotAuthorized);
         }
-        if new_fee_bps > 10_000 {
-            return Err(StreamError::InvalidDuration);
-        }
+        validation::require_valid_fee_bps(new_fee_bps)?;
 
         let now = env.ledger().timestamp();
-        let unlock_time = now.saturating_add(PROTOCOL_FEE_CHANGE_DELAY);
+        let unlock_time = now.saturating_add(FEE_UPDATE_TIMELOCK_SECONDS);
 
         write_pending_fee_proposal(&env, new_fee_bps, unlock_time);
         events::fee_change_proposed(&env, new_fee_bps, unlock_time);
@@ -7272,9 +7485,7 @@ impl SoroStreamContract {
         if admin != current_admin {
             return Err(StreamError::NotAuthorized);
         }
-        if fee_bps > 10_000 {
-            return Err(StreamError::InvalidDuration);
-        }
+        validation::require_valid_fee_bps(fee_bps)?;
 
         storage::set_token_fee_tier(&env, &token, fee_bps);
         Ok(())
@@ -7317,6 +7528,21 @@ impl SoroStreamContract {
     /// Returns protocol fee configuration.
     pub fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>) {
         (get_protocol_fee(&env), get_treasury(&env))
+    }
+
+    /// Returns the currently pending protocol-fee update, if any.
+    ///
+    /// The result is `Some((new_fee_bps, unlock_time))` while a change is waiting
+    /// out the mandatory 48-hour timelock, where `unlock_time` is the ledger
+    /// timestamp at which [`Self::execute_fee_change`] becomes callable. It is
+    /// `None` when no update is pending (nothing proposed, or the proposal has
+    /// already been committed).
+    ///
+    /// This is a read-only view — it can be called by anyone and never mutates
+    /// state, so indexers and front-ends can poll it to warn users about an
+    /// upcoming fee change before it takes effect.
+    pub fn get_pending_fee_update(env: Env) -> Option<(u32, u64)> {
+        read_pending_fee_proposal(&env)
     }
 
     /// Withdraws accumulated protocol fees from the treasury contract.
