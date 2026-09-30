@@ -59,7 +59,19 @@ impl StreamingContract {
             &deposit,
         );
 
-        let stream_id = storage::next_stream_id(&env);
+        // Derive a pseudo-random stream ID from a SHA-256 hash of
+        // (sender ‖ recipient ‖ start_time ‖ nonce) so that IDs are
+        // non-sequential and an attacker cannot enumerate all streams.
+        // The monotonic nonce prevents collisions for same-block creations.
+        let nonce = storage::next_nonce(&env);
+        let mut stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, nonce);
+        // Extremely unlikely, but handle hash collisions by incrementing nonce.
+        let mut retry = nonce + 1;
+        while storage::stream_id_exists(&env, stream_id) {
+            stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, retry);
+            retry += 1;
+        }
+
         storage::save_stream(
             &env,
             stream_id,

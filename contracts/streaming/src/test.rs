@@ -85,6 +85,39 @@ impl TestEnv {
 //  1. Core lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Issue #621: non-sequential (hash-based) stream IDs ───────────────────────
+
+/// Stream IDs must NOT be sequential consecutive integers.
+/// They are derived from SHA-256(sender ‖ recipient ‖ timestamp ‖ nonce) so
+/// an attacker cannot enumerate all streams by iterating integers.
+#[test]
+fn test_stream_ids_are_non_sequential() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+
+    let id0 = client.create_stream(
+        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
+    );
+    let id1 = client.create_stream(
+        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
+    );
+    let id2 = client.create_stream(
+        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
+    );
+
+    // IDs must be distinct.
+    assert_ne!(id0, id1, "stream IDs must be unique");
+    assert_ne!(id1, id2, "stream IDs must be unique");
+    assert_ne!(id0, id2, "stream IDs must be unique");
+
+    // IDs must NOT form a simple +1 sequence (sequential enumeration attack).
+    let is_sequential =
+        (id1 == id0 + 1 && id2 == id1 + 1) || (id1 == id0 - 1 && id2 == id1 - 1);
+    assert!(!is_sequential, "stream IDs must not be sequential");
+}
+
 #[test]
 fn test_create_stream_stores_correct_fields() {
     let t = TestEnv::new();
