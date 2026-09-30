@@ -5554,6 +5554,159 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Adds funds to multiple streams atomically in a single transaction.
+    ///
+    /// Allows a sender to top up several streams at once — useful for payroll
+    /// adjustments — with **all-or-nothing** semantics: if any individual top-up
+    /// would fail, the entire batch is rejected and no state is modified.
+    ///
+    /// # Parameters
+    /// - `sender`         — address funding all top-ups; must be the sender of
+    ///                      every stream in `stream_amounts`.
+    /// - `token`          — the token used by all streams in this batch; every
+    ///                      stream must share this token.
+    /// - `stream_amounts` — pairs of `(stream_id, amount)` describing how much
+    ///                      to add to each stream. Maximum 20 entries.
+    ///
+    /// # Errors
+    /// - `ContractPaused`       — contract is paused.
+    /// - `StreamNotFound`       — a stream_id does not exist.
+    /// - `NotAuthorized`        — caller is not the sender of every stream.
+    /// - `StreamNotActive`      — a stream is not in Active state.
+    /// - `StreamPaused`         — a stream is individually paused.
+    /// - `ZeroAmount`           — an amount is ≤ 0, effective amount rounds to ≤ 0,
+    ///                            or sender has insufficient balance.
+    /// - `Overflow`             — arithmetic overflow on end_time or deposit.
+    /// - `BatchLengthMismatch`  — more than 20 entries provided.
+    pub fn batch_top_up_streams(
+        env: Env,
+        sender: Address,
+        token: Address,
+        stream_amounts: Vec<(u64, i128)>,
+    ) -> Result<(), StreamError> {
+        reject_reentrant_call(&env)?;
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+        assert_storage_version(&env)?;
+        sender.require_auth();
+
+        // Cap batch size to keep resource usage bounded.
+        if stream_amounts.len() > 20 {
+            return Err(StreamError::BatchLengthMismatch);
+        }
+
+        let now = env.ledger().timestamp();
+        let max_end_time = now
+            .checked_add(MAX_STREAM_DURATION_SECONDS)
+            .ok_or(StreamError::Overflow)?;
+
+        // ── Phase 1: validate every top-up before any state mutation ─────────
+        //
+        // Load every stream and compute effective_amount for each entry.
+        // If any validation fails the function returns an error and no
+        // storage or token transfer has taken place (all-or-none guarantee).
+        let mut effective_amounts: Vec<i128> = Vec::new(&env);
+        let mut total_needed: i128 = 0i128;
+
+        for i in 0..stream_amounts.len() {
+            let (stream_id, amount) = stream_amounts.get_unchecked(i);
+            let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+
+            // Authorization: caller must be the stream sender (or a delegate).
+            let is_sender = stream.sender == sender;
+            let is_delegate = Some(sender.clone()) == get_delegate(&env, stream_id);
+            if !is_sender && !is_delegate {
+                return Err(StreamError::NotAuthorized);
+            }
+
+            // Token consistency: all streams must use the same token.
+            if stream.token != token {
+                return Err(StreamError::TokenNotWhitelisted);
+            }
+            check_token_whitelist(&env, &token)?;
+            validate_token_address(&env, &token)?;
+
+            if stream.status == StreamStatus::Paused {
+                return Err(StreamError::StreamPaused);
+            }
+            if stream.status != StreamStatus::Active {
+                return Err(StreamError::StreamNotActive);
+            }
+            if amount <= 0 {
+                return Err(StreamError::ZeroAmount);
+            }
+
+            // Round down to nearest whole flow_rate period (same as top_up).
+            let effective = amount - (amount % stream.flow_rate);
+            if effective <= 0 {
+                return Err(StreamError::ZeroAmount);
+            }
+
+            // Verify the new end_time would not exceed the protocol max.
+            let extra_seconds_i128 = effective / stream.flow_rate;
+            let extra_seconds =
+                u64::try_from(extra_seconds_i128).map_err(|_| StreamError::Overflow)?;
+            let new_end_time = stream
+                .end_time
+                .checked_add(extra_seconds)
+                .ok_or(StreamError::Overflow)?;
+            if new_end_time > max_end_time {
+                return Err(StreamError::Overflow);
+            }
+
+            // Verify deposit addition would not overflow i128.
+            let _ = stream
+                .deposit
+                .checked_add(effective)
+                .ok_or(StreamError::Overflow)?;
+
+            effective_amounts.push_back(effective);
+            total_needed = total_needed
+                .checked_add(effective)
+                .ok_or(StreamError::Overflow)?;
+        }
+
+        // Verify the sender has enough balance to cover the entire batch.
+        let sender_balance = token::Client::new(&env, &token).balance(&sender);
+        if sender_balance < total_needed {
+            return Err(StreamError::ZeroAmount);
+        }
+
+        // ── Phase 2: transfer tokens and persist state ────────────────────────
+        //
+        // All validation passed. Transfer the full required amount from the
+        // sender in a single call, then update each stream record in sequence.
+        token::Client::new(&env, &token)
+            .transfer(&sender, &env.current_contract_address(), &total_needed);
+
+        for i in 0..stream_amounts.len() {
+            let (stream_id, _) = stream_amounts.get_unchecked(i);
+            let effective = effective_amounts.get_unchecked(i);
+            let mut stream = load_stream(&env, stream_id)
+                .ok_or(StreamError::StreamNotFound)?;
+
+            let extra_seconds_i128 = effective / stream.flow_rate;
+            let extra_seconds =
+                u64::try_from(extra_seconds_i128).map_err(|_| StreamError::Overflow)?;
+            let new_end_time = stream
+                .end_time
+                .checked_add(extra_seconds)
+                .ok_or(StreamError::Overflow)?;
+
+            stream.end_time = new_end_time;
+            stream.deposit = stream
+                .deposit
+                .checked_add(effective)
+                .ok_or(StreamError::Overflow)?;
+
+            save_stream(&env, &stream);
+            events::stream_topped_up(&env, stream_id, effective, new_end_time);
+        }
+
+        Ok(())
+    }
+
     /// Updates the token-per-second flow rate of an active stream.
     ///
     /// Only the sender may call this. Settles the recipient's accrued balance
