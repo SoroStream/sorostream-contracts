@@ -274,6 +274,12 @@ pub trait SoroStreamInterface {
     fn get_protocol_stats(env: Env) -> ProtocolStats;
     fn recalibrate_stats(env: Env, admin: Address) -> Result<(), StreamError>;
 
+    /// Returns the total number of non-expired (active) streams across the protocol.
+    ///
+    /// Incremented on stream creation; decremented on cancellation / expiry.
+    /// Returns a `u64` for dashboard metrics and protocol health monitoring.
+    fn get_active_stream_count(env: Env) -> u64;
+
     fn min_duration(env: Env) -> u64;
     fn set_min_duration(env: Env, admin: Address, seconds: u64);
     fn max_duration(env: Env) -> u64;

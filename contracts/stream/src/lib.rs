@@ -793,6 +793,20 @@ impl SoroStreamContract {
         get_sender_active_count(&env, &sender)
     }
 
+    /// Returns the total number of non-expired (active) streams across the
+    /// entire protocol, expressed as a `u64` for dashboard metrics and
+    /// protocol health monitoring.
+    ///
+    /// The counter is incremented on every successful `create_stream` call and
+    /// decremented when a stream is cancelled, completed, or expired.
+    ///
+    /// # Returns
+    /// Current count of active streams as `u64`. Returns `0` before any
+    /// streams have been created.
+    pub fn get_active_stream_count(env: Env) -> u64 {
+        get_active_stream_count(&env) as u64
+    }
+
     pub fn migrate(env: Env, from_version: String, to_version: String) -> Result<(), StreamError> {
         check_admin(&env);
         let applied = read_applied_migrations(&env);
