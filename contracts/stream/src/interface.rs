@@ -6,7 +6,7 @@
 use soroban_sdk::{contractclient, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 use crate::errors::StreamError;
-use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats, Stream, StreamHealth, StreamOptions, StreamQueryFilter, StreamTransition, VestingCurve, VestingTranche};
+use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats, Stream, StreamHealth, StreamOptions, StreamQueryFilter, StreamTransition, VestingCurve, VestingTranche, WithdrawalProof};
 
 #[contractclient(name = "SoroStreamClient")]
 pub trait SoroStreamInterface {
@@ -169,6 +169,13 @@ pub trait SoroStreamInterface {
     fn approve_release(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
 
     fn withdraw(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+    fn get_withdrawal_proof(
+        env: Env,
+        stream_id: u64,
+        withdrawal_index: u32,
+    ) -> Result<WithdrawalProof, StreamError>;
+    fn get_withdrawal_history_root(env: Env, stream_id: u64) -> Result<BytesN<32>, StreamError>;
+    fn verify_withdrawal_proof(env: Env, proof: WithdrawalProof) -> bool;
 
     /// Clones an existing active stream into a new stream.
     ///

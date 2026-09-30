@@ -491,6 +491,17 @@ recipient: Address,                         // Must be stream recipient (must au
 client.withdraw(&stream_id, &recipient)?;
 ```
 
+### get_withdrawal_proof
+
+Returns a withdrawal record and its Merkle sibling hashes, leaf count, and history root. The proof can be checked against the current root with `verify_withdrawal_proof`; withdrawal records remain available after stream completion.
+
+```rust
+let proof = client.get_withdrawal_proof(&stream_id, &0)?;
+let root = client.get_withdrawal_history_root(&stream_id)?;
+assert_eq!(proof.root, root);
+assert!(client.verify_withdrawal_proof(&proof));
+```
+
 ### batch_withdraw
 
 Withdraw from multiple streams in one transaction.

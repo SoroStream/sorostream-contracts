@@ -662,3 +662,25 @@ impl CreateStreamParams {
         self.recurrence.or(self.renew_count)
     }
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalRecord {
+    pub stream_id: u64,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub index: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalProof {
+    pub stream_id: u64,
+    pub withdrawal_index: u32,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub leaf_hash: BytesN<32>,
+    pub siblings: Vec<BytesN<32>>,
+    pub leaf_count: u32,
+    pub root: BytesN<32>,
+}

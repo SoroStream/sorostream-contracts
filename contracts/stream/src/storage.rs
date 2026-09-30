@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::types::{AuditEntry, Stream, StreamTransition, VestingTranche};
+use crate::types::{AuditEntry, Stream, StreamTransition, VestingTranche, WithdrawalRecord};
 use soroban_sdk::{Address, Bytes, BytesN, Env, String, Symbol, Vec, xdr::ToXdr};
 
 const ADMIN_KEY: &str = "admin";
@@ -2023,4 +2023,50 @@ pub fn remove_stream_metadata(env: &Env, stream_id: u64) {
     env.storage()
         .temporary()
         .remove(&stream_metadata_key(env, stream_id));
+}
+
+fn withdrawal_record_key(env: &Env, stream_id: u64, index: u32) -> (Symbol, u64, u32) {
+    (Symbol::new(env, "wr"), stream_id, index)
+}
+
+fn withdrawal_count_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "wc"), stream_id)
+}
+
+pub fn append_withdrawal_record(
+    env: &Env,
+    stream_id: u64,
+    amount: i128,
+    timestamp: u64,
+) -> WithdrawalRecord {
+    let key = withdrawal_count_key(env, stream_id);
+    let index = env.storage().persistent().get(&key).unwrap_or(0u32);
+    let record = WithdrawalRecord { stream_id, amount, timestamp, index };
+    env.storage()
+        .persistent()
+        .set(&withdrawal_record_key(env, stream_id, index), &record);
+    env.storage().persistent().set(&key, &index.saturating_add(1));
+    record
+}
+
+pub fn get_withdrawal_count(env: &Env, stream_id: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&withdrawal_count_key(env, stream_id))
+        .unwrap_or(0)
+}
+
+pub fn load_withdrawal_records(env: &Env, stream_id: u64) -> Vec<WithdrawalRecord> {
+    let count = get_withdrawal_count(env, stream_id);
+    let mut records = Vec::new(env);
+    for index in 0..count {
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get(&withdrawal_record_key(env, stream_id, index))
+        {
+            records.push_back(record);
+        }
+    }
+    records
 }
