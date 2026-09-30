@@ -6,7 +6,7 @@
 use soroban_sdk::{contractclient, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 use crate::errors::StreamError;
-use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats, Stream, StreamHealth, StreamOptions, StreamQueryFilter, StreamTransition, VestingCurve, VestingTranche};
+use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats, Stream, StreamHealth, StreamOptions, StreamQueryFilter, StreamTransition, VestingCurve, VestingTranche, WithdrawalProof};
 
 #[contractclient(name = "SoroStreamClient")]
 pub trait SoroStreamInterface {
@@ -169,6 +169,20 @@ pub trait SoroStreamInterface {
     fn approve_release(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
 
     fn withdraw(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+    fn get_withdrawal_proof(
+        env: Env,
+        stream_id: u64,
+        withdrawal_index: u32,
+    ) -> Result<WithdrawalProof, StreamError>;
+    fn get_withdrawal_history_root(env: Env, stream_id: u64) -> Result<BytesN<32>, StreamError>;
+    fn verify_withdrawal_proof(env: Env, proof: WithdrawalProof) -> bool;
+
+    fn partial_withdraw(
+        env: Env,
+        stream_id: u64,
+        amount: i128,
+        caller: Address,
+    ) -> Result<(), StreamError>;
 
     /// Clones an existing active stream into a new stream.
     ///
@@ -250,7 +264,14 @@ pub trait SoroStreamInterface {
     fn query_streams(env: Env, filter: StreamQueryFilter, start: u32, limit: u32) -> Vec<Stream>;
     fn simulate_claimable(env: Env, stream_id: u64, query_time: u64) -> Result<i128, StreamError>;
 
-    fn pause_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
+    /// Pauses an active stream and optionally records a reason of at most 256 bytes.
+    /// The latest reason remains available from `get_stream` after resuming.
+    fn pause_stream(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        reason: Option<String>,
+    ) -> Result<(), StreamError>;
     fn resume_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
 
     fn batch_create_stream(
