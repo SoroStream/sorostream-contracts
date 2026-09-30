@@ -541,9 +541,8 @@ fn test_discard_expired_proposal_refunds_sender() {
     let proposal_id = setup_proposal(&t, 10);
     // Advance past expiry.
     t.set_seq(t.seq() + 11);
-    // Anyone can discard after expiry; use a stranger address.
-    let stranger = Address::generate(&t.env);
-    t.client().discard_proposal(&proposal_id, &stranger);
+    // Only the original sender can discard; even after expiry.
+    t.client().discard_proposal(&proposal_id, &t.sender);
 
     let bal_after = t.token_client().balance(&t.sender);
     assert_eq!(bal_after, bal_before, "sender should be fully refunded");
@@ -563,7 +562,7 @@ fn test_sender_can_retract_before_expiry() {
 }
 
 #[test]
-#[should_panic(expected = "proposal has not expired; only sender can retract")]
+#[should_panic(expected = "Error::Unauthorized")]
 fn test_third_party_cannot_discard_active_proposal() {
     let t = TestEnv::new();
     let proposal_id = setup_proposal(&t, 100);
@@ -571,6 +570,24 @@ fn test_third_party_cannot_discard_active_proposal() {
     // A stranger tries to discard before expiry — must panic.
     let stranger = Address::generate(&t.env);
     t.client().discard_proposal(&proposal_id, &stranger);
+}
+
+// ── Issue #619: only original proposer can cancel ────────────────────────────
+
+/// A different admin (stranger) cannot cancel an expired proposal.
+/// Even after expiry the original sender must be the only one who can discard.
+#[test]
+#[should_panic(expected = "Error::Unauthorized")]
+fn test_different_admin_cannot_cancel_expired_proposal() {
+    let t = TestEnv::new();
+    let proposal_id = setup_proposal(&t, 10);
+
+    // Advance past expiry.
+    t.set_seq(t.seq() + 11);
+
+    // A different admin/attacker tries to discard after expiry — must panic.
+    let attacker = Address::generate(&t.env);
+    t.client().discard_proposal(&proposal_id, &attacker);
 }
 
 #[test]
