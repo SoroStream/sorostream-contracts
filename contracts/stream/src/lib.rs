@@ -7770,6 +7770,11 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Sets the treasury address to receive protocol fees (alias for set_treasury_address).
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), StreamError> {
+        Self::set_treasury_address(env, treasury)
+    }
+
     /// Sets a per-token fee tier (in basis points).
     ///
     /// Allows different tokens to have different fee rates.
