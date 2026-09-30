@@ -982,6 +982,95 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #625: admin-only migrate_storage
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Sets the address authorised to call [`Self::migrate_storage`].
+    ///
+    /// Only the contract admin may change this value.  When no migration admin
+    /// has been set explicitly, [`Self::migrate_storage`] defaults to checking
+    /// the contract admin.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — contract has not been initialised.
+    /// - `NotAuthorized` — caller is not the contract admin.
+    pub fn set_migration_admin(
+        env: Env,
+        caller: Address,
+        migration_admin: Address,
+    ) -> Result<(), StreamError> {
+        caller.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if caller != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        write_migration_admin(&env, &migration_admin);
+        Ok(())
+    }
+
+    /// Runs the pending storage schema migration, bumping the version by one.
+    ///
+    /// Unlike [`Self::upgrade_storage`] (which is always admin-only), this entry
+    /// point enforces the dedicated *migration admin* role set via
+    /// [`Self::set_migration_admin`].  This prevents any caller from front-running
+    /// a pending migration before the migration admin intends it, which could
+    /// cause data corruption if the migration arms transform existing records.
+    ///
+    /// # What it does per version bump
+    ///
+    /// | From → To | Migration |
+    /// |-----------|-----------|
+    /// | 0 → 1     | Stamps the version key on legacy deployments.  No data transformation needed. |
+    ///
+    /// # Access control
+    /// Only the designated migration admin (or the contract admin if none is set)
+    /// may call this.
+    ///
+    /// # Errors
+    /// - `NotInitialized` — contract has not been initialised.
+    /// - `NotAuthorized` — caller is not the migration admin.
+    /// - `MigrationAlreadyApplied` — storage is already at or above the current expected version.
+    pub fn migrate_storage(env: Env, caller: Address) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        // Resolve migration admin (falls back to contract admin when unset).
+        let migration_admin = read_migration_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if caller != migration_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+
+        let current = storage::read_storage_version(&env).unwrap_or(0);
+        if current >= CURRENT_STORAGE_VERSION {
+            return Err(StreamError::MigrationAlreadyApplied);
+        }
+
+        let next = current + 1;
+        match next {
+            1 => {
+                // Version 1: stamp the version key on legacy deployments that
+                // were initialised before the versioning feature was added.
+                // No data transformation required.
+            }
+            _ => {
+                return Err(StreamError::NotInitialized);
+            }
+        }
+
+        write_storage_version(&env, next);
+
+        let ts = env.ledger().timestamp();
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "migrate_storage"),
+            admin: caller.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        events::admin_action(&env, &entry.instruction, &caller, ts);
+        Ok(())
+    }
+
     /// Helper function to remove a stream from all indices (sender, recipient, and tag if present).
     fn unindex_stream(env: &Env, stream: &Stream, stream_id: u64) {
         unindex_by_sender(env, &stream.sender, stream_id);
