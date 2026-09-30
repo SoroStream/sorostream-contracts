@@ -6352,6 +6352,62 @@ impl SoroStreamContract {
         Ok(claimable)
     }
 
+    /// Projects the gross total the recipient can earn by the stream's end.
+    ///
+    /// The estimate includes prior withdrawals and remaining scheduled accrual,
+    /// but excludes protocol fees. An ongoing pause uses its start timestamp as
+    /// the effective current time; completed pause periods are already reflected
+    /// in the stream's adjusted timestamps.
+    pub fn get_stream_earnings_estimate(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        let now = env.ledger().timestamp();
+        let effective_now = if stream.status == StreamStatus::Paused {
+            stream.options.last_pause_time
+        } else {
+            now
+        };
+        let projected_end = if stream.status == StreamStatus::Paused {
+            stream.end_time.saturating_add(now.saturating_sub(stream.options.last_pause_time))
+        } else {
+            stream.end_time
+        };
+
+        if stream.options.is_step_vesting {
+            let tranches = load_tranches(&env, stream_id);
+            let mut total = 0i128;
+            for tranche in tranches.iter() {
+                if tranche.unlock_time <= projected_end {
+                    total = total.checked_add(tranche.amount).ok_or(StreamError::Overflow)?;
+                }
+            }
+            return Ok(total.min(stream.deposit));
+        }
+
+        if stream.options.milestone_release_mode {
+            let mut total = 0i128;
+            for milestone in stream.options.milestones.iter() {
+                if milestone.status == MilestoneStatus::Released
+                    || (stream.options.milestone_approver.is_none()
+                        && milestone.unlock_time <= projected_end)
+                {
+                    total = total.checked_add(milestone.amount).ok_or(StreamError::Overflow)?;
+                }
+            }
+            return Ok(total.min(stream.deposit));
+        }
+
+        let cumulative_at_end = Self::simulate_claimable(env.clone(), stream_id, projected_end)?;
+        let cumulative_now = Self::simulate_claimable(env.clone(), stream_id, effective_now)?;
+        let currently_claimable = Self::get_claimable(env.clone(), stream_id)?;
+        let future_projection = cumulative_at_end.saturating_sub(cumulative_now).max(0);
+        Ok(stream
+            .options
+            .total_withdrawn
+            .saturating_add(currently_claimable)
+            .saturating_add(future_projection)
+            .min(stream.deposit))
+    }
+
     /// Returns the total amount accrued to a stream so far, ignoring prior withdrawals.
     ///
     /// Unlike [`Self::get_claimable`], this reports the gross accrued value: prior

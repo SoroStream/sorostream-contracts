@@ -490,6 +490,13 @@ recipient: Address,                         // Must be stream recipient (must au
 ```rust
 client.withdraw(&stream_id, &recipient)?;
 ```
+### get_stream_earnings_estimate
+
+Returns the projected gross token earnings through the stream's scheduled end, including prior withdrawals and remaining vesting. Ongoing pauses use the pause timestamp as the effective current time; resumed pauses are reflected in the stream's adjusted timestamps. The estimate is before protocol fees.
+
+```rust
+let projected_total = client.get_stream_earnings_estimate(&stream_id)?;
+```
 
 ### get_withdrawal_proof
 
