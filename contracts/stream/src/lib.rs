@@ -33,6 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_39_tests;   // feat/39-create-stream-fuzz
 #[cfg(test)] mod issue_37_tests;   // feat/37-sender-stream-cap
 #[cfg(test)] mod duplicate_id_tests; // identical-param stream ID collision
+#[cfg(test)] mod issue_629_tests;   // feat/26-metadata-size-validation
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,

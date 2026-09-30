@@ -1948,3 +1948,49 @@ pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
         env.storage().persistent().set(&key, &(current - 1));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Stream temporary metadata blob (feat/26-metadata-size-validation)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The metadata blob is stored in *temporary* storage so that it expires
+// automatically after ~24 hours (17 280 ledgers at 5 s/ledger) without
+// requiring explicit cleanup.  The size cap (256 bytes) is enforced by the
+// `update_metadata` entry point *before* this function is called, so callers
+// here can assume the blob is already validated.
+//
+// Storage key: ("meta", stream_id)
+
+fn stream_metadata_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "meta"), stream_id)
+}
+
+/// Writes `metadata` bytes to temporary storage for `stream_id`.
+///
+/// The entry is set with a TTL of 17 280 ledgers (~24 h at 5 s/ledger).
+pub fn set_stream_metadata(env: &Env, stream_id: u64, metadata: &Bytes) {
+    let key = stream_metadata_key(env, stream_id);
+    env.storage().temporary().set(&key, metadata);
+    // Extend TTL to ~24 hours so the blob survives between calls.
+    env.storage()
+        .temporary()
+        .extend_ttl(&key, 17_280, 17_280);
+}
+
+/// Returns the temporary metadata blob for `stream_id`, or `None` if it has
+/// expired or was never set.
+pub fn get_stream_metadata(env: &Env, stream_id: u64) -> Option<Bytes> {
+    env.storage()
+        .temporary()
+        .get(&stream_metadata_key(env, stream_id))
+}
+
+/// Removes the temporary metadata blob for `stream_id` immediately.
+///
+/// Called during cancellation, expiry-migration, or explicit clearing so that
+/// storage rent is not wasted on orphaned blobs.
+pub fn remove_stream_metadata(env: &Env, stream_id: u64) {
+    env.storage()
+        .temporary()
+        .remove(&stream_metadata_key(env, stream_id));
+}
