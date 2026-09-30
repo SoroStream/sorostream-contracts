@@ -263,7 +263,7 @@ fn test_bonus_on_paused_stream() {
     );
 
     // Pause stream
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Send bonus on paused stream (should be allowed)
     // c.send_bonus(&stream_id, &t.sender, &100_000);
