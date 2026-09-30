@@ -33,6 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_39_tests;   // feat/39-create-stream-fuzz
 #[cfg(test)] mod issue_37_tests;   // feat/37-sender-stream-cap
 #[cfg(test)] mod duplicate_id_tests; // identical-param stream ID collision
+#[cfg(test)] mod issue_633_tests;   // feat/34-active-stream-count
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -785,6 +786,20 @@ impl SoroStreamContract {
     /// Returns the number of active streams currently held by `sender`.
     pub fn get_sender_active_stream_count(env: Env, sender: Address) -> u32 {
         get_sender_active_count(&env, &sender)
+    }
+
+    /// Returns the total number of non-expired (active) streams across the
+    /// entire protocol, expressed as a `u64` for dashboard metrics and
+    /// protocol health monitoring.
+    ///
+    /// The counter is incremented on every successful `create_stream` call and
+    /// decremented when a stream is cancelled, completed, or expired.
+    ///
+    /// # Returns
+    /// Current count of active streams as `u64`. Returns `0` before any
+    /// streams have been created.
+    pub fn get_active_stream_count(env: Env) -> u64 {
+        get_active_stream_count(&env) as u64
     }
 
     pub fn migrate(env: Env, from_version: String, to_version: String) -> Result<(), StreamError> {
