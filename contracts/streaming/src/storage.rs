@@ -61,6 +61,41 @@ pub fn stream_id_exists(env: &Env, stream_id: u64) -> bool {
         .has(&DataKey::Stream(stream_id))
 }
 
+/// Derives a pseudo-random stream ID by hashing (sender ‖ recipient ‖ timestamp ‖ nonce).
+/// Used by `sponsor_stream` so sponsored streams also benefit from non-enumerable IDs.
+pub fn derive_stream_id(env: &Env, sender: &Address, recipient: &Address, timestamp: u64, nonce: u64) -> u64 {
+    let mut buf = Bytes::new(env);
+    buf.append(&sender.to_xdr(env));
+    buf.append(&recipient.to_xdr(env));
+    buf.append(&Bytes::from_array(env, &timestamp.to_be_bytes()));
+    buf.append(&Bytes::from_array(env, &nonce.to_be_bytes()));
+    let hash = env.crypto().sha256(&buf);
+    let hash_bytes = hash.to_array();
+    u64::from_be_bytes([
+        hash_bytes[0],
+        hash_bytes[1],
+        hash_bytes[2],
+        hash_bytes[3],
+        hash_bytes[4],
+        hash_bytes[5],
+        hash_bytes[6],
+        hash_bytes[7],
+    ])
+}
+
+/// Returns the next monotonic nonce, then increments it.
+/// Re-uses the StreamCount key so the counter namespace is shared.
+pub fn next_nonce(env: &Env) -> u64 {
+    next_stream_id(env)
+}
+
+/// Returns `true` if a stream with the given ID already exists.
+pub fn stream_id_exists(env: &Env, stream_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::Stream(stream_id))
+}
+
 pub fn save_stream(env: &Env, stream_id: u64, stream: &Stream) {
     let key = DataKey::Stream(stream_id);
     env.storage().persistent().set(&key, stream);
