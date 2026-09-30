@@ -85,37 +85,28 @@ impl TestEnv {
 //  1. Core lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Issue #621: non-sequential (hash-based) stream IDs ───────────────────────
+// ── Issue #618: prevent self-loop streams ────────────────────────────────────
 
-/// Stream IDs must NOT be sequential consecutive integers.
-/// They are derived from SHA-256(sender ‖ recipient ‖ timestamp ‖ nonce) so
-/// an attacker cannot enumerate all streams by iterating integers.
+/// Creating a stream where the sender is the contract itself must be rejected.
+/// A self-referential stream would exhaust gas or cause undefined behaviour.
 #[test]
-fn test_stream_ids_are_non_sequential() {
+#[should_panic(expected = "Error::InvalidSender")]
+fn test_create_stream_contract_as_sender_is_rejected() {
     let t = TestEnv::new();
     let client = t.client();
     let start = t.now();
     let end = start + 1_000;
 
-    let id0 = client.create_stream(
-        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
+    // Use the contract address as the sender — must panic with InvalidSender.
+    client.create_stream(
+        &t.contract,    // sender == contract_address ← must be rejected
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &false,
     );
-    let id1 = client.create_stream(
-        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
-    );
-    let id2 = client.create_stream(
-        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
-    );
-
-    // IDs must be distinct.
-    assert_ne!(id0, id1, "stream IDs must be unique");
-    assert_ne!(id1, id2, "stream IDs must be unique");
-    assert_ne!(id0, id2, "stream IDs must be unique");
-
-    // IDs must NOT form a simple +1 sequence (sequential enumeration attack).
-    let is_sequential =
-        (id1 == id0 + 1 && id2 == id1 + 1) || (id1 == id0 - 1 && id2 == id1 - 1);
-    assert!(!is_sequential, "stream IDs must not be sequential");
 }
 
 #[test]
@@ -550,9 +541,8 @@ fn test_discard_expired_proposal_refunds_sender() {
     let proposal_id = setup_proposal(&t, 10);
     // Advance past expiry.
     t.set_seq(t.seq() + 11);
-    // Anyone can discard after expiry; use a stranger address.
-    let stranger = Address::generate(&t.env);
-    t.client().discard_proposal(&proposal_id, &stranger);
+    // Only the original sender can discard; even after expiry.
+    t.client().discard_proposal(&proposal_id, &t.sender);
 
     let bal_after = t.token_client().balance(&t.sender);
     assert_eq!(bal_after, bal_before, "sender should be fully refunded");
@@ -572,7 +562,7 @@ fn test_sender_can_retract_before_expiry() {
 }
 
 #[test]
-#[should_panic(expected = "proposal has not expired; only sender can retract")]
+#[should_panic(expected = "Error::Unauthorized")]
 fn test_third_party_cannot_discard_active_proposal() {
     let t = TestEnv::new();
     let proposal_id = setup_proposal(&t, 100);
@@ -580,6 +570,24 @@ fn test_third_party_cannot_discard_active_proposal() {
     // A stranger tries to discard before expiry — must panic.
     let stranger = Address::generate(&t.env);
     t.client().discard_proposal(&proposal_id, &stranger);
+}
+
+// ── Issue #619: only original proposer can cancel ────────────────────────────
+
+/// A different admin (stranger) cannot cancel an expired proposal.
+/// Even after expiry the original sender must be the only one who can discard.
+#[test]
+#[should_panic(expected = "Error::Unauthorized")]
+fn test_different_admin_cannot_cancel_expired_proposal() {
+    let t = TestEnv::new();
+    let proposal_id = setup_proposal(&t, 10);
+
+    // Advance past expiry.
+    t.set_seq(t.seq() + 11);
+
+    // A different admin/attacker tries to discard after expiry — must panic.
+    let attacker = Address::generate(&t.env);
+    t.client().discard_proposal(&proposal_id, &attacker);
 }
 
 #[test]

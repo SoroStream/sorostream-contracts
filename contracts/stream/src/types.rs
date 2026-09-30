@@ -103,6 +103,8 @@ pub struct StreamOptions {
     pub allow_recipient_termination: bool,
     /// Ledger timestamp of when the stream was last paused (0 if never paused).
     pub last_pause_time: u64,
+    /// Optional reason supplied by the sender for the most recent pause.
+    pub pause_reason: Option<String>,
     /// Total amount withdrawn from this stream so far.
     pub total_withdrawn: i128,
     /// Optional metadata blob associated with the stream.
@@ -661,4 +663,26 @@ impl CreateStreamParams {
     pub fn effective_renew_count(&self) -> Option<u32> {
         self.recurrence.or(self.renew_count)
     }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalRecord {
+    pub stream_id: u64,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub index: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalProof {
+    pub stream_id: u64,
+    pub withdrawal_index: u32,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub leaf_hash: BytesN<32>,
+    pub siblings: Vec<BytesN<32>>,
+    pub leaf_count: u32,
+    pub root: BytesN<32>,
 }
