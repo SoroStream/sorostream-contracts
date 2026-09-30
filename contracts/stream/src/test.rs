@@ -352,7 +352,9 @@ fn test_recurrence_alias_sets_renew_count() {
             withdrawal_steps: None,
             min_withdrawal_amount: None,
             requires_recipient_approval: false,
-        },
+
+        tags: None,
+    },
     );
 
     let stream = c.get_stream(&stream_id);

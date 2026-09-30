@@ -1750,6 +1750,36 @@ pub fn remove_stream_tag(env: &Env, stream_id: u64) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Multi-tag storage (issue #635: up to 3 tags, max 32 bytes each)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn stream_tags_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "stags"), stream_id)
+}
+
+/// Returns the multi-tag list for a stream, or an empty Vec if not set.
+pub fn get_stream_tags(env: &Env, stream_id: u64) -> Vec<Bytes> {
+    env.storage()
+        .persistent()
+        .get(&stream_tags_key(env, stream_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Persists the multi-tag list for a stream (overwrites any previous value).
+pub fn set_stream_tags_storage(env: &Env, stream_id: u64, tags: &Vec<Bytes>) {
+    env.storage()
+        .persistent()
+        .set(&stream_tags_key(env, stream_id), tags);
+}
+
+/// Removes the multi-tag list for a stream.
+pub fn remove_stream_tags(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&stream_tags_key(env, stream_id));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // WASM Upgrade Proposal Queue (Issue #497)
 // ═══════════════════════════════════════════════════════════════════════════
 

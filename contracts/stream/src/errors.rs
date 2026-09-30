@@ -71,4 +71,8 @@ pub enum StreamError {
     InsufficientStake = 66,
     /// Sender has reached the configured per-sender active stream cap.
     SenderStreamCapReached = 67,
+    /// More than 3 tags were supplied (max 3 allowed per stream).
+    TooManyTags = 68,
+    /// A tag exceeds the 32-byte limit.
+    TagTooLong = 69,
 }
