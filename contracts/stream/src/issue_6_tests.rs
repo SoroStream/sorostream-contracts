@@ -102,7 +102,7 @@ fn test_resume_clears_paused_at() {
 
     // Pause at t=100.
     t.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     {
         let s = c.get_stream(&stream_id);
@@ -145,7 +145,7 @@ fn test_pause_resume_pause_claimable() {
 
     // ── Pause at t=100 ──────────────────────────────────────────────────────
     t.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     let claimable_at_pause = c.get_claimable(&stream_id);
     // Paused stream reports claimable frozen at pause time (100 - 0 = 100 tokens).
@@ -182,7 +182,7 @@ fn test_pause_resume_pause_claimable() {
 
     // ── Pause again at t=300 ─────────────────────────────────────────────────
     t.env.ledger().set_timestamp(300);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     {
         let s = c.get_stream(&stream_id);
@@ -216,7 +216,7 @@ fn test_claimable_zero_during_pause() {
 
     // Let 50 s pass, then pause.
     t.env.ledger().set_timestamp(50);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     let claimable_at_pause = c.get_claimable(&stream_id);
 
@@ -253,7 +253,7 @@ fn test_second_pause_after_resume_no_stale_paused_at() {
 
     // Pause at t=100 (1000 tokens earned so far, frozen).
     t.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Resume at t=300 (paused for 200 s).
     t.env.ledger().set_timestamp(300);
@@ -264,7 +264,7 @@ fn test_second_pause_after_resume_no_stale_paused_at() {
 
     // Pause again immediately at t=300.
     t.env.ledger().set_timestamp(300);
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // Claimable at second pause: from the stream's perspective time has shifted.
     // last_withdraw_time was 0, shifted by 200 → 200.

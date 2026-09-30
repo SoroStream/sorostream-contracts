@@ -249,7 +249,14 @@ pub trait SoroStreamInterface {
     fn query_streams(env: Env, filter: StreamQueryFilter, start: u32, limit: u32) -> Vec<Stream>;
     fn simulate_claimable(env: Env, stream_id: u64, query_time: u64) -> Result<i128, StreamError>;
 
-    fn pause_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
+    /// Pauses an active stream and optionally records a reason of at most 256 bytes.
+    /// The latest reason remains available from `get_stream` after resuming.
+    fn pause_stream(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        reason: Option<String>,
+    ) -> Result<(), StreamError>;
     fn resume_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
 
     fn batch_create_stream(

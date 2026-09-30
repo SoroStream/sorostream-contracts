@@ -103,6 +103,8 @@ pub struct StreamOptions {
     pub allow_recipient_termination: bool,
     /// Ledger timestamp of when the stream was last paused (0 if never paused).
     pub last_pause_time: u64,
+    /// Optional reason supplied by the sender for the most recent pause.
+    pub pause_reason: Option<String>,
     /// Total amount withdrawn from this stream so far.
     pub total_withdrawn: i128,
     /// Optional metadata blob associated with the stream.

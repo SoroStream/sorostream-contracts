@@ -1502,6 +1502,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination: options.allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -1830,6 +1831,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -2101,6 +2103,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -2312,6 +2315,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -2510,6 +2514,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: Bytes::new(&env),
                 locked: false,
@@ -5476,6 +5481,7 @@ impl SoroStreamContract {
                 renewals_used: 0,
                 allow_recipient_termination: stream.options.allow_recipient_termination,
                 last_pause_time: 0,
+                pause_reason: None,
                 total_withdrawn: 0,
                 metadata: stream.options.metadata.clone(),
                 locked: false,
@@ -6584,10 +6590,18 @@ impl SoroStreamContract {
     }
 
     /// Pauses an active stream.
-    pub fn pause_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError> {
+    pub fn pause_stream(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        reason: Option<String>,
+    ) -> Result<(), StreamError> {
         reject_reentrant_call(&env)?;
         if is_paused_or_auto_unpause(&env) {
             return Err(StreamError::ContractPaused);
+        }
+        if reason.as_ref().map(|value| value.len() > 256).unwrap_or(false) {
+            return Err(StreamError::InvalidParameter);
         }
         sender.require_auth();
 
@@ -6601,6 +6615,7 @@ impl SoroStreamContract {
 
         stream.status = StreamStatus::Paused;
         stream.options.last_pause_time = env.ledger().timestamp();
+        stream.options.pause_reason = reason;
         save_stream(&env, &stream);
         unindex_active_by_sender(&env, &stream.sender, stream_id);
         decrement_active_stream_count(&env);
@@ -6818,6 +6833,7 @@ impl SoroStreamContract {
                     renewals_used: 0,
                     allow_recipient_termination: false,
                     last_pause_time: 0,
+                    pause_reason: None,
                     total_withdrawn: 0,
                     metadata: Bytes::new(&env),
                     locked: false,
