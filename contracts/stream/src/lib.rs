@@ -1806,6 +1806,12 @@ impl SoroStreamContract {
         if end_time <= start_time {
             return Err(StreamError::InvalidEndTime);
         }
+        // Issue #624: Reject streams whose end_time is already in the past.
+        // A past end_time locks funds in an immediately-expired stream with no
+        // meaningful vesting window, so we reject early at creation time.
+        if end_time <= now {
+            return Err(StreamError::EndTimeInPast);
+        }
 
         // Calculate cliff_time from start_time
         let cliff_time = start_time
