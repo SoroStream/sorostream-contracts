@@ -69,10 +69,7 @@ pub enum StreamError {
     CommentTooLong = 65,
     /// Sender has not staked the required minimum collateral for this token.
     InsufficientStake = 66,
-    /// Sender has reached the configured per-sender active stream cap.
-    SenderStreamCapReached = 67,
-    /// `create_stream` (or a scheduled variant) was called with an `end_time`
-    /// that is already in the past, which would lock funds in an immediately-
-    /// expired stream with no way to withdraw.
-    EndTimeInPast = 68,
+    /// A parameter decoded from XDR but is semantically invalid for this entry
+    /// point — for example an empty or over-long identifier string.
+    InvalidParameter = 67,
 }

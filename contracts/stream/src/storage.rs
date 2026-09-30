@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::types::{AuditEntry, Stream, StreamTransition, VestingTranche};
+use crate::types::{AuditEntry, Stream, StreamTransition, VestingTranche, WithdrawalRecord};
 use soroban_sdk::{Address, Bytes, BytesN, Env, String, Symbol, Vec, xdr::ToXdr};
 
 const ADMIN_KEY: &str = "admin";
@@ -1750,6 +1750,36 @@ pub fn remove_stream_tag(env: &Env, stream_id: u64) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Multi-tag storage (issue #635: up to 3 tags, max 32 bytes each)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn stream_tags_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "stags"), stream_id)
+}
+
+/// Returns the multi-tag list for a stream, or an empty Vec if not set.
+pub fn get_stream_tags(env: &Env, stream_id: u64) -> Vec<Bytes> {
+    env.storage()
+        .persistent()
+        .get(&stream_tags_key(env, stream_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Persists the multi-tag list for a stream (overwrites any previous value).
+pub fn set_stream_tags_storage(env: &Env, stream_id: u64, tags: &Vec<Bytes>) {
+    env.storage()
+        .persistent()
+        .set(&stream_tags_key(env, stream_id), tags);
+}
+
+/// Removes the multi-tag list for a stream.
+pub fn remove_stream_tags(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&stream_tags_key(env, stream_id));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // WASM Upgrade Proposal Queue (Issue #497)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1947,4 +1977,96 @@ pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
     if current > 0 {
         env.storage().persistent().set(&key, &(current - 1));
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Stream temporary metadata blob (feat/26-metadata-size-validation)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The metadata blob is stored in *temporary* storage so that it expires
+// automatically after ~24 hours (17 280 ledgers at 5 s/ledger) without
+// requiring explicit cleanup.  The size cap (256 bytes) is enforced by the
+// `update_metadata` entry point *before* this function is called, so callers
+// here can assume the blob is already validated.
+//
+// Storage key: ("meta", stream_id)
+
+fn stream_metadata_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "meta"), stream_id)
+}
+
+/// Writes `metadata` bytes to temporary storage for `stream_id`.
+///
+/// The entry is set with a TTL of 17 280 ledgers (~24 h at 5 s/ledger).
+pub fn set_stream_metadata(env: &Env, stream_id: u64, metadata: &Bytes) {
+    let key = stream_metadata_key(env, stream_id);
+    env.storage().temporary().set(&key, metadata);
+    // Extend TTL to ~24 hours so the blob survives between calls.
+    env.storage()
+        .temporary()
+        .extend_ttl(&key, 17_280, 17_280);
+}
+
+/// Returns the temporary metadata blob for `stream_id`, or `None` if it has
+/// expired or was never set.
+pub fn get_stream_metadata(env: &Env, stream_id: u64) -> Option<Bytes> {
+    env.storage()
+        .temporary()
+        .get(&stream_metadata_key(env, stream_id))
+}
+
+/// Removes the temporary metadata blob for `stream_id` immediately.
+///
+/// Called during cancellation, expiry-migration, or explicit clearing so that
+/// storage rent is not wasted on orphaned blobs.
+pub fn remove_stream_metadata(env: &Env, stream_id: u64) {
+    env.storage()
+        .temporary()
+        .remove(&stream_metadata_key(env, stream_id));
+}
+
+fn withdrawal_record_key(env: &Env, stream_id: u64, index: u32) -> (Symbol, u64, u32) {
+    (Symbol::new(env, "wr"), stream_id, index)
+}
+
+fn withdrawal_count_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "wc"), stream_id)
+}
+
+pub fn append_withdrawal_record(
+    env: &Env,
+    stream_id: u64,
+    amount: i128,
+    timestamp: u64,
+) -> WithdrawalRecord {
+    let key = withdrawal_count_key(env, stream_id);
+    let index = env.storage().persistent().get(&key).unwrap_or(0u32);
+    let record = WithdrawalRecord { stream_id, amount, timestamp, index };
+    env.storage()
+        .persistent()
+        .set(&withdrawal_record_key(env, stream_id, index), &record);
+    env.storage().persistent().set(&key, &index.saturating_add(1));
+    record
+}
+
+pub fn get_withdrawal_count(env: &Env, stream_id: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&withdrawal_count_key(env, stream_id))
+        .unwrap_or(0)
+}
+
+pub fn load_withdrawal_records(env: &Env, stream_id: u64) -> Vec<WithdrawalRecord> {
+    let count = get_withdrawal_count(env, stream_id);
+    let mut records = Vec::new(env);
+    for index in 0..count {
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get(&withdrawal_record_key(env, stream_id, index))
+        {
+            records.push_back(record);
+        }
+    }
+    records
 }
