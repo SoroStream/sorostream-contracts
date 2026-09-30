@@ -29,10 +29,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
-#[cfg(test)] mod issue_6_tests;    // feat/6-resume-paused-at-reset
-#[cfg(test)] mod issue_39_tests;   // feat/39-create-stream-fuzz
-#[cfg(test)] mod issue_37_tests;   // feat/37-sender-stream-cap
-#[cfg(test)] mod duplicate_id_tests; // identical-param stream ID collision
+#[cfg(test)] mod issue_523_tests;
 
 use soroban_sdk::{
     contract, contractimpl, token, Address, Bytes, BytesN, Env, String, Vec, Symbol, IntoVal,
@@ -40,7 +37,14 @@ use soroban_sdk::{
 use types::VestingTranche;
 use types::{Milestone, MilestoneStatus};
 
-const PROTOCOL_FEE_CHANGE_DELAY: u64 = 7 * 24 * 60 * 60;
+/// Mandatory timelock (48 hours, expressed in seconds) that must elapse between
+/// proposing a protocol-fee change with `set_protocol_fee`/`propose_fee_change`
+/// and committing it with `execute_fee_change`.
+///
+/// The pending window gives users and integrators a guaranteed period to observe
+/// the proposed change (through `get_pending_fee_update`) and react before the
+/// new rate takes effect, so the protocol fee can never be changed abruptly.
+const FEE_UPDATE_TIMELOCK_SECONDS: u64 = 48 * 60 * 60;
 
 use storage::{
     assert_storage_version,
@@ -6951,8 +6955,10 @@ impl SoroStreamContract {
 
     /// Proposes a protocol fee change in basis points (100 bps = 1%).
     ///
-    /// The fee remains unchanged until the seven-day timelock expires and
-    /// `execute_fee_change` is called.
+    /// The fee remains unchanged until the 48-hour timelock expires and
+    /// `execute_fee_change` is called. While the proposal is pending it can be
+    /// inspected through [`Self::get_pending_fee_update`]. Re-proposing replaces
+    /// any existing proposal and restarts the 48-hour window.
     pub fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError> {
         let admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
         admin.require_auth();
@@ -6961,7 +6967,7 @@ impl SoroStreamContract {
         }
 
         let now = env.ledger().timestamp();
-        let unlock_time = now.saturating_add(PROTOCOL_FEE_CHANGE_DELAY);
+        let unlock_time = now.saturating_add(FEE_UPDATE_TIMELOCK_SECONDS);
         write_pending_fee_proposal(&env, fee_bps, unlock_time);
         events::fee_change_proposed(&env, fee_bps, unlock_time);
         Ok(())
@@ -7183,10 +7189,13 @@ impl SoroStreamContract {
         Ok(())
     }
 
-    /// Proposes a new protocol fee change with a 7-day timelock.
+    /// Proposes a new protocol fee change with a 48-hour timelock.
     ///
     /// After the timelock expires, anyone may call `execute_fee_change` to apply it.
     /// Only the super-admin may propose a fee change.
+    ///
+    /// The pending proposal (new rate and unlock time) is observable through
+    /// [`Self::get_pending_fee_update`] so users can react before it takes effect.
     pub fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError> {
         admin.require_auth();
         let current_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
@@ -7198,7 +7207,7 @@ impl SoroStreamContract {
         }
 
         let now = env.ledger().timestamp();
-        let unlock_time = now.saturating_add(PROTOCOL_FEE_CHANGE_DELAY);
+        let unlock_time = now.saturating_add(FEE_UPDATE_TIMELOCK_SECONDS);
 
         write_pending_fee_proposal(&env, new_fee_bps, unlock_time);
         events::fee_change_proposed(&env, new_fee_bps, unlock_time);
@@ -7286,6 +7295,21 @@ impl SoroStreamContract {
     /// Returns protocol fee configuration.
     pub fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>) {
         (get_protocol_fee(&env), get_treasury(&env))
+    }
+
+    /// Returns the currently pending protocol-fee update, if any.
+    ///
+    /// The result is `Some((new_fee_bps, unlock_time))` while a change is waiting
+    /// out the mandatory 48-hour timelock, where `unlock_time` is the ledger
+    /// timestamp at which [`Self::execute_fee_change`] becomes callable. It is
+    /// `None` when no update is pending (nothing proposed, or the proposal has
+    /// already been committed).
+    ///
+    /// This is a read-only view — it can be called by anyone and never mutates
+    /// state, so indexers and front-ends can poll it to warn users about an
+    /// upcoming fee change before it takes effect.
+    pub fn get_pending_fee_update(env: Env) -> Option<(u32, u64)> {
+        read_pending_fee_proposal(&env)
     }
 
     /// Withdraws accumulated protocol fees from the treasury contract.
