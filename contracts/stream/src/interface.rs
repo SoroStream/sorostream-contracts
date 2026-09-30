@@ -191,6 +191,26 @@ pub trait SoroStreamInterface {
     fn transfer_recipient(env: Env, stream_id: u64, current_recipient: Address, new_recipient: Address) -> Result<(), StreamError>;
     fn partial_cancel_stream(env: Env, stream_id: u64, sender: Address, cancel_amount: i128) -> Result<u64, StreamError>;
     fn top_up(env: Env, stream_id: u64, sender: Address, token: Address, amount: i128) -> Result<(), StreamError>;
+
+    /// Adds funds to multiple streams atomically in a single transaction.
+    ///
+    /// All-or-none: if any individual top-up would fail, the entire batch is
+    /// rejected and no state is modified. Maximum 20 entries per call.
+    ///
+    /// # Parameters
+    /// - `sender`         — must be the sender (or delegate) of every stream.
+    /// - `token`          — all streams in the batch must use this token.
+    /// - `stream_amounts` — `Vec<(stream_id, amount)>` pairs; max 20 entries.
+    ///
+    /// # Errors
+    /// - `ContractPaused`, `StreamNotFound`, `NotAuthorized`, `StreamNotActive`,
+    ///   `StreamPaused`, `ZeroAmount`, `Overflow`, `BatchLengthMismatch`
+    fn batch_top_up_streams(
+        env: Env,
+        sender: Address,
+        token: Address,
+        stream_amounts: Vec<(u64, i128)>,
+    ) -> Result<(), StreamError>;
     
     /// Updates the token-per-second flow rate of an active stream.
     ///
@@ -264,11 +284,21 @@ pub trait SoroStreamInterface {
     fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError>;
     fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError>;
     fn execute_fee_change(env: Env) -> Result<(), StreamError>;
+
+    /// Returns the pending protocol-fee update as `(new_fee_bps, unlock_time)`,
+    /// or `None` when no change is waiting out the 48-hour timelock.
+    fn get_pending_fee_update(env: Env) -> Option<(u32, u64)>;
     fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError>;
     fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>);
     fn get_stats(env: Env) -> Stats;
     fn get_protocol_stats(env: Env) -> ProtocolStats;
     fn recalibrate_stats(env: Env, admin: Address) -> Result<(), StreamError>;
+
+    /// Returns the total number of non-expired (active) streams across the protocol.
+    ///
+    /// Incremented on stream creation; decremented on cancellation / expiry.
+    /// Returns a `u64` for dashboard metrics and protocol health monitoring.
+    fn get_active_stream_count(env: Env) -> u64;
 
     fn min_duration(env: Env) -> u64;
     fn set_min_duration(env: Env, admin: Address, seconds: u64);
