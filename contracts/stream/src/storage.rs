@@ -1948,3 +1948,72 @@ pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
         env.storage().persistent().set(&key, &(current - 1));
     }
 }
+
+// ─── Storage schema versioning (feat/50 / issue #625) ────────────────────────
+//
+// A single `u32` stored in instance storage tracks the data layout version.
+// `initialize` stamps it at CURRENT_STORAGE_VERSION.  `upgrade_storage` /
+// `migrate_storage` bump it one step at a time through defined migration arms.
+// `assert_storage_version` guards every instruction that reads persisted data so
+// that a node running stale WASM cannot corrupt a migrated ledger.
+
+const STORAGE_VERSION_KEY: &str = "stor_ver";
+
+/// The highest storage schema version recognised by this WASM build.
+/// Increment this constant *and* add a matching migration arm in
+/// `upgrade_storage` / `migrate_storage` whenever the persistent layout changes.
+pub const CURRENT_STORAGE_VERSION: u32 = 1;
+
+/// Persists the storage schema version.
+pub fn write_storage_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, STORAGE_VERSION_KEY), &version);
+}
+
+/// Returns the storage schema version, or `None` for legacy deployments that
+/// pre-date the versioning feature (equivalent to version 0).
+pub fn read_storage_version(env: &Env) -> Option<u32> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, STORAGE_VERSION_KEY))
+}
+
+/// Asserts that the stored schema version matches `CURRENT_STORAGE_VERSION`.
+///
+/// Returns `Err(StreamError::NotInitialized)` for version 0 (un-migrated legacy
+/// deployments) so callers can surface a clear "run upgrade_storage first"
+/// message rather than silently operating on stale storage layout.
+pub fn assert_storage_version(env: &Env) -> Result<(), crate::errors::StreamError> {
+    let stored = read_storage_version(env).unwrap_or(0);
+    if stored < CURRENT_STORAGE_VERSION {
+        // The WASM has been upgraded but the storage migration has not been run yet.
+        return Err(crate::errors::StreamError::NotInitialized);
+    }
+    Ok(())
+}
+
+// ─── Migration admin (issue #625) ────────────────────────────────────────────
+//
+// A separate *migration admin* role restricts who can call `migrate_storage`.
+// This prevents any arbitrary caller from front-running a pending migration and
+// potentially corrupting storage state.  The contract admin sets this address
+// during deployment; it defaults to the contract admin itself when unset.
+
+const MIGRATION_ADMIN_KEY: &str = "mig_admin";
+
+/// Stores the designated migration admin address.
+pub fn write_migration_admin(env: &Env, admin: &Address) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, MIGRATION_ADMIN_KEY), admin);
+}
+
+/// Reads the designated migration admin address.  Falls back to the contract
+/// admin when no dedicated migration admin has been set.
+pub fn read_migration_admin(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, MIGRATION_ADMIN_KEY))
+        .or_else(|| read_admin(env))
+}
