@@ -33,7 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
-#[cfg(test)] mod issue_623_tests;
+#[cfg(test)] mod issue_627_tests;
 #[cfg(test)] mod issue_523_tests;
 #[cfg(test)] mod issue_521_tests;
 #[cfg(test)] mod issue_402_tests;
@@ -66,7 +66,8 @@ use storage::{
     decrement_token_stream_count, derive_stream_id,
     drain_fees_collected, effective_sender_limit, extend_instance_ttl,
     get_active_stream_count, get_batch_nonce, get_creation_fee_xlm,
-    get_delegate,    get_expiry_notification_emitted, set_expiry_notification_emitted,
+    get_delegate, get_recipient_delegate, set_recipient_delegate, remove_recipient_delegate,
+    get_expiry_notification_emitted, set_expiry_notification_emitted,
     get_expiry_warning_emitted, get_expiry_warning_window,
     get_federation_address, get_max_deposit_per_token,
     get_fees_collected, get_global_stream_at, get_global_stream_count,
@@ -3751,7 +3752,10 @@ impl SoroStreamContract {
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
 
-        if stream.recipient != recipient {
+        let is_recipient = stream.recipient == recipient;
+        let is_recipient_delegate = storage::get_recipient_delegate(&env, stream_id).as_ref() == Some(&recipient);
+
+        if !is_recipient && !is_recipient_delegate {
             return Err(StreamError::NotRecipient);
         }
         if stream.status == StreamStatus::PendingApproval || stream.status == StreamStatus::EscrowHold {
@@ -6182,6 +6186,80 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Modifies flow_rate and end_time of an active stream without cancelling (Issue #628).
+    ///
+    /// Only the sender may call this. Preserves the recipient's already claimable balance
+    /// calculated at update time.
+    pub fn update_stream(
+        env: Env,
+        stream_id: u64,
+        new_flow_rate: i128,
+        new_end_time: u64,
+    ) -> Result<(), StreamError> {
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+
+        let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        stream.sender.require_auth();
+
+        if stream.options.is_step_vesting {
+            return Err(StreamError::InvalidDuration);
+        }
+
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+
+        validation::require_positive_rate(new_flow_rate)?;
+
+        let now = env.ledger().timestamp();
+        if new_end_time <= now {
+            return Err(StreamError::InvalidEndTime);
+        }
+
+        // Settle accrued balance at current rate so already claimable tokens are preserved
+        let claimable_at_old_rate = Self::get_claimable(env.clone(), stream_id)
+            .unwrap_or(0)
+            .max(0);
+
+        stream.last_withdraw_time = now;
+        let settled_withdrawn = stream
+            .options
+            .total_withdrawn
+            .checked_add(claimable_at_old_rate)
+            .ok_or(StreamError::Overflow)?;
+
+        let old_rate = stream.flow_rate;
+        stream.flow_rate = new_flow_rate;
+        stream.rate_per_second = new_flow_rate;
+        stream.end_time = new_end_time;
+        stream.options.total_withdrawn = settled_withdrawn;
+
+        let remaining_duration = new_end_time.saturating_sub(now);
+        let remaining_amount = new_flow_rate
+            .checked_mul(remaining_duration as i128)
+            .ok_or(StreamError::Overflow)?;
+        stream.deposit = settled_withdrawn
+            .checked_add(remaining_amount)
+            .ok_or(StreamError::Overflow)?;
+
+        save_stream(&env, &stream);
+
+        events::stream_rate_updated(
+            &env,
+            stream_id,
+            old_rate,
+            new_flow_rate,
+            new_end_time,
+            remaining_amount,
+        );
+
+        Self::debug_check_invariants(&env, Some(stream_id));
+
+        Ok(())
+    }
+
     /// Delegates management of a stream to another address.
     ///
     /// Only the stream sender may call this. The delegate may subsequently
@@ -6212,6 +6290,24 @@ impl SoroStreamContract {
         remove_delegate(&env, stream_id);
         events::delegate_revoked(&env, stream_id, &sender);
         Ok(())
+    }
+
+    /// Delegates withdrawal rights to a proxy/delegate address (Issue #627).
+    ///
+    /// Only the stream recipient may call this. The delegate may subsequently
+    /// call `withdraw` on behalf of the recipient.
+    /// Emits `StreamDelegated { stream_id, recipient, delegate }`.
+    pub fn delegate_stream(env: Env, stream_id: u64, delegate_address: Address) -> Result<(), StreamError> {
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        stream.recipient.require_auth();
+        set_recipient_delegate(&env, stream_id, &delegate_address);
+        events::stream_delegated(&env, stream_id, &stream.recipient, &delegate_address);
+        Ok(())
+    }
+
+    /// Returns the authorized recipient delegate for a stream, if any.
+    pub fn get_recipient_delegate(env: Env, stream_id: u64) -> Option<Address> {
+        get_recipient_delegate(&env, stream_id)
     }
 
     /// Releases the holdback escrow amount to the recipient.
@@ -7856,6 +7952,11 @@ impl SoroStreamContract {
     pub fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError> {
         set_treasury(&env, &treasury);
         Ok(())
+    }
+
+    /// Sets the treasury address to receive protocol fees (alias for set_treasury_address).
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), StreamError> {
+        Self::set_treasury_address(env, treasury)
     }
 
     /// Sets a per-token fee tier (in basis points).
