@@ -31,6 +31,7 @@ use soroban_sdk::{contracttype, Address, Env, Symbol};
 const FEE_MANAGER_KEY: &str = "rfee";
 const EMERGENCY_PAUSE_KEY: &str = "rpause";
 const ANALYTICS_KEY: &str = "ranal";
+const TOKEN_ADMIN_KEY: &str = "rtok";
 
 // ── Role enum (for event payloads) ────────────────────────────────────────────
 
@@ -44,6 +45,8 @@ pub enum AdminRole {
     FeeManager,
     /// May pause and resume the contract in emergencies.
     EmergencyPause,
+    /// Manages allowed tokens.
+    TokenAdmin,
     /// Read-only analytics access (stats, audit log).
     Analytics,
 }
@@ -113,14 +116,56 @@ pub fn revoke_analytics_role(env: &Env) {
         .remove(&Symbol::new(env, ANALYTICS_KEY));
 }
 
+/// Returns the currently assigned `TokenAdmin` role address, or `None`.
+pub fn get_token_admin(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, TOKEN_ADMIN_KEY))
+}
+
+/// Sets the `TokenAdmin` role to `addr`.
+pub fn set_token_admin(env: &Env, addr: &Address) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, TOKEN_ADMIN_KEY), addr);
+}
+
+/// Revokes the `TokenAdmin` role.
+pub fn revoke_token_admin(env: &Env) {
+    env.storage()
+        .instance()
+        .remove(&Symbol::new(env, TOKEN_ADMIN_KEY));
+}
+
+// ── Role Aliases (Issue #623) ─────────────────────────────────────────────────
+
+pub fn get_fee_admin(env: &Env) -> Option<Address> {
+    get_fee_manager(env)
+}
+
+pub fn set_fee_admin(env: &Env, addr: &Address) {
+    set_fee_manager(env, addr);
+}
+
+pub fn revoke_fee_admin(env: &Env) {
+    revoke_fee_manager(env);
+}
+
+pub fn get_emergency_admin(env: &Env) -> Option<Address> {
+    get_emergency_pause_role(env)
+}
+
+pub fn set_emergency_admin(env: &Env, addr: &Address) {
+    set_emergency_pause_role(env, addr);
+}
+
+pub fn revoke_emergency_admin(env: &Env) {
+    revoke_emergency_pause_role(env);
+}
+
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
-/// Checks that `caller` holds the `FeeManager` role **or** is the super-admin.
-///
-/// Callers must have invoked `caller.require_auth()` before calling this.
-///
-/// # Panics
-/// Panics with `NotAuthorized` if the caller has neither role.
+/// Checks that `caller` holds the `FeeManager` / `FeeAdmin` role **or** is the super-admin.
 pub fn require_fee_manager_or_admin(
     env: &Env,
     caller: &Address,
@@ -137,7 +182,15 @@ pub fn require_fee_manager_or_admin(
     Err(crate::errors::StreamError::NotAuthorized)
 }
 
-/// Checks that `caller` holds the `EmergencyPause` role **or** is the super-admin.
+pub fn require_fee_admin_or_admin(
+    env: &Env,
+    caller: &Address,
+    admin: &Address,
+) -> Result<(), crate::errors::StreamError> {
+    require_fee_manager_or_admin(env, caller, admin)
+}
+
+/// Checks that `caller` holds the `EmergencyPause` / `EmergencyAdmin` role **or** is the super-admin.
 pub fn require_emergency_pause_or_admin(
     env: &Env,
     caller: &Address,
@@ -148,6 +201,31 @@ pub fn require_emergency_pause_or_admin(
     }
     if let Some(ref ep) = get_emergency_pause_role(env) {
         if caller == ep {
+            return Ok(());
+        }
+    }
+    Err(crate::errors::StreamError::NotAuthorized)
+}
+
+pub fn require_emergency_admin_or_admin(
+    env: &Env,
+    caller: &Address,
+    admin: &Address,
+) -> Result<(), crate::errors::StreamError> {
+    require_emergency_pause_or_admin(env, caller, admin)
+}
+
+/// Checks that `caller` holds the `TokenAdmin` role **or** is the super-admin.
+pub fn require_token_admin_or_admin(
+    env: &Env,
+    caller: &Address,
+    admin: &Address,
+) -> Result<(), crate::errors::StreamError> {
+    if caller == admin {
+        return Ok(());
+    }
+    if let Some(ref ta) = get_token_admin(env) {
+        if caller == ta {
             return Ok(());
         }
     }
@@ -172,11 +250,12 @@ pub fn require_analytics_or_admin(
 }
 
 /// Returns whether `caller` has any recognised admin role (super-admin, fee-manager,
-/// emergency-pause, or analytics).  Useful for access-gate checks that accept any role.
+/// emergency-pause, token-admin, or analytics).
 pub fn has_any_role(env: &Env, caller: &Address, admin: &Address) -> bool {
     if caller == admin { return true; }
     if get_fee_manager(env).as_ref() == Some(caller) { return true; }
     if get_emergency_pause_role(env).as_ref() == Some(caller) { return true; }
+    if get_token_admin(env).as_ref() == Some(caller) { return true; }
     if get_analytics_role(env).as_ref() == Some(caller) { return true; }
     false
 }

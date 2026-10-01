@@ -534,6 +534,28 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Initialises the contract with super-admin and optional independent admin roles at deployment (Issue #623).
+    pub fn initialize_roles(
+        env: Env,
+        admin: Address,
+        version: String,
+        fee_admin: Option<Address>,
+        emergency_admin: Option<Address>,
+        token_admin: Option<Address>,
+    ) -> Result<(), StreamError> {
+        Self::initialize(env.clone(), admin.clone(), version)?;
+        if let Some(fa) = fee_admin {
+            roles::set_fee_admin(&env, &fa);
+        }
+        if let Some(ea) = emergency_admin {
+            roles::set_emergency_admin(&env, &ea);
+        }
+        if let Some(ta) = token_admin {
+            roles::set_token_admin(&env, &ta);
+        }
+        Ok(())
+    }
+
     /// Returns the current super-admin address.
     pub fn get_admin(env: Env) -> Result<Address, StreamError> {
         read_admin(&env).ok_or(StreamError::NotInitialized)
@@ -712,6 +734,71 @@ impl SoroStreamContract {
     /// Returns the currently assigned `Analytics` role address, or `None`.
     pub fn get_analytics_role(env: Env) -> Option<Address> {
         roles::get_analytics_role(&env)
+    }
+
+    /// Assigns the `TokenAdmin` role to `assignee` (Issue #623).
+    pub fn assign_token_admin(env: Env, admin: Address, assignee: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::set_token_admin(&env, &assignee);
+        let ts = env.ledger().timestamp();
+        events::role_assigned(&env, &String::from_str(&env, "TokenAdmin"), &assignee, &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "assign_token_admin"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Revokes the `TokenAdmin` role.
+    pub fn revoke_token_admin(env: Env, admin: Address) -> Result<(), StreamError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(StreamError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(StreamError::NotAuthorized);
+        }
+        roles::revoke_token_admin(&env);
+        let ts = env.ledger().timestamp();
+        events::role_revoked(&env, &String::from_str(&env, "TokenAdmin"), &admin);
+        let entry = AuditEntry {
+            instruction: String::from_str(&env, "revoke_token_admin"),
+            admin: admin.clone(),
+            timestamp: ts,
+            params: String::from_str(&env, ""),
+        };
+        append_audit_entry(&env, &entry);
+        Ok(())
+    }
+
+    /// Returns the currently assigned `TokenAdmin` address, or `None`.
+    pub fn get_token_admin(env: Env) -> Option<Address> {
+        roles::get_token_admin(&env)
+    }
+
+    pub fn set_fee_admin(env: Env, admin: Address, fee_admin: Address) -> Result<(), StreamError> {
+        Self::assign_fee_manager(env, admin, fee_admin)
+    }
+
+    pub fn set_emergency_admin(env: Env, admin: Address, emergency_admin: Address) -> Result<(), StreamError> {
+        Self::assign_emergency_pause_role(env, admin, emergency_admin)
+    }
+
+    pub fn set_token_admin(env: Env, admin: Address, token_admin: Address) -> Result<(), StreamError> {
+        Self::assign_token_admin(env, admin, token_admin)
+    }
+
+    pub fn get_fee_admin(env: Env) -> Option<Address> {
+        roles::get_fee_admin(&env)
+    }
+
+    pub fn get_emergency_admin(env: Env) -> Option<Address> {
+        roles::get_emergency_admin(&env)
     }
 
     /// Returns `true` when `caller` holds any recognised admin role.
