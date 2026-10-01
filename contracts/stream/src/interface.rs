@@ -433,6 +433,8 @@ pub trait SoroStreamInterface {
     fn set_delegate(env: Env, sender: Address, stream_id: u64, delegate: Address) -> Result<(), StreamError>;
     fn revoke_delegate(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError>;
     fn get_delegate(env: Env, stream_id: u64) -> Option<Address>;
+    fn delegate_stream(env: Env, stream_id: u64, delegate_address: Address) -> Result<(), StreamError>;
+    fn get_recipient_delegate(env: Env, stream_id: u64) -> Option<Address>;
 
     /// Sets the sliding-window size for the per-sender rate limit, in **ledgers**.
     /// Default: 720 ledgers (~1 hour at 5 s/ledger). Only admin may call this.

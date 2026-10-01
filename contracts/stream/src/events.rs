@@ -536,6 +536,15 @@ pub fn delegate_revoked(env: &Env, stream_id: u64, sender: &Address) {
         (sender.clone(), nonce),
     );
 }
+
+/// Emitted when a recipient delegates withdrawal rights to an address.
+pub fn stream_delegated(env: &Env, stream_id: u64, recipient: &Address, delegate: &Address) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    env.events().publish(
+        (Symbol::new(env, "StreamDelegated"), stream_id),
+        (recipient.clone(), delegate.clone(), nonce),
+    );
+}
 /// Emitted when fees are swept from the contract.
 pub fn fee_swept(env: &Env, token: &Address, amount: i128, destination: &Address) {
     env.events().publish(
