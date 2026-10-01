@@ -587,8 +587,23 @@ pub fn get_treasury(env: &Env) -> Option<Address> {
     env.storage().instance().get(&TREASURY_KEY)
 }
 
+pub fn is_zero_address(env: &Env, address: &Address) -> bool {
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+    if address == &zero_account {
+        return true;
+    }
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"));
+    if address == &zero_contract {
+        return true;
+    }
+    false
+}
+
 /// Sets the treasury address for protocol fees.
 pub fn set_treasury(env: &Env, treasury: &Address) {
+    if is_zero_address(env, treasury) {
+        panic!("InvalidTreasuryAddress");
+    }
     env.storage().instance().set(&TREASURY_KEY, treasury);
 }
 

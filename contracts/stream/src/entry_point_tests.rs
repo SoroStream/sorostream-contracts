@@ -390,6 +390,19 @@ fn test_set_treasury_address_non_admin() {
     assert!(should_fail, "Non-admin should not set treasury");
 }
 
+#[test]
+#[should_panic(expected = "InvalidTreasuryAddress")]
+fn test_set_treasury_zero_address_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(SoroStreamContract, ());
+    let admin = Address::generate(&env);
+    let c = SoroStreamContractClient::new(&env, &contract_id);
+    c.initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+    c.set_treasury_address(&zero_addr);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Query Operations
 // ─────────────────────────────────────────────────────────────────────────────
