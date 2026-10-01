@@ -42,6 +42,24 @@ fn balance_key(env: &Env, token: &Address) -> (Symbol, Address) {
     (Symbol::new(env, "balance"), token.clone())
 }
 
+fn is_zero_address(env: &Env, address: &Address) -> bool {
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+    if address == &zero_account {
+        return true;
+    }
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"));
+    if address == &zero_contract {
+        return true;
+    }
+    false
+}
+
+fn validate_treasury_address(env: &Env, address: &Address) {
+    if is_zero_address(env, address) {
+        panic!("InvalidTreasuryAddress");
+    }
+}
+
 #[contract]
 pub struct TreasuryContract;
 
@@ -49,6 +67,7 @@ pub struct TreasuryContract;
 impl TreasuryContract {
     /// Initialises the treasury with its admin. May only be called once.
     pub fn initialize(env: Env, admin: Address) {
+        validate_treasury_address(&env, &admin);
         if read_admin(&env).is_some() {
             panic!("treasury already initialized");
         }
@@ -67,6 +86,7 @@ impl TreasuryContract {
     /// The transfer only takes effect once `new_admin` calls `accept_admin`.
     pub fn propose_admin(env: Env, new_admin: Address) {
         check_admin(&env);
+        validate_treasury_address(&env, &new_admin);
         env.storage()
             .instance()
             .set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
@@ -79,6 +99,7 @@ impl TreasuryContract {
     /// Accepts the pending admin role. Must be called by the pending admin itself.
     pub fn accept_admin(env: Env, accepted_by: Address) {
         accepted_by.require_auth();
+        validate_treasury_address(&env, &accepted_by);
         let pending = read_pending_admin(&env)
             .expect("no pending admin transfer");
         if accepted_by != pending {
@@ -99,9 +120,19 @@ impl TreasuryContract {
     /// Immediately transfers the admin role. Only the current admin may call this.
     pub fn set_admin(env: Env, new_admin: Address) {
         check_admin(&env);
+        validate_treasury_address(&env, &new_admin);
         env.storage()
             .instance()
             .set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+    }
+
+    /// Sets or updates the treasury address. Rejects zero address.
+    pub fn set_treasury(env: Env, treasury: Address) {
+        check_admin(&env);
+        validate_treasury_address(&env, &treasury);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "treasury"), &treasury);
     }
 
     /// Credits `amount` of `token` to the treasury's internal accounting balance.
@@ -392,4 +423,26 @@ mod test {
         assert_eq!(user_balance, 10_000);
         assert_eq!(c.get_balance(&t.token_id), 0);
     }
+
+    #[test]
+    #[should_panic(expected = "InvalidTreasuryAddress")]
+    fn test_initialize_zero_address_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let treasury_id = env.register(TreasuryContract, ());
+        let c = TreasuryContractClient::new(&env, &treasury_id);
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+        c.initialize(&zero_addr);
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidTreasuryAddress")]
+    fn test_set_treasury_zero_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&t.env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+        c.set_treasury(&zero_addr);
+    }
 }
+

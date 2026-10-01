@@ -33,7 +33,7 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
-#[cfg(test)] mod issue_628_tests;
+#[cfg(test)] mod issue_627_tests;
 #[cfg(test)] mod issue_523_tests;
 #[cfg(test)] mod issue_521_tests;
 #[cfg(test)] mod issue_402_tests;
@@ -66,7 +66,8 @@ use storage::{
     decrement_token_stream_count, derive_stream_id,
     drain_fees_collected, effective_sender_limit, extend_instance_ttl,
     get_active_stream_count, get_batch_nonce, get_creation_fee_xlm,
-    get_delegate,    get_expiry_notification_emitted, set_expiry_notification_emitted,
+    get_delegate, get_recipient_delegate, set_recipient_delegate, remove_recipient_delegate,
+    get_expiry_notification_emitted, set_expiry_notification_emitted,
     get_expiry_warning_emitted, get_expiry_warning_window,
     get_federation_address, get_max_deposit_per_token,
     get_fees_collected, get_global_stream_at, get_global_stream_count,
@@ -3664,7 +3665,10 @@ impl SoroStreamContract {
 
         let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
 
-        if stream.recipient != recipient {
+        let is_recipient = stream.recipient == recipient;
+        let is_recipient_delegate = storage::get_recipient_delegate(&env, stream_id).as_ref() == Some(&recipient);
+
+        if !is_recipient && !is_recipient_delegate {
             return Err(StreamError::NotRecipient);
         }
         if stream.status == StreamStatus::PendingApproval || stream.status == StreamStatus::EscrowHold {
@@ -6201,6 +6205,24 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Delegates withdrawal rights to a proxy/delegate address (Issue #627).
+    ///
+    /// Only the stream recipient may call this. The delegate may subsequently
+    /// call `withdraw` on behalf of the recipient.
+    /// Emits `StreamDelegated { stream_id, recipient, delegate }`.
+    pub fn delegate_stream(env: Env, stream_id: u64, delegate_address: Address) -> Result<(), StreamError> {
+        let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        stream.recipient.require_auth();
+        set_recipient_delegate(&env, stream_id, &delegate_address);
+        events::stream_delegated(&env, stream_id, &stream.recipient, &delegate_address);
+        Ok(())
+    }
+
+    /// Returns the authorized recipient delegate for a stream, if any.
+    pub fn get_recipient_delegate(env: Env, stream_id: u64) -> Option<Address> {
+        get_recipient_delegate(&env, stream_id)
+    }
+
     /// Releases the holdback escrow amount to the recipient.
     ///
     /// Only the stream sender (or their authorised delegate) may call this.
@@ -7843,6 +7865,11 @@ impl SoroStreamContract {
     pub fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError> {
         set_treasury(&env, &treasury);
         Ok(())
+    }
+
+    /// Sets the treasury address to receive protocol fees (alias for set_treasury_address).
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), StreamError> {
+        Self::set_treasury_address(env, treasury)
     }
 
     /// Sets a per-token fee tier (in basis points).

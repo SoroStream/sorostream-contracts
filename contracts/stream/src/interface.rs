@@ -312,6 +312,7 @@ pub trait SoroStreamInterface {
     /// or `None` when no change is waiting out the 48-hour timelock.
     fn get_pending_fee_update(env: Env) -> Option<(u32, u64)>;
     fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError>;
+    fn set_treasury(env: Env, treasury: Address) -> Result<(), StreamError>;
     fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>);
     fn get_stats(env: Env) -> Stats;
     fn get_protocol_stats(env: Env) -> ProtocolStats;
@@ -433,6 +434,8 @@ pub trait SoroStreamInterface {
     fn set_delegate(env: Env, sender: Address, stream_id: u64, delegate: Address) -> Result<(), StreamError>;
     fn revoke_delegate(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError>;
     fn get_delegate(env: Env, stream_id: u64) -> Option<Address>;
+    fn delegate_stream(env: Env, stream_id: u64, delegate_address: Address) -> Result<(), StreamError>;
+    fn get_recipient_delegate(env: Env, stream_id: u64) -> Option<Address>;
 
     /// Sets the sliding-window size for the per-sender rate limit, in **ledgers**.
     /// Default: 720 ledgers (~1 hour at 5 s/ledger). Only admin may call this.
