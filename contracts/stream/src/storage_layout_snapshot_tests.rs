@@ -86,6 +86,7 @@ fn snap_params(nonce: u64) -> crate::types::CreateStreamParams {
         requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
     }
 }
 

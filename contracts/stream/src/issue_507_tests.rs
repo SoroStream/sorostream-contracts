@@ -64,6 +64,8 @@ fn default_params() -> crate::types::CreateStreamParams {
         requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
+        metadata_uri: None,
     }
 }
 
@@ -167,6 +169,8 @@ fn test_issue_507_completed_streams_reduce_storage_footprint() {
                 requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
+        metadata_uri: None,
     },
         );
 

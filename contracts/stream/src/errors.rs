@@ -1,6 +1,18 @@
 use soroban_sdk::contracterror;
 
-/// Custom errors for the SoroStream contract (≤50 variants, Soroban XDR limit).
+/// Custom errors for the SoroStream contract.
+///
+/// Hard-capped at 50 variants — Soroban's `#[contracterror]` macro encodes
+/// this enum's cases into `ScSpecUdtErrorEnumV0.cases`, a
+/// `VecM<ScSpecUdtErrorEnumCaseV0, 50>` (see `stellar-xdr`). Exceeding 50
+/// makes the `#[contracterror]` macro itself panic at compile time with
+/// `LengthExceedsMax`, failing the whole crate's build — not a soft lint.
+/// Before adding a new variant here, either free a slot by folding a
+/// low-traffic existing one into a semantically close neighbor (see the
+/// consolidation below — a prerequisite fix for #402/#617/#620/#661, none
+/// of which could be verified while this enum already exceeded 50), or
+/// confirm the count is still under 50 with
+/// `grep -cE '^\s+\w+ = [0-9]+,?$' errors.rs`.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -42,7 +54,9 @@ pub enum StreamError {
     IDCollision = 47,
     /// The temporary stream metadata blob exceeds 256 bytes.
     MetadataTooLong = 30,
-    /// Also returned when the next withdrawal-step boundary has not been reached.
+    /// Also returned when a withdrawal-step-gated stream's next unclaimed
+    /// step boundary has not yet been reached (prerequisite 50-variant-cap
+    /// cleanup: folded in the former, separate `NextStepNotReached`).
     AmountBelowMinimum = 49,
     InvalidExpiryWindow = 50,
     NewSenderStreamCapExceeded = 51,

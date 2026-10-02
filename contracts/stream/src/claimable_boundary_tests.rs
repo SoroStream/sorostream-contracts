@@ -78,6 +78,7 @@ fn bare_params(nonce: u64) -> CreateStreamParams {
         requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
     }
 }
 
@@ -290,7 +291,7 @@ fn boundary_paused_stream_claimable_does_not_grow_during_pause() {
     // ── Pause at t=200 ───────────────────────────────────────────────────────
     let pause_at: u64 = 200;
     ctx.env.ledger().set_timestamp(pause_at);
-    c.pause_stream(&stream_id, &ctx.sender);
+    c.pause_stream(&stream_id, &ctx.sender, &None);
 
     let claimable_at_pause = c.get_claimable(&stream_id);
     let expected_at_pause = flow_rate * pause_at as i128; // 2_000
@@ -486,14 +487,14 @@ fn boundary_repeated_pause_resume_claimable_stays_correct() {
 
     // Pause #1 at t=100 (earned 1_000), resume at t=200 (pause duration=100).
     ctx.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &ctx.sender);
+    c.pause_stream(&stream_id, &ctx.sender, &None);
     ctx.env.ledger().set_timestamp(200);
     c.resume_stream(&stream_id, &ctx.sender);
 
     // Pause #2 at t=300 (active for 100 s since resume → earned another 1_000),
     // resume at t=400.
     ctx.env.ledger().set_timestamp(300);
-    c.pause_stream(&stream_id, &ctx.sender);
+    c.pause_stream(&stream_id, &ctx.sender, &None);
     ctx.env.ledger().set_timestamp(400);
     c.resume_stream(&stream_id, &ctx.sender);
 

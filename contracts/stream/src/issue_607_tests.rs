@@ -65,6 +65,7 @@ fn default_params() -> crate::types::CreateStreamParams {
         requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
     }
 }
 

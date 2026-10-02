@@ -559,6 +559,15 @@ pub fn delegate_revoked(env: &Env, stream_id: u64, sender: &Address) {
         (sender.clone(), nonce),
     );
 }
+
+/// Emitted when a recipient delegates withdrawal rights to an address.
+pub fn stream_delegated(env: &Env, stream_id: u64, recipient: &Address, delegate: &Address) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    env.events().publish(
+        (Symbol::new(env, "StreamDelegated"), stream_id),
+        (recipient.clone(), delegate.clone(), nonce),
+    );
+}
 /// Emitted when fees are swept from the contract.
 pub fn fee_swept(env: &Env, token: &Address, amount: i128, destination: &Address) {
     env.events().publish(
@@ -1307,5 +1316,34 @@ pub fn stream_cloned(
             duration,
             nonce,
         ),
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Issue #641: StreamExpiryNotification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emitted once per stream when the stream is within 10 ledgers of its
+/// `end_time`, allowing off-chain systems to prepare auto-renewal or archival.
+///
+/// This event is distinct from `StreamExpiryWarning`:
+/// - `StreamExpiryWarning` uses a configurable admin window (default 17 280 ledgers).
+/// - `StreamExpiryNotification` fires at a fixed threshold of **10 ledgers** and
+///   is intended for time-critical off-chain listeners (e.g. auto-renewal bots).
+///
+/// Emitted at most once per stream (guarded by the `exp_notif` storage flag).
+///
+/// # Event Data
+/// - `stream_id`: The stream that is imminently expiring
+/// - `ledgers_until_expiry`: Ledger distance to `end_time` at the time of emission
+pub fn stream_expiry_notification(
+    env: &Env,
+    stream_id: u64,
+    ledgers_until_expiry: u32,
+) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    env.events().publish(
+        (Symbol::new(env, "StreamExpiryNotif"), stream_id),
+        (ledgers_until_expiry, nonce),
     );
 }

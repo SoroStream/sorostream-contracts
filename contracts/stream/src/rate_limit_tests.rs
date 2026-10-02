@@ -74,6 +74,8 @@ fn rl_params(nonce: u64) -> CreateStreamParams {
         requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
+        metadata_uri: None,
     }
 }
 

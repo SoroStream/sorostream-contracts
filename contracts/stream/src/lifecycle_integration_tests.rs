@@ -74,6 +74,7 @@ fn bare_params(nonce: u64) -> CreateStreamParams {
         requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
     }
 }
 

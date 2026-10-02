@@ -80,6 +80,8 @@ fn test_issue_505_storage_optimized_boolean_fields() {
             requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
+        metadata_uri: None,
     },
     );
 
@@ -122,6 +124,8 @@ fn test_issue_505_storage_optimized_type_conversions() {
             requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
+        metadata_uri: None,
     },
     );
 
@@ -160,6 +164,8 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
+        metadata_uri: None,
     },
     );
 
@@ -188,6 +194,8 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
+        metadata_uri: None,
     },
     );
 

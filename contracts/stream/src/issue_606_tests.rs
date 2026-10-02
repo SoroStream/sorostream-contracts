@@ -63,6 +63,7 @@ fn default_params() -> crate::types::CreateStreamParams {
         requires_recipient_approval: false,
 
         priority: None,
+        tags: None,
     }
 }
 
@@ -88,7 +89,7 @@ fn test_606_top_up_on_paused_stream_is_rejected() {
     );
 
     // Pause the stream
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // top_up must now fail with StreamPaused
     let result = c.try_top_up(&stream_id, &t.sender, &t.token_id, &500i128);

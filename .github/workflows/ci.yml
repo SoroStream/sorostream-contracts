@@ -81,6 +81,11 @@ jobs:
           PROPTEST_CASES: 1000
         run: cargo test proptest_tests -- --nocapture
         timeout-minutes: 10
+      - name: Fee conservation properties (10,000 cases)
+        env:
+          PROPTEST_CASES: 10000
+        run: cargo test -p sorostream-stream --lib issue_647_tests -- --nocapture
+        timeout-minutes: 20
       - name: feat/39 create-stream fuzz (10,000 cases, fixed seed)
         env:
           PROPTEST_CASES: 10000
