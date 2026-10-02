@@ -18,7 +18,7 @@ fn setup_env() -> (Env, Address, SoroStreamContractClient<'static>) {
     let contract_id = env.register(SoroStreamContract, ());
     let admin = Address::generate(&env);
     let client = SoroStreamContractClient::new(&env, &contract_id);
-    client.initialize(&admin);
+    client.initialize(&admin, &soroban_sdk::String::from_str(&env, "0.2.0"));
     client.set_min_duration(&admin, &0u64);
     (env, admin, client)
 }
@@ -31,7 +31,7 @@ fn mint(env: &Env, token_id: &Address, to: &Address, amount: i128) {
     StellarAssetClient::new(env, token_id).mint(to, &amount);
 }
 
-fn make_params(nonce: u64, priority: Option<u8>) -> crate::types::CreateStreamParams {
+fn make_params(nonce: u64, priority: Option<u32>) -> crate::types::CreateStreamParams {
     crate::types::CreateStreamParams {
         cliff_seconds: 0,
         nonce,
@@ -68,7 +68,7 @@ fn test_default_priority_is_zero() {
         &make_params(1, None),
     );
 
-    assert_eq!(client.get_stream_priority(&stream_id), 0u8);
+    assert_eq!(client.get_stream_priority(&stream_id), 0u32);
 }
 
 /// get_stream_priority returns the value supplied at creation.
@@ -87,10 +87,10 @@ fn test_priority_stored_and_retrieved() {
         &10_000,
         &1_000,
         &false,
-        &make_params(2, Some(200u8)),
+        &make_params(2, Some(200u32)),
     );
 
-    assert_eq!(client.get_stream_priority(&stream_id), 200u8);
+    assert_eq!(client.get_stream_priority(&stream_id), 200u32);
 }
 
 /// batch_withdraw_by_priority processes high-priority streams before
@@ -112,7 +112,7 @@ fn test_priority_streams_processed_before_non_priority() {
         &10_000,
         &1_000,
         &false,
-        &make_params(10, Some(200u8)),
+        &make_params(10, Some(200u32)),
     );
 
     let low_id = client.create_stream(
@@ -122,7 +122,7 @@ fn test_priority_streams_processed_before_non_priority() {
         &10_000,
         &1_000,
         &false,
-        &make_params(11, Some(10u8)),
+        &make_params(11, Some(10u32)),
     );
 
     // Advance time so both streams have claimable funds.
@@ -138,6 +138,6 @@ fn test_priority_streams_processed_before_non_priority() {
     assert_eq!(successes, 2u32, "both streams should be withdrawn");
 
     // Confirm get_stream_priority returns expected values.
-    assert_eq!(client.get_stream_priority(&high_id), 200u8);
-    assert_eq!(client.get_stream_priority(&low_id), 10u8);
+    assert_eq!(client.get_stream_priority(&high_id), 200u32);
+    assert_eq!(client.get_stream_priority(&low_id), 10u32);
 }

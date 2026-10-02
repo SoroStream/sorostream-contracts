@@ -439,6 +439,29 @@ pub fn stream_clawed_back(
     );
 }
 
+/// Emitted when a sender earns reward points from streamed value.
+pub fn reward_points_earned(env: &Env, sender: &Address, earned: i128, total: i128) {
+    env.events().publish(
+        (Symbol::new(env, "RewardPointsEarned"), sender.clone()),
+        (earned, total),
+    );
+}
+
+/// Emitted when collateral yield is claimed for a stream.
+pub fn collateral_yield_claimed(
+    env: &Env,
+    stream_id: u64,
+    vault: &Address,
+    sender_yield: i128,
+    recipient_yield: i128,
+) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    env.events().publish(
+        (Symbol::new(env, "CollateralYieldClaimed"), stream_id),
+        (vault.clone(), sender_yield, recipient_yield, nonce),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Step-vesting tranche events
 // ---------------------------------------------------------------------------

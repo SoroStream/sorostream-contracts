@@ -98,7 +98,7 @@ pub trait SoroStreamInterface {
 
     /// Creates a stream whose zero flow rate is unlocked one milestone at a time
     /// by the configured oracle or multisig address.
-    fn create_stream_with_approval_milestones(
+    fn create_stream_with_approval(
         env: Env,
         sender: Address,
         recipient: Address,

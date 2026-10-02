@@ -129,7 +129,7 @@ fn approval_milestone_stream_unlocks_one_tranche_per_approval() {
     milestones.push_back((600i128, BytesN::from_array(&ie.env, &[2u8; 32])));
 
     let stream_id = c
-        .create_stream_with_approval_milestones(
+        .create_stream_with_approval(
             &ie.sender,
             &ie.recipient,
             &ie.token,

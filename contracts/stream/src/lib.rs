@@ -46,8 +46,9 @@ const PROTOCOL_FEE_CHANGE_DELAY: u64 = 7 * 24 * 60 * 60;
 use storage::{
     assert_storage_version,
     write_storage_version,
+    write_fee_discount,
     CURRENT_STORAGE_VERSION,
-    accumulate_fees, add_fee_exempt, add_to_blocklist,
+    accumulate_fees, accrue_reward_points, add_fee_exempt, add_to_blocklist,
     append_audit_entry, check_admin, cleanup_dual_stream_storage,
     clear_pending_fee_proposal, clear_reentrancy_lock, decrement_active_stream_count,
     decrement_token_stream_count, derive_stream_id,
@@ -74,7 +75,7 @@ use storage::{
     is_whitelist_enabled, load_stream, load_tranches,
     add_token_to_whitelist, set_token_whitelist_enabled,
     mark_nonce_used, MAX_PAUSE_DURATION, nonce_used,
-    read_admin, read_applied_migrations, read_audit_log,
+    read_admin, read_applied_migrations, read_audit_log, read_fee_discount,
     read_stream_transitions,
     read_governance, read_guardian, read_max_duration,
     read_max_future_start_offset, read_min_duration, read_pending_fee_proposal,
@@ -1225,6 +1226,9 @@ impl SoroStreamContract {
         if amount <= 0 {
             return Err(StreamError::ZeroAmount);
         }
+        if params.priority.unwrap_or(0) > u8::MAX as u32 {
+            return Err(StreamError::InvalidPriority);
+        }
         // holdback must be non-negative and strictly less than total amount (0 = no holdback)
         if options.holdback_amount < 0 || options.holdback_amount >= amount {
             return Err(StreamError::ZeroAmount);
@@ -1472,7 +1476,7 @@ impl SoroStreamContract {
                 on_complete_contract,
                 on_complete_function,
                 comment: comment.clone(),
-                collateral_vault: options.collateral_vault.clone(),
+                collateral_vault: None,
             },
         };
 
@@ -2503,7 +2507,7 @@ impl SoroStreamContract {
     /// Creates a zero-flow stream whose milestones are released by an oracle
     /// or multisig address, one approval per milestone.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_stream_with_approval_milestones(
+    pub fn create_stream_with_approval(
         env: Env,
         sender: Address,
         recipient: Address,
@@ -4866,6 +4870,7 @@ impl SoroStreamContract {
             let child = Stream {
                 id: child_id,
                 sender: sender.clone(),
+                sponsor: stream.sponsor.clone(),
                 recipient: recipient.clone(),
                 token: stream.token.clone(),
                 deposit: amount,
@@ -6236,7 +6241,7 @@ impl SoroStreamContract {
     ///
     /// Streams with no explicit priority set return 0 (lowest).
     /// Used by `batch_withdraw_by_priority` to order processing (issue #642).
-    pub fn get_stream_priority(env: Env, stream_id: u64) -> u8 {
+    pub fn get_stream_priority(env: Env, stream_id: u64) -> u32 {
         get_stream_priority(&env, stream_id)
     }
 
@@ -6260,28 +6265,34 @@ impl SoroStreamContract {
             return Ok(0);
         }
 
-        // Collect (priority, stream_id) pairs for streams belonging to recipient.
-        let mut pairs: Vec<(u8, u64)> = Vec::new(&env);
+        // Keep priorities and IDs in parallel; Soroban Vec elements must be contract types.
+        let mut priorities: Vec<u32> = Vec::new(&env);
+        let mut recipient_stream_ids: Vec<u64> = Vec::new(&env);
         for id in stream_ids.iter() {
             if let Some(s) = load_stream(&env, id) {
                 if s.recipient == recipient {
                     let prio = get_stream_priority(&env, id);
-                    pairs.push_back((prio, id));
+                    priorities.push_back(prio);
+                    recipient_stream_ids.push_back(id);
                 }
             }
         }
 
         // Sort descending by priority using a simple insertion sort.
         // The batch size is expected to be small (< 100), so O(n²) is acceptable.
-        let len = pairs.len();
+        let len = priorities.len();
         for i in 1..len {
             let mut j = i;
             while j > 0 {
-                let (prio_j, id_j) = pairs.get(j).unwrap();
-                let (prio_prev, id_prev) = pairs.get(j - 1).unwrap();
+                let prio_j = priorities.get(j).unwrap();
+                let prio_prev = priorities.get(j - 1).unwrap();
                 if prio_j > prio_prev {
-                    pairs.set(j - 1, (prio_j, id_j));
-                    pairs.set(j, (prio_prev, id_prev));
+                    let id_j = recipient_stream_ids.get(j).unwrap();
+                    let id_prev = recipient_stream_ids.get(j - 1).unwrap();
+                    priorities.set(j - 1, prio_j);
+                    priorities.set(j, prio_prev);
+                    recipient_stream_ids.set(j - 1, id_j);
+                    recipient_stream_ids.set(j, id_prev);
                     j -= 1;
                 } else {
                     break;
@@ -6291,7 +6302,7 @@ impl SoroStreamContract {
 
         // Execute withdrawals in priority order.
         let mut successes: u32 = 0;
-        for (_prio, id) in pairs.iter() {
+        for id in recipient_stream_ids.iter() {
             // Attempt withdrawal; skip streams that fail (e.g. nothing claimable).
             if Self::withdraw(env.clone(), id, recipient.clone()).is_ok() {
                 successes = successes.saturating_add(1);
@@ -6747,14 +6758,9 @@ impl SoroStreamContract {
         }
         recipient.require_auth();
 
-        let invoker = env.invoker();
-        if recipient != invoker {
-            return Err(StreamError::NotRecipient);
-        }
-
         for stream_id in stream_ids.iter() {
             let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
-            if stream.recipient != invoker {
+            if stream.recipient != recipient {
                 return Err(StreamError::NotRecipient);
             }
         }

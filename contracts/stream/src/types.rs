@@ -654,7 +654,7 @@ pub struct CreateStreamParams {
     pub requires_recipient_approval: bool,
     /// Optional priority level (0-255). Higher values are processed first in
     /// batch withdrawal operations. `None` is treated as priority 0 (lowest).
-    pub priority: Option<u8>,
+    pub priority: Option<u32>,
 }
 
 impl CreateStreamParams {

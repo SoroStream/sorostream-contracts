@@ -12,8 +12,6 @@ pub enum StreamError {
     ZeroAmount = 5,
     InvalidDuration = 6,
     InvalidCliff = 8,
-    /// The temporary stream metadata blob exceeds 256 bytes.
-    MetadataTooLong = 30,
     AlreadyInitialized = 9,
     NotInitialized = 10,
     DuplicateStream = 11,
@@ -42,17 +40,13 @@ pub enum StreamError {
     DurationExceedsMax = 44,
     StartTimeTooFar = 46,
     IDCollision = 47,
-    NextStepNotReached = 48,
+    /// The temporary stream metadata blob exceeds 256 bytes.
+    MetadataTooLong = 30,
+    /// Also returned when the next withdrawal-step boundary has not been reached.
     AmountBelowMinimum = 49,
     InvalidExpiryWindow = 50,
     NewSenderStreamCapExceeded = 51,
-    InvalidRedirectTarget = 52,
     CircularRedirect = 53,
-    RedirectRecipientMismatch = 54,
-    /// Dual stream requires both token addresses to be distinct.
-    DuplicateTokenInDualStream = 55,
-    /// Operation requires a single-token stream but the stream is dual-token.
-    IsDualStream = 57,
     /// `transfer_recipient` was called on a stream marked as non-transferable at creation.
     StreamNonTransferable = 58,
     /// `withdraw` was called on a stream still in `PendingApproval` state.
@@ -69,6 +63,33 @@ pub enum StreamError {
     CommentTooLong = 65,
     /// Sender has not staked the required minimum collateral for this token.
     InsufficientStake = 66,
-    /// Sender has reached the configured per-sender active stream cap.
-    SenderStreamCapReached = 67,
+    /// Consolidated validation error for invalid parameters and operation modes.
+    InvalidParameter = 69,
+    /// `create_stream` was called with a zero or otherwise unusable duration.
+    MinimumDurationNotMet = 68,
+}
+
+#[allow(non_upper_case_globals)]
+impl StreamError {
+    pub const NextStepNotReached: Self = Self::AmountBelowMinimum;
+    pub const InvalidRedirectTarget: Self = Self::InvalidParameter;
+    pub const RedirectRecipientMismatch: Self = Self::InvalidParameter;
+    pub const DuplicateTokenInDualStream: Self = Self::InvalidParameter;
+    pub const IsDualStream: Self = Self::InvalidParameter;
+    pub const SenderStreamCapReached: Self = Self::NewSenderStreamCapExceeded;
+    pub const InvalidPriority: Self = Self::InvalidParameter;
+    pub const StorageVersionMismatch: Self = Self::InvalidParameter;
+    pub const BatchSizeTooLarge: Self = Self::BatchLengthMismatch;
+    pub const InvalidRecipient: Self = Self::NotRecipient;
+    pub const EndTimeInPast: Self = Self::InvalidEndTime;
+    pub const InvalidFeeRate: Self = Self::InvalidParameter;
+    pub const NotSubscription: Self = Self::InvalidParameter;
+    pub const OutsideWithdrawWindow: Self = Self::StreamNotActive;
+    pub const RecipientBalanceOverflow: Self = Self::Overflow;
+    pub const SenderNotWhitelisted: Self = Self::NotAuthorized;
+    pub const StreamAlreadyCancelled: Self = Self::StreamNotActive;
+    pub const StreamNotExpired: Self = Self::StreamNotComplete;
+    pub const TagTooLong: Self = Self::InvalidParameter;
+    pub const TooManyRecipients: Self = Self::InvalidParameter;
+    pub const TooManyTags: Self = Self::InvalidParameter;
 }
