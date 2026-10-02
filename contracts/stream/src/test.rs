@@ -353,6 +353,7 @@ fn test_recurrence_alias_sets_renew_count() {
             min_withdrawal_amount: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
     },
     );

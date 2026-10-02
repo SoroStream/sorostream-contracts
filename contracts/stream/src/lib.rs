@@ -35,6 +35,11 @@ pub use roles::AdminRole;
 #[cfg(test)] mod issue_505_tests;
 #[cfg(test)] mod issue_506_tests;
 #[cfg(test)] mod issue_507_tests;
+#[cfg(test)] mod issue_6_tests;    // feat/6-resume-paused-at-reset
+#[cfg(test)] mod issue_39_tests;   // feat/39-create-stream-fuzz
+#[cfg(test)] mod issue_37_tests;   // feat/37-sender-stream-cap
+#[cfg(test)] mod duplicate_id_tests; // identical-param stream ID collision
+#[cfg(test)] mod stream_priority_tests; // feat/45-priority-withdrawal-queue (issue #642)
 #[cfg(test)] mod issue_627_tests;
 #[cfg(test)] mod issue_523_tests;
 #[cfg(test)] mod issue_521_tests;
@@ -62,8 +67,9 @@ const FEE_UPDATE_TIMELOCK_SECONDS: u64 = 48 * 60 * 60;
 use storage::{
     assert_storage_version,
     write_storage_version,
+    write_fee_discount,
     CURRENT_STORAGE_VERSION,
-    accumulate_fees, add_fee_exempt, add_to_blocklist,
+    accumulate_fees, accrue_reward_points, add_fee_exempt, add_to_blocklist,
     append_audit_entry, check_admin, cleanup_dual_stream_storage,
     clear_pending_fee_proposal, clear_reentrancy_lock, decrement_active_stream_count,
     decrement_token_stream_count, derive_stream_id,
@@ -92,7 +98,7 @@ use storage::{
     is_whitelist_enabled, load_stream, load_tranches,
     add_token_to_whitelist, set_token_whitelist_enabled,
     mark_nonce_used, MAX_PAUSE_DURATION, nonce_used,
-    read_admin, read_applied_migrations, read_audit_log,
+    read_admin, read_applied_migrations, read_audit_log, read_fee_discount,
     read_stream_transitions,
     read_governance, read_guardian, read_max_duration,
     read_max_future_start_offset, read_min_duration, read_pending_fee_proposal,
@@ -125,6 +131,8 @@ use storage::{
     // feat/37 — per-sender active stream cap
     get_sender_stream_cap, set_sender_stream_cap,
     get_sender_active_count, increment_sender_active_count, decrement_sender_active_count,
+    // feat/45 — stream priority (issue #642)
+    get_stream_priority, set_stream_priority,
     // feat/35 — multi-tag support (issue #635)
     get_stream_tags, set_stream_tags_storage, remove_stream_tags,
 };
@@ -1565,6 +1573,12 @@ impl SoroStreamContract {
         if nonce_used(&env, &sender, nonce) {
             return Err(StreamError::DuplicateStream);
         }
+        if amount <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+        if params.priority.unwrap_or(0) > u8::MAX as u32 {
+            return Err(StreamError::InvalidPriority);
+        }
         // ── Parameter-boundary validation (issue #522) ───────────────────────
         // XDR-decoded arguments are checked for semantic validity here, before
         // any business logic or token movement. Each failure returns a typed
@@ -1819,7 +1833,7 @@ impl SoroStreamContract {
                 on_complete_contract,
                 on_complete_function,
                 comment: comment.clone(),
-                collateral_vault: options.collateral_vault.clone(),
+                collateral_vault: None,
             },
         };
 
@@ -1830,6 +1844,12 @@ impl SoroStreamContract {
         if let Some(ref t) = tag {
             index_by_tag(&env, t, stream_id);
             set_stream_tag_storage(&env, stream_id, t);
+        }
+        // feat/45: store stream priority (issue #642)
+        if let Some(p) = params.priority {
+            if p > 0 {
+                set_stream_priority(&env, stream_id, p);
+            }
         }
         // feat/35: store multi-tags and index each one
         if let Some(ref ts) = tags {
@@ -1931,6 +1951,7 @@ impl SoroStreamContract {
                 sponsor: None,
                 requires_recipient_approval: false,
 
+        priority: None,
                 tags: None,
                 metadata_uri: None,
             },
@@ -2861,7 +2882,7 @@ impl SoroStreamContract {
     /// Creates a zero-flow stream whose milestones are released by an oracle
     /// or multisig address, one approval per milestone.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_stream_with_approval_milestones(
+    pub fn create_stream_with_approval(
         env: Env,
         sender: Address,
         recipient: Address,
@@ -5247,6 +5268,7 @@ impl SoroStreamContract {
             let child = Stream {
                 id: child_id,
                 sender: sender.clone(),
+                sponsor: stream.sponsor.clone(),
                 recipient: recipient.clone(),
                 token: stream.token.clone(),
                 deposit: amount,
@@ -5472,6 +5494,7 @@ impl SoroStreamContract {
                     sponsor: None,
                     requires_recipient_approval: false,
 
+        priority: None,
                 tags: None,
                 metadata_uri: stream.options.metadata_uri.clone(),
             },
@@ -6927,6 +6950,81 @@ impl SoroStreamContract {
         Ok(())
     }
 
+    /// Returns the priority level for a stream (0 = lowest, 255 = highest).
+    ///
+    /// Streams with no explicit priority set return 0 (lowest).
+    /// Used by `batch_withdraw_by_priority` to order processing (issue #642).
+    pub fn get_stream_priority(env: Env, stream_id: u64) -> u32 {
+        get_stream_priority(&env, stream_id)
+    }
+
+    /// Processes withdrawals for a batch of stream IDs, ordering them by
+    /// priority (highest first) before executing each withdrawal (issue #642).
+    ///
+    /// This ensures high-priority streams are processed before low-priority ones
+    /// during congestion — useful for payroll or time-sensitive streams.
+    ///
+    /// Only streams where `recipient` is the current stream recipient are
+    /// processed; others are silently skipped. Returns the number of successful
+    /// withdrawals performed.
+    pub fn batch_withdraw_by_priority(
+        env: Env,
+        recipient: Address,
+        stream_ids: Vec<u64>,
+    ) -> Result<u32, StreamError> {
+        recipient.require_auth();
+
+        if stream_ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Keep priorities and IDs in parallel; Soroban Vec elements must be contract types.
+        let mut priorities: Vec<u32> = Vec::new(&env);
+        let mut recipient_stream_ids: Vec<u64> = Vec::new(&env);
+        for id in stream_ids.iter() {
+            if let Some(s) = load_stream(&env, id) {
+                if s.recipient == recipient {
+                    let prio = get_stream_priority(&env, id);
+                    priorities.push_back(prio);
+                    recipient_stream_ids.push_back(id);
+                }
+            }
+        }
+
+        // Sort descending by priority using a simple insertion sort.
+        // The batch size is expected to be small (< 100), so O(n²) is acceptable.
+        let len = priorities.len();
+        for i in 1..len {
+            let mut j = i;
+            while j > 0 {
+                let prio_j = priorities.get(j).unwrap();
+                let prio_prev = priorities.get(j - 1).unwrap();
+                if prio_j > prio_prev {
+                    let id_j = recipient_stream_ids.get(j).unwrap();
+                    let id_prev = recipient_stream_ids.get(j - 1).unwrap();
+                    priorities.set(j - 1, prio_j);
+                    priorities.set(j, prio_prev);
+                    recipient_stream_ids.set(j - 1, id_j);
+                    recipient_stream_ids.set(j, id_prev);
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Execute withdrawals in priority order.
+        let mut successes: u32 = 0;
+        for id in recipient_stream_ids.iter() {
+            // Attempt withdrawal; skip streams that fail (e.g. nothing claimable).
+            if Self::withdraw(env.clone(), id, recipient.clone()).is_ok() {
+                successes = successes.saturating_add(1);
+            }
+        }
+
+        Ok(successes)
+    }
+
     /// Returns the multi-tag list for a stream (issue #635).
     ///
     /// Returns an empty Vec if no tags have been set.
@@ -7385,14 +7483,9 @@ impl SoroStreamContract {
         }
         recipient.require_auth();
 
-        let invoker = env.invoker();
-        if recipient != invoker {
-            return Err(StreamError::NotRecipient);
-        }
-
         for stream_id in stream_ids.iter() {
             let stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
-            if stream.recipient != invoker {
+            if stream.recipient != recipient {
                 return Err(StreamError::NotRecipient);
             }
         }

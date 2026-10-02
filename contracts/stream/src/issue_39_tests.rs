@@ -67,6 +67,7 @@ fn make_params(nonce: u64) -> crate::types::CreateStreamParams {
         sponsor: None,
         requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
     }
 }

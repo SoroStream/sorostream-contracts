@@ -79,6 +79,7 @@ fn test_issue_505_storage_optimized_boolean_fields() {
             sponsor: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },
@@ -122,6 +123,7 @@ fn test_issue_505_storage_optimized_type_conversions() {
             sponsor: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },
@@ -161,6 +163,7 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             sponsor: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },
@@ -190,6 +193,7 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             sponsor: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },

@@ -82,6 +82,95 @@ pub fn stream_exists(env: &Env, stream_id: u64) -> bool {
     env.storage().persistent().has(&stream_id)
 }
 
+pub const CURRENT_STORAGE_VERSION: u32 = 1;
+
+pub fn read_storage_version(env: &Env) -> Option<u32> {
+    env.storage().instance().get(&Symbol::new(env, VERSION_KEY))
+}
+
+pub fn write_storage_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, VERSION_KEY), &version);
+}
+
+pub fn assert_storage_version(env: &Env) -> Result<(), crate::errors::StreamError> {
+    if read_storage_version(env) == Some(CURRENT_STORAGE_VERSION) {
+        Ok(())
+    } else {
+        Err(crate::errors::StreamError::StorageVersionMismatch)
+    }
+}
+
+fn stream_transitions_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "str_hist"), stream_id)
+}
+
+pub fn read_stream_transitions(env: &Env, stream_id: u64) -> Vec<StreamTransition> {
+    env.storage()
+        .persistent()
+        .get(&stream_transitions_key(env, stream_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn append_stream_transition(env: &Env, stream_id: u64, transition: &StreamTransition) {
+    let key = stream_transitions_key(env, stream_id);
+    let mut transitions = read_stream_transitions(env, stream_id);
+    transitions.push_back(transition.clone());
+    while transitions.len() > 10 {
+        transitions.remove(0);
+    }
+    env.storage().persistent().set(&key, &transitions);
+}
+
+fn reward_points_key(env: &Env, sender: &Address) -> (Symbol, Address) {
+    (symbol_short!("rpoints"), sender.clone())
+}
+
+pub fn accrue_reward_points(env: &Env, sender: &Address, points: i128) -> i128 {
+    let key = reward_points_key(env, sender);
+    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+    let total = current.saturating_add(points);
+    env.storage().persistent().set(&key, &total);
+    total
+}
+
+fn fee_discount_key(env: &Env, sender: &Address) -> (Symbol, Address) {
+    (symbol_short!("feedisc"), sender.clone())
+}
+
+pub fn read_fee_discount(env: &Env, sender: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&fee_discount_key(env, sender))
+        .unwrap_or(0)
+}
+
+pub fn write_fee_discount(env: &Env, sender: &Address, discount_bps: u32) {
+    env.storage()
+        .persistent()
+        .set(&fee_discount_key(env, sender), &discount_bps);
+}
+
+pub fn write_cleanup_tombstone(
+    env: &Env,
+    stream_id: u64,
+    status_discriminant: u32,
+    end_time: u64,
+) {
+    let status_key = (symbol_short!("cleanst"), stream_id);
+    let end_time_key = (symbol_short!("cleanet"), stream_id);
+    env.storage().temporary().set(&status_key, &status_discriminant);
+    env.storage().temporary().set(&end_time_key, &end_time);
+    const TOMBSTONE_TTL: u32 = 120_960;
+    env.storage()
+        .temporary()
+        .extend_ttl(&status_key, TOMBSTONE_TTL, TOMBSTONE_TTL);
+    env.storage()
+        .temporary()
+        .extend_ttl(&end_time_key, TOMBSTONE_TTL, TOMBSTONE_TTL);
+}
+
 /// Indexes a stream ID in the global enumeration list.
 pub fn index_global_stream(env: &Env, stream_id: u64) {
     let cnt_key = STREAM_COUNT_KEY;
@@ -2061,6 +2150,29 @@ pub fn decrement_sender_active_count(env: &Env, sender: &Address) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// Stream priority storage (issue #642)
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn stream_priority_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "sprio"), stream_id)
+}
+
+/// Returns the priority for a stream (0 = lowest, 255 = highest). Defaults to 0.
+pub fn get_stream_priority(env: &Env, stream_id: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&stream_priority_key(env, stream_id))
+        .unwrap_or(0u32)
+}
+
+/// Sets the priority for a stream.
+pub fn set_stream_priority(env: &Env, stream_id: u64, priority: u32) {
+    env.storage()
+        .persistent()
+        .set(&stream_priority_key(env, stream_id), &priority);
+}
+
 // Stream temporary metadata blob (feat/26-metadata-size-validation)
 // ═══════════════════════════════════════════════════════════════════════════
 //

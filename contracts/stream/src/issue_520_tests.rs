@@ -82,6 +82,7 @@ fn test_issue_520_cliff_prevents_early_withdrawal() {
             sponsor: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },
@@ -132,6 +133,7 @@ fn test_issue_520_cliff_zero_claimable_before_cliff_time() {
             sponsor: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },
@@ -174,6 +176,7 @@ fn test_issue_520_cliff_exact_boundary() {
             sponsor: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },
@@ -212,6 +215,7 @@ fn test_auto_renew_resets_start_time_and_keeps_claimable_zero_immediately() {
             min_withdrawal_amount: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },
@@ -251,6 +255,7 @@ fn test_same_ledger_withdraw_leaves_zero_claimable_immediately() {
             min_withdrawal_amount: None,
             requires_recipient_approval: false,
 
+        priority: None,
         tags: None,
         metadata_uri: None,
     },

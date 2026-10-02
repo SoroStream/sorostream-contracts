@@ -654,6 +654,9 @@ pub struct CreateStreamParams {
     pub sponsor: Option<Address>,
     /// Whether this stream requires explicit recipient approval before tokens accrue.
     pub requires_recipient_approval: bool,
+    /// Optional priority level (0-255). Higher values are processed first in
+    /// batch withdrawal operations. `None` is treated as priority 0 (lowest).
+    pub priority: Option<u32>,
     /// Optional list of categorisation tags (max 3 entries, each at most 32 bytes).
     /// Tags are used for off-chain filtering (e.g. "payroll", "vesting", "subscription").
     pub tags: Option<Vec<Bytes>>,
