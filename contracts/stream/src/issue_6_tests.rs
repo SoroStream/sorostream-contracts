@@ -54,6 +54,7 @@ fn setup() -> TestEnv {
     let admin = Address::generate(&env);
     SoroStreamContractClient::new(&env, &contract_id)
         .initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    SoroStreamContractClient::new(&env, &contract_id).add_token_to_whitelist(&admin, &token_id);
 
     // Disable the minimum-duration gate for unit tests.
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
