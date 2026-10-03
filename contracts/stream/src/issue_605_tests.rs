@@ -13,7 +13,7 @@ use soroban_sdk::{
 
 fn setup_605() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     env.ledger().set_timestamp(0);
 
     let contract_id = env.register(SoroStreamContract, ());

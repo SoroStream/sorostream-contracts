@@ -41,7 +41,7 @@ struct SnapEnv {
 
 fn setup() -> SnapEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -201,7 +201,7 @@ fn test_upgrade_storage_already_current() {
 #[test]
 fn test_upgrade_storage_from_legacy_succeeds() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let admin = Address::generate(&env);
@@ -227,7 +227,7 @@ fn test_upgrade_storage_from_legacy_succeeds() {
 #[test]
 fn test_version_mismatch_blocks_create_stream() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);

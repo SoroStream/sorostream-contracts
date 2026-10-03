@@ -21,7 +21,7 @@ struct UpgradeEnv {
 
 fn setup_upgrade() -> UpgradeEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);

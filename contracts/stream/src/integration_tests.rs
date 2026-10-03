@@ -20,7 +20,8 @@ struct IntegrationEnv {
 
 fn setup_integration() -> IntegrationEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
+    env.cost_estimate().budget().reset_unlimited();
 
     let contract = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -662,6 +663,7 @@ fn integration_partial_cancel_lifecycle() {
 fn integration_auto_renew_with_sac() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
+    env.cost_estimate().budget().reset_unlimited();
 
     let contract = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);

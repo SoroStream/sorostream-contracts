@@ -16,7 +16,7 @@ struct TestEnv {
 
 fn setup() -> TestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -1779,7 +1779,7 @@ fn error_already_initialized() {
 #[test]
 fn error_not_initialized_on_get_admin() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(SoroStreamContract, ());
     let c = SoroStreamContractClient::new(&env, &contract_id);
 
@@ -1790,7 +1790,7 @@ fn error_not_initialized_on_get_admin() {
 #[test]
 fn error_not_initialized_on_upgrade() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(SoroStreamContract, ());
     let c = SoroStreamContractClient::new(&env, &contract_id);
 
@@ -4002,7 +4002,7 @@ fn test_sweep_fees_unauthorized_rejected() {
     let c = SoroStreamContractClient::new(&env, &contract_id);
 
     // Initialize with a known admin (mock all auths just for this call)
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let admin = Address::generate(&env);
     c.initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
 
@@ -4091,7 +4091,7 @@ fn test_stream_id_uniqueness_100_sequential() {
 #[test]
 fn test_create_stream_max_duration_no_panic() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -4165,7 +4165,7 @@ fn test_create_stream_max_duration_no_panic() {
 #[test]
 fn test_stream_id_no_data_overwrite_100_sequential() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -4363,7 +4363,7 @@ fn test_get_stream_health_at_risk_threshold() {
 #[test]
 fn test_max_duration_stream_claimable_at_mid_duration() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -4460,7 +4460,7 @@ fn test_get_stream_health_ttl_warning_threshold() {
 #[test]
 fn test_max_duration_start_time_equals_current_ledger() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);

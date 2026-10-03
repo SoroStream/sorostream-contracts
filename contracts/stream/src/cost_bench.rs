@@ -69,7 +69,7 @@ struct BenchEnv {
 /// Sets up a fresh environment with one sender funded with 10_000_000 tokens.
 fn setup_bench() -> BenchEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);

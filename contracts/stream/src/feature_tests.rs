@@ -25,7 +25,7 @@ struct FTestEnv {
 
 fn fsetup() -> FTestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -1909,7 +1909,7 @@ fn test_split_stream_insufficient_balance() {
 #[test]
 fn test_split_stream_created_event() {
     let t = fsetup();
-    t.env.mock_all_auths();
+    t.env.mock_all_auths_allowing_non_root_auth();
     t.env.budget().reset_unlimited();
 
     let c = fclient(&t);

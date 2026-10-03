@@ -25,7 +25,7 @@ fn setup_env_with_fee(fee_bps: u32) -> (Env, Address, Address, Address, Address)
 
 fn setup_env() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
     let token_id = env

@@ -339,7 +339,7 @@ struct DecayTestEnv {
 
 fn setup_decay() -> DecayTestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);

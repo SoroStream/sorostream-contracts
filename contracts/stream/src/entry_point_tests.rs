@@ -394,7 +394,7 @@ fn test_set_treasury_address_non_admin() {
 #[should_panic(expected = "InvalidTreasuryAddress")]
 fn test_set_treasury_zero_address_rejected() {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(SoroStreamContract, ());
     let admin = Address::generate(&env);
     let c = SoroStreamContractClient::new(&env, &contract_id);

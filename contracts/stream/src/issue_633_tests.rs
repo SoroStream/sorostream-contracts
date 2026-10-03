@@ -24,7 +24,7 @@ struct Setup {
 
 fn setup_633() -> Setup {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     env.ledger().set_timestamp(0);
 
     let contract = env.register(SoroStreamContract, ());

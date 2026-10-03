@@ -31,7 +31,7 @@ fn default_options() -> StreamCreateOptions {
 
 fn setup() -> PETestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
     env.ledger().set_timestamp(1_000);
 
     let contract_id = env.register(SoroStreamContract, ());
