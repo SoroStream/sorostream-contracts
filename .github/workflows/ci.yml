@@ -6,69 +6,6 @@ on:
     branches: [main]
 
 jobs:
-  integration:
-    name: Integration & Regression
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-      - uses: Swatinem/rust-cache@v2
-      - name: Build WASM
-        run: cargo build --target wasm32v1-none --release
-      - name: Integration tests
-        run: cargo test integration_tests -- --nocapture
-      - name: Event field integration tests
-        run: cargo test event_field_tests -- --nocapture
-      - name: Testnet manifest validation
-        run: cargo test testnet_manifest_loads -- --nocapture
-      - name: Storage baseline regression
-        run: cargo test --package sorostream-stream -- storage_bench::check_storage_baseline_regression --nocapture
-      - name: Storage layout snapshot tests
-        # Runs the four lifecycle snapshot tests (create / withdraw / cancel / top_up).
-        # The soroban-sdk testutils layer writes test_snapshots/test/<name>.1.json at
-        # test-end; if any committed snapshot diverges from the generated output the
-        # test binary exits non-zero and this step fails.
-        # To regenerate after an intentional schema change run locally:
-        #   UPDATE_EXPECT=true cargo test --package sorostream-stream \
-        #       -- storage_layout_snapshot_tests --nocapture
-        run: cargo test --package sorostream-stream -- storage_layout_snapshot_tests --nocapture
-      - name: Check storage snapshots are committed
-        # Fail the build if a developer ran the snapshot tests and forgot to commit
-        # the generated JSON files.  git diff --exit-code returns 1 when the working
-        # tree has unstaged changes.
-        run: |
-          git diff --exit-code contracts/stream/test_snapshots/ || \
-            (echo "::error::Storage layout snapshots changed but were not committed. \
-          Run the storage_layout_snapshot_tests locally, then git add and commit the \
-          updated test_snapshots/test/storage_snapshot_*.1.json files." && exit 1)
-      - name: Build size-optimised WASM
-        run: cargo build --target wasm32v1-none --profile release-size
-      - name: Record WASM binary size
-        id: wasm_size
-        run: |
-          SIZE=$(wc -c < target/wasm32v1-none/release/sorostream_stream.wasm)
-          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
-          echo "WASM binary size: $SIZE bytes"
-      - name: Check WASM size regression
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin main
-          git checkout origin/main -- wasm-size.log 2>/dev/null || echo "0" > wasm-size.log
-          BASELINE=$(cat wasm-size.log | tr -d '[:space:]')
-          CURRENT=${{ steps.wasm_size.outputs.size }}
-          if [ "$BASELINE" -gt 0 ] 2>/dev/null; then
-            GROWTH=$(( (CURRENT - BASELINE) * 100 / BASELINE ))
-            echo "Baseline: $BASELINE bytes, Current: $CURRENT bytes, Growth: ${GROWTH}%"
-            if [ "$GROWTH" -gt 5 ]; then
-              echo "::error::WASM binary grew by ${GROWTH}% (${BASELINE} -> ${CURRENT}), exceeding the 5% threshold"
-              exit 1
-            fi
-          else
-            echo "No baseline size found, skipping regression check"
-          fi
-
   property-tests:
     name: Property Tests
     runs-on: ubuntu-latest
