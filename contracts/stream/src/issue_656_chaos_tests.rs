@@ -100,6 +100,8 @@ impl Harness {
 
         env.ledger().set_timestamp(1_000);
         let client = SoroStreamContractClient::new(&env, &contract);
+        client.initialize(&sender, &soroban_sdk::String::from_str(&env, "1.0.0"));
+        client.add_token_to_whitelist(&sender, &token);
         client.set_min_duration(&sender, &0u64);
         client.set_treasury_address(&treasury);
 

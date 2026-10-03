@@ -47,7 +47,7 @@ fn is_zero_address(env: &Env, address: &Address) -> bool {
     if address == &zero_account {
         return true;
     }
-    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"));
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"));
     if address == &zero_contract {
         return true;
     }
@@ -293,7 +293,7 @@ mod test {
 
     fn setup() -> TreasuryTest {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let treasury_id = env.register(TreasuryContract, ());
         let token_admin = Address::generate(&env);
@@ -428,7 +428,7 @@ mod test {
     #[should_panic(expected = "InvalidTreasuryAddress")]
     fn test_initialize_zero_address_rejected() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
         let treasury_id = env.register(TreasuryContract, ());
         let c = TreasuryContractClient::new(&env, &treasury_id);
         let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));

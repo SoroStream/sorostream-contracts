@@ -102,14 +102,16 @@ pub fn stream_exists(env: &Env, stream_id: u64) -> bool {
 
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
+const STORAGE_VERSION_KEY: Symbol = symbol_short!("schema");
+
 pub fn read_storage_version(env: &Env) -> Option<u32> {
-    env.storage().instance().get(&VERSION_KEY)
+    env.storage().instance().get(&STORAGE_VERSION_KEY)
 }
 
 pub fn write_storage_version(env: &Env, version: u32) {
     env.storage()
         .instance()
-        .set(&VERSION_KEY, &version);
+        .set(&STORAGE_VERSION_KEY, &version);
 }
 
 pub fn assert_storage_version(env: &Env) -> Result<(), crate::errors::StreamError> {

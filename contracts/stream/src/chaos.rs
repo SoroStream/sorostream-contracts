@@ -769,6 +769,10 @@ impl ChaosEnv {
     /// countdown armed through [`Self::arm_token_failures`] survives one extra
     /// step, which is what gives "fail the next N operations" its meaning.
     pub fn clear(&mut self, token: &Address) {
+        // Restore the budget first: the token calls below are invocations and
+        // would otherwise exhaust a starved budget and abort the harness.
+        let mut budget = self.env.cost_estimate().budget();
+        budget.reset_default();
         let client = ChaosTokenClient::new(&self.env, token);
         if self.token_fail_steps > 0 {
             self.token_fail_steps -= 1;
@@ -776,8 +780,6 @@ impl ChaosEnv {
         } else {
             client.clear_fault();
         }
-        let mut budget = self.env.cost_estimate().budget();
-        budget.reset_default();
     }
 
     // ── Outcome recording ───────────────────────────────────────────────────

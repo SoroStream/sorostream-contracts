@@ -3908,9 +3908,10 @@ impl SoroStreamContract {
             // INTERACTIONS
             let token_client = token::Client::new(&env, &stream.token);
             if recipient_amount > 0 {
+                // Payouts always go to the stream's recipient, even when a delegate is the caller.
                 token_client.transfer(
                     &env.current_contract_address(),
-                    &recipient,
+                    &stream.recipient,
                     &recipient_amount,
                 );
             }
@@ -4031,7 +4032,7 @@ impl SoroStreamContract {
             if recipient_amount > 0 {
                 token_client.transfer(
                     &env.current_contract_address(),
-                    &recipient,
+                    &stream.recipient,
                     &recipient_amount,
                 );
             }
@@ -4299,7 +4300,7 @@ impl SoroStreamContract {
                     if recipient_amount > 0 {
                         token_client.transfer(
                             &env.current_contract_address(),
-                            &recipient,
+                            &stream.recipient,
                             &recipient_amount,
                         );
                     }
@@ -4329,7 +4330,7 @@ impl SoroStreamContract {
                         if recipient_amount > 0 {
                             token_client.transfer(
                                 &env.current_contract_address(),
-                                &recipient,
+                                &stream.recipient,
                                 &recipient_amount,
                             );
                         }
@@ -4370,7 +4371,7 @@ impl SoroStreamContract {
                         if recipient_amount > 0 {
                             token_client.transfer(
                                 &env.current_contract_address(),
-                                &recipient,
+                                &stream.recipient,
                                 &recipient_amount,
                             );
                         }
@@ -4395,7 +4396,7 @@ impl SoroStreamContract {
                 if recipient_amount > 0 {
                     token_client.transfer(
                         &env.current_contract_address(),
-                        &recipient,
+                        &stream.recipient,
                         &recipient_amount,
                     );
                 }
@@ -4432,7 +4433,7 @@ impl SoroStreamContract {
 
                 token_client.transfer(
                     &env.current_contract_address(),
-                    &recipient,
+                    &stream.recipient,
                     &recipient_amount,
                 );
             }

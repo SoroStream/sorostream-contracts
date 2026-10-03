@@ -31,8 +31,11 @@ fn setup_integration() -> IntegrationEnv {
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
 
+    let client = SoroStreamContractClient::new(&env, &contract);
+    client.initialize(&sender, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    client.add_token_to_whitelist(&sender, &token);
     // Disable minimum duration for tests
-    SoroStreamContractClient::new(&env, &contract).set_min_duration(&sender, &0u64);
+    client.set_min_duration(&sender, &0u64);
 
     IntegrationEnv {
         env,
@@ -41,6 +44,16 @@ fn setup_integration() -> IntegrationEnv {
         sender,
         recipient,
     }
+}
+
+/// Protocol fee changes are timelocked: propose, wait out the timelock, commit.
+/// The ledger clock is restored afterwards so later timing assertions still hold.
+fn set_fee(env: &Env, c: &SoroStreamContractClient, bps: u32) {
+    let now = env.ledger().timestamp();
+    c.set_protocol_fee(&bps);
+    env.ledger().set_timestamp(now + 48 * 60 * 60);
+    c.execute_fee_change();
+    env.ledger().set_timestamp(now);
 }
 
 fn client(ie: &IntegrationEnv) -> SoroStreamContractClient<'_> {
@@ -110,8 +123,8 @@ fn stream_transition_history_retains_last_ten_entries() {
     let history = c.get_stream_transitions(&stream_id);
     assert_eq!(history.len(), 10);
     assert!(!history.get(0).unwrap().is_creation);
-    assert_eq!(history.get(0).unwrap().from_status, crate::StreamStatus::Paused);
-    assert_eq!(history.get(0).unwrap().to_status, crate::StreamStatus::Active);
+    assert_eq!(history.get(0).unwrap().from_status, crate::StreamStatus::Active);
+    assert_eq!(history.get(0).unwrap().to_status, crate::StreamStatus::Paused);
     assert_eq!(history.get(9).unwrap().from_status, crate::StreamStatus::Paused);
     assert_eq!(history.get(9).unwrap().to_status, crate::StreamStatus::Active);
 }
@@ -362,8 +375,8 @@ fn integration_treasury_fees_on_batch_withdraw() {
     ie.env.ledger().set_timestamp(0);
     mint(&ie, &ie.sender, &1_000_000);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&500u32); // 5% fee (500 bps)
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 500u32); // 5% fee (500 bps)
     c.set_treasury_address(&treasury);
 
     let stream_id = c.create_stream(
@@ -417,7 +430,7 @@ fn integration_creation_tax_reduces_stream_deposit() {
         .address();
     StellarAssetClient::new(&ie.env, &xlm_token).mint(&ie.sender, &100_000);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     c.set_treasury_address(&treasury);
     // set_creation_tax(flat_amount, bps) does not exist on the contract yet — see #[ignore] above.
 
@@ -454,7 +467,7 @@ fn integration_creation_tax_bps_reduces_stream_deposit() {
         .address();
     StellarAssetClient::new(&ie.env, &xlm_token).mint(&ie.sender, &50_000);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     c.set_treasury_address(&treasury);
     // set_creation_tax(flat_amount, bps) does not exist on the contract yet — see #[ignore] above.
 
@@ -477,7 +490,7 @@ fn integration_zero_fee_no_treasury_deduction() {
     ie.env.ledger().set_timestamp(0);
     mint(&ie, &ie.sender, &1_000_000);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     // fee is 0 by default
 
     let stream_id = c.create_stream(
@@ -675,6 +688,8 @@ fn integration_auto_renew_with_sac() {
 
     StellarAssetClient::new(&env, &token).mint(&sender, &2_000_000);
     let c = SoroStreamContractClient::new(&env, &contract);
+    c.initialize(&sender, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    c.add_token_to_whitelist(&sender, &token);
     c.set_min_duration(&sender, &0u64);
     let token_client = TokenClient::new(&env, &token);
     env.ledger().set_timestamp(0);
@@ -792,10 +807,10 @@ fn integration_max_fee_boundary() {
     let ie = setup_integration();
     let c = client(&ie);
     let admin = Address::generate(&ie.env);
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
 
     // Max valid fee: 10_000 bps = 100%
-    c.set_protocol_fee(&10_000u32);
+    set_fee(&ie.env, &c, 10_000u32);
     let (fee, _) = c.get_protocol_fee_info();
     assert_eq!(fee, 10_000);
 
@@ -811,8 +826,8 @@ fn integration_fee_with_treasury_set() {
     let admin = Address::generate(&ie.env);
     let treasury = Address::generate(&ie.env);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&1000u32); // 10%
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 1000u32); // 10%
     c.set_treasury_address(&treasury);
 
     let (fee, treas) = c.get_protocol_fee_info();
@@ -833,8 +848,8 @@ fn integration_treasury_contract_balance_tracking() {
     let treasury_client = sorostream_treasury::TreasuryContractClient::new(&ie.env, &treasury_id);
     treasury_client.initialize(&admin);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&500u32); // 5%
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 500u32); // 5%
     c.set_treasury_address(&treasury_id);
 
     let stream_id = c.create_stream(
@@ -877,8 +892,8 @@ fn integration_treasury_contract_withdraw() {
     let treasury_client = sorostream_treasury::TreasuryContractClient::new(&ie.env, &treasury_id);
     treasury_client.initialize(&admin);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&500u32);
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 500u32);
     c.set_treasury_address(&treasury_id);
 
     let stream_id = c.create_stream(
@@ -1004,8 +1019,11 @@ fn integration_get_stream_still_active_at_exact_end_time() {
         &simple_params(0),
     );
 
-    // At exactly end_time, get_stream surfaces Expired (now >= end_time)
+    // Expiry is strictly after end_time: at exactly end_time the stream is still Active.
     ie.env.ledger().set_timestamp(1000);
+    assert_eq!(c.get_stream(&stream_id).status, StreamStatus::Active);
+
+    ie.env.ledger().set_timestamp(1001);
     let stream = c.get_stream(&stream_id);
     assert_eq!(stream.status, StreamStatus::Expired);
     assert_eq!(c.get_claimable(&stream_id), 1_000_000);
@@ -1095,8 +1113,8 @@ fn integration_auto_renew_completed_on_insufficient_funds() {
     assert_eq!(event_stream_id, stream_id,
         "AutoRenewFailed stream_id in topics must match the stream");
 
-    // Data must be (sender: Address, required: i128).
-    let event_data: (Address, i128) = data.clone().into_val(&ie.env);
+    // Data must be (sender: Address, required: i128, nonce: u64).
+    let event_data: (Address, i128, u64) = data.clone().into_val(&ie.env);
     assert_eq!(event_data.0, ie.sender,
         "AutoRenewFailed data[0] must be the sender address");
     assert_eq!(event_data.1, 1_000_000i128,
@@ -1111,8 +1129,8 @@ fn integration_auto_renew_completed_on_insufficient_funds() {
         "contract should hold nothing after settlement");
 
     let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.status, StreamStatus::Expired,
-        "stream status must be Expired when auto-renew fails and end_time has passed");
+    assert_eq!(stream.status, StreamStatus::Completed,
+        "stream status must be Completed when auto-renew fails and end_time has passed");
 
     assert_eq!(c.get_claimable(&stream_id), 0,
         "get_claimable must return 0 for a Completed stream");
@@ -1175,7 +1193,7 @@ fn integration_auto_renew_fails_with_partial_sender_balance() {
     let event_stream_id: u64 = topics_vec.get(1).unwrap().into_val(&ie.env);
     assert_eq!(event_stream_id, stream_id);
 
-    let event_data: (Address, i128) = data.clone().into_val(&ie.env);
+    let event_data: (Address, i128, u64) = data.clone().into_val(&ie.env);
     assert_eq!(event_data.0, ie.sender,
         "data[0] must be the sender who failed to fund the renewal");
     assert_eq!(event_data.1, deposit,
@@ -1184,9 +1202,9 @@ fn integration_auto_renew_fails_with_partial_sender_balance() {
     // Recipient still receives the full earned amount (after event capture).
     assert_eq!(balance(&ie, &ie.recipient), deposit);
 
-    // Stream surfaces as Expired (get_stream converts Completed→Expired past end_time).
+    // Read at exactly end_time: Completed is only reported as Expired strictly after end_time.
     let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.status, StreamStatus::Expired);
+    assert_eq!(stream.status, StreamStatus::Completed);
 }
 
 // ── Issue #257: Fee accumulation and sweep flow ──────────────────────────────
@@ -1206,8 +1224,8 @@ fn integration_fee_accumulation_and_sweep() {
     let treasury_client = sorostream_treasury::TreasuryContractClient::new(&ie.env, &treasury_id);
     treasury_client.initialize(&admin);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&500u32); // 5%
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 500u32); // 5%
     c.set_treasury_address(&treasury_id);
 
     let stream_id = c.create_stream(
@@ -1282,8 +1300,8 @@ fn integration_batch_withdraw_final_no_overdraw_with_fees() {
     
     mint(&ie, &ie.sender, &deposit);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&5000u32); // 50% fee (worst case - 5000 bps)
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 5000u32); // 50% fee (worst case - 5000 bps)
     c.set_treasury_address(&treasury);
 
     let stream_id = c.create_stream(
@@ -1355,8 +1373,8 @@ fn integration_withdraw_final_no_overdraw_with_fees() {
     
     mint(&ie, &ie.sender, &deposit);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&2500u32); // 25% fee (2500 bps)
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 2500u32); // 25% fee (2500 bps)
     c.set_treasury_address(&treasury);
 
     let stream_id = c.create_stream(
@@ -1403,8 +1421,8 @@ fn integration_batch_withdraw_with_multiple_streams_and_fees() {
     
     mint(&ie, &ie.sender, &3_000_000); // enough for 3 streams
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&1000u32); // 10% fee
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 1000u32); // 10% fee
     c.set_treasury_address(&treasury);
 
     // Create 3 streams
@@ -1456,8 +1474,8 @@ fn integration_withdraw_no_overdraw_edge_case_high_fee() {
     
     mint(&ie, &ie.sender, &deposit);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
-    c.set_protocol_fee(&9900u32); // 99% fee (extreme case)
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    set_fee(&ie.env, &c, 9900u32); // 99% fee (extreme case)
     c.set_treasury_address(&treasury);
 
     let stream_id = c.create_stream(
@@ -1490,7 +1508,7 @@ fn integration_grace_period_claim_and_recover() {
     let admin = Address::generate(&ie.env);
     ie.env.ledger().set_timestamp(0);
 
-    c.initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
+    let _ = c.try_initialize(&admin, &soroban_sdk::String::from_str(&ie.env, "1.0.0"));
     c.set_grace_period_ledgers(&10u32);
     assert_eq!(c.get_grace_period_ledgers(), 10);
 
@@ -1702,17 +1720,21 @@ fn integration_lifecycle_with_topup_during_pause() {
     ie.env.ledger().set_timestamp(100);
     c.pause_stream(&stream_id, &ie.sender, &None);
 
-    // Top-up while paused
+    // Top-up while paused is refused and leaves the deposit untouched.
     let stream_before = c.get_stream(&stream_id);
-    c.top_up(&stream_id, &ie.sender, &ie.token, &500_000);
+    assert_eq!(
+        c.try_top_up(&stream_id, &ie.sender, &ie.token, &500_000),
+        Err(Ok(crate::StreamError::StreamPaused))
+    );
     let stream_after = c.get_stream(&stream_id);
-
-    assert_eq!(stream_after.deposit, stream_before.deposit + 500_000);
+    assert_eq!(stream_after.deposit, stream_before.deposit);
     assert_eq!(stream_after.status, StreamStatus::Paused);
 
-    // Resume and verify stream continues with new deposit
+    // Resume, then top up the active stream.
     ie.env.ledger().set_timestamp(200);
     c.resume_stream(&stream_id, &ie.sender);
+    c.top_up(&stream_id, &ie.sender, &ie.token, &500_000);
+    assert_eq!(c.get_stream(&stream_id).deposit, stream_before.deposit + 500_000);
 
     ie.env.ledger().set_timestamp(300);
     c.withdraw(&stream_id, &ie.recipient);
