@@ -259,21 +259,21 @@ pub struct StreamOptions {
     pub is_dual_stream: bool,
 
     // ── Collateral vault mode (issue #472) ───────────────────────────────────
+    //
+    // Flattened into scalar fields rather than a nested `Option<CollateralVaultConfig>`
+    // struct: soroban-sdk's #[contracttype] derive generates a fallible
+    // TryFrom<ScVal> conversion for custom structs, but Option<T>'s only route
+    // to ScVal is a blanket From impl requiring an infallible T: Into<ScVal> —
+    // a combination nested custom structs inside Option can never satisfy. This
+    // breaks any client codegen path gated behind the testutils feature
+    // (i.e. `cargo test`), even though the contract itself builds fine.
 
-    /// Optional collateral vault routing configuration.
-    pub collateral_vault: Option<CollateralVaultConfig>,
-}
-
-/// Configuration for yield-bearing collateral vault routing.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CollateralVaultConfig {
-    /// On-chain yield vault contract address.
-    pub vault_address: Address,
+    /// On-chain yield vault contract address, if collateral vault routing is enabled.
+    pub collateral_vault_address: Option<Address>,
     /// Basis points of accrued yield assigned to sender (e.g. 5000 = 50%).
-    pub yield_split_sender_bps: u32,
+    pub collateral_vault_sender_bps: Option<u32>,
     /// Basis points of accrued yield assigned to recipient (e.g. 5000 = 50%).
-    pub yield_split_recipient_bps: u32,
+    pub collateral_vault_recipient_bps: Option<u32>,
 }
 
 /// Represents a single payment stream.
@@ -363,8 +363,14 @@ pub struct CreateStreamOptions {
     pub requires_recipient_approval: bool,
     /// Optional human-readable payment reference (UTF-8, at most 256 bytes).
     pub comment: Option<String>,
-    /// Optional collateral vault routing configuration for yield mode (issue #472).
-    pub collateral_vault: Option<CollateralVaultConfig>,
+    // See the comment on StreamOptions' equivalent fields for why this is
+    // flattened rather than a nested Option<CollateralVaultConfig>.
+    /// On-chain yield vault contract address, if collateral vault routing is enabled.
+    pub collateral_vault_address: Option<Address>,
+    /// Basis points of accrued yield assigned to sender (e.g. 5000 = 50%).
+    pub collateral_vault_sender_bps: Option<u32>,
+    /// Basis points of accrued yield assigned to recipient (e.g. 5000 = 50%).
+    pub collateral_vault_recipient_bps: Option<u32>,
 }
 
 impl CreateStreamOptions {
@@ -625,7 +631,7 @@ impl StreamCreateOptions {
 /// All creation-time parameters for `create_stream`, bundled into one struct
 /// so the public entry point stays within Soroban's 10-argument function limit.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CreateStreamParams {
     /// Number of seconds after start_time before any tokens are claimable.
     pub cliff_seconds: u64,

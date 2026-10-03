@@ -43,6 +43,24 @@ pub fn read_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&ADMIN_KEY)
 }
 
+const MIGRATION_ADMIN_KEY: &str = "mig_admin";
+
+/// Stores the designated migration admin address.
+pub fn write_migration_admin(env: &Env, admin: &Address) {
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, MIGRATION_ADMIN_KEY), admin);
+}
+
+/// Reads the designated migration admin address.  Falls back to the contract
+/// admin when no dedicated migration admin has been set.
+pub fn read_migration_admin(env: &Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, MIGRATION_ADMIN_KEY))
+        .or_else(|| read_admin(env))
+}
+
 /// Asserts that the current caller is the admin. Panics otherwise.
 pub fn check_admin(env: &Env) {
     read_admin(env)
@@ -85,13 +103,13 @@ pub fn stream_exists(env: &Env, stream_id: u64) -> bool {
 pub const CURRENT_STORAGE_VERSION: u32 = 1;
 
 pub fn read_storage_version(env: &Env) -> Option<u32> {
-    env.storage().instance().get(&Symbol::new(env, VERSION_KEY))
+    env.storage().instance().get(&VERSION_KEY)
 }
 
 pub fn write_storage_version(env: &Env, version: u32) {
     env.storage()
         .instance()
-        .set(&Symbol::new(env, VERSION_KEY), &version);
+        .set(&VERSION_KEY, &version);
 }
 
 pub fn assert_storage_version(env: &Env) -> Result<(), crate::errors::StreamError> {
@@ -2216,6 +2234,49 @@ pub fn remove_stream_metadata(env: &Env, stream_id: u64) {
     env.storage()
         .temporary()
         .remove(&stream_metadata_key(env, stream_id));
+}
+
+fn partial_withdrawal_carry_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "pwc"), stream_id)
+}
+
+pub fn get_partial_withdrawal_carry(env: &Env, stream_id: u64) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&partial_withdrawal_carry_key(env, stream_id))
+        .unwrap_or(0)
+}
+
+pub fn set_partial_withdrawal_carry(env: &Env, stream_id: u64, amount: i128) {
+    env.storage()
+        .persistent()
+        .set(&partial_withdrawal_carry_key(env, stream_id), &amount);
+}
+
+pub fn clear_partial_withdrawal_carry(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&partial_withdrawal_carry_key(env, stream_id));
+}
+
+fn expiry_notification_emitted_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
+    (Symbol::new(env, "exp_notif"), stream_id)
+}
+
+/// Returns whether the StreamExpiryNotification event has already been emitted
+/// for `stream_id`.
+pub fn get_expiry_notification_emitted(env: &Env, stream_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&expiry_notification_emitted_key(env, stream_id))
+        .unwrap_or(false)
+}
+
+/// Marks the StreamExpiryNotification as emitted for `stream_id`.
+pub fn set_expiry_notification_emitted(env: &Env, stream_id: u64) {
+    env.storage()
+        .persistent()
+        .set(&expiry_notification_emitted_key(env, stream_id), &true);
 }
 
 fn withdrawal_record_key(env: &Env, stream_id: u64, index: u32) -> (Symbol, u64, u32) {

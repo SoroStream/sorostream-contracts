@@ -1,12 +1,12 @@
-/// feat/37-sender-stream-cap
-///
-/// Tests for the per-sender active stream cap:
-///
-/// 1. Creating (cap + 1) streams is rejected with `SenderStreamCapReached`.
-/// 2. The cap is stored in persistent storage and configurable by the admin.
-/// 3. Cancelling a stream decrements the active count, freeing space.
-/// 4. A stream completing (withdrawing past end_time) also decrements the count.
-/// 5. Setting the cap to 0 means unlimited (default safety guard).
+// feat/37-sender-stream-cap
+//
+// Tests for the per-sender active stream cap:
+//
+// 1. Creating (cap + 1) streams is rejected with `SenderStreamCapReached`.
+// 2. The cap is stored in persistent storage and configurable by the admin.
+// 3. Cancelling a stream decrements the active count, freeing space.
+// 4. A stream completing (withdrawing past end_time) also decrements the count.
+// 5. Setting the cap to 0 means unlimited (default safety guard).
 #![cfg(test)]
 
 extern crate std;
@@ -45,6 +45,7 @@ fn setup() -> T {
 
     SoroStreamContractClient::new(&env, &contract_id)
         .initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    SoroStreamContractClient::new(&env, &contract_id).add_token_to_whitelist(&admin, &token_id);
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
 
     T { env, contract_id, token_id, admin, sender }
@@ -71,6 +72,7 @@ fn make_params(nonce: u64) -> crate::types::CreateStreamParams {
 
         priority: None,
         tags: None,
+        metadata_uri: None,
     }
 }
 
@@ -115,9 +117,9 @@ fn test_cap_plus_one_rejected() {
 
     assert!(result.is_err(), "cap+1 stream must be rejected");
     assert_eq!(
-        result.unwrap_err().unwrap_err(),
-        StreamError::SenderStreamCapReached,
-        "expected SenderStreamCapReached",
+        result.unwrap_err().unwrap(),
+        StreamError::NewSenderStreamCapExceeded,
+        "expected NewSenderStreamCapExceeded",
     );
 }
 

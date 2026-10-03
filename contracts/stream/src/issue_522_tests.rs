@@ -70,6 +70,8 @@ fn params(
         min_withdrawal_amount,
         sponsor: None,
         requires_recipient_approval: false,
+        priority: None,
+        tags: None,
         metadata_uri: None,
     }
 }

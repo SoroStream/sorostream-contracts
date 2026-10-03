@@ -3,7 +3,7 @@ resolver = "2"
 members = ["contracts/*"]
 
 [workspace.dependencies]
-soroban-sdk = { version = "21.7.6", features = ["alloc"] }
+soroban-sdk = { version = "22.0.0", features = ["alloc"] }
 
 [profile.release]
 opt-level = "z"

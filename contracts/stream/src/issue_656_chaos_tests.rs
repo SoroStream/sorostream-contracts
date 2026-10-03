@@ -38,6 +38,7 @@
 //! [`SOROSTREAM_CHAOS_SEED`]: std::env
 
 use super::*;
+use std::format;
 use crate::chaos::{
     duplicate_error_codes, is_defined_error_code, ChaosConfig, ChaosEnv, ChaosReport, ChaosRng,
     ChaosToken, ChaosTokenClient, FaultKind,
@@ -53,13 +54,7 @@ use soroban_sdk::{
 ///
 /// Naming it keeps [`Harness::classify`] readable; the nesting is inherent to
 /// the SDK and has nothing to do with this campaign.
-type TryResult<T, E> = Result<
-    Result<
-        Result<T, E, soroban_sdk::InvokeError>,
-        Result<soroban_sdk::Error, soroban_sdk::InvokeError>,
-    >,
-    soroban_sdk::InvokeError,
->;
+type TryResult<T, C, E> = Result<Result<T, C>, Result<E, soroban_sdk::InvokeError>>;
 
 /// Reads an override seed from the environment, defaulting to a fixed value so
 /// CI runs are reproducible without configuration.
@@ -134,7 +129,9 @@ impl Harness {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
+            priority: None,
             tags: None,
+            metadata_uri: None,
         }
     }
 
@@ -142,17 +139,15 @@ impl Harness {
     fn create(&self, amount: i128, duration: u64, nonce: u64) -> u64 {
         let env = self.chaos.env();
         let client = SoroStreamContractClient::new(env, &self.contract);
-        client
-            .create_stream(
-                &self.sender,
-                &self.recipient,
-                &self.token,
-                &amount,
-                &duration,
-                &false,
-                &Harness::params(nonce),
-            )
-            .unwrap()
+        client.create_stream(
+            &self.sender,
+            &self.recipient,
+            &self.token,
+            &amount,
+            &duration,
+            &false,
+            &Harness::params(nonce),
+        )
     }
 
     /// Total tokens the contract is holding.
@@ -169,26 +164,25 @@ impl Harness {
     ///
     /// `E` is the contract's own error type; `code_of` lifts it into the
     /// campaign's `u32` code space.
-    fn classify<T, E>(
+    fn classify<T, C: core::fmt::Debug, E>(
         &mut self,
         op: &'static str,
-        result: TryResult<T, E>,
+        result: TryResult<T, C, E>,
         fault: Option<FaultKind>,
         code_of: impl Fn(&E) -> u32,
     ) {
         match result {
-            Ok(Ok(Ok(_))) => self.chaos.record_ok(op, fault),
-            Ok(Ok(Err(e))) => {
+            Ok(Ok(_)) => self.chaos.record_ok(op, fault),
+            Ok(Err(conv_err)) => {
+                // The invocation succeeded but the success value failed to
+                // decode — always a finding, never an expected outcome.
+                self.chaos.record_panic(op, fault, &format!("{conv_err:?}"));
+            }
+            Err(Ok(e)) => {
                 let code = code_of(&e);
                 self.chaos.record_error(op, fault, code)
             }
-            Ok(Err((code, _))) => {
-                // A host-level contract error. Its discriminant is already a
-                // contract error code, so it feeds the same check as a typed
-                // `StreamError`: an undeclared code is a finding.
-                self.chaos.record_error(op, fault, code);
-            }
-            Err(invoke) => {
+            Err(Err(invoke)) => {
                 // The host itself refused the invocation. For faults the
                 // contract cannot survive this is expected, so it is recorded
                 // as a finding only when the fault was survivable.
@@ -374,21 +368,18 @@ fn chaos_lost_stream_record_reports_not_found() {
     let env = h.chaos.env().clone();
     let result = SoroStreamContractClient::new(&env, &h.contract).try_get_stream(&stream_id);
     match result {
-        Ok(Ok(Err(e))) => {
+        Err(Ok(e)) => {
             let code = e as u32;
             assert!(
                 is_defined_error_code(code),
                 "a deleted stream must yield a declared error, got {code}"
             );
         }
-        Ok(Ok(Ok(_))) => {
+        Ok(Ok(_)) => {
             panic!("get_stream returned a record the ledger no longer holds")
         }
-        Ok(Err((code, _))) => assert!(
-            is_defined_error_code(code),
-            "host error code {code} is not a declared StreamError"
-        ),
-        Err(invoke) => panic!("get_stream panicked on a missing record: {invoke:?}"),
+        Ok(Err(conv_err)) => panic!("conversion error decoding stream: {conv_err:?}"),
+        Err(Err(invoke)) => panic!("get_stream panicked on a missing record: {invoke:?}"),
     }
 }
 
@@ -519,7 +510,7 @@ fn run_campaign(seed: u64, steps: u32) -> ChaosReport {
                 );
                 nonce += 1;
                 h.classify("create_stream", result, fault, |e| (*e as u32));
-                if let Ok(Ok(Ok(id))) = result {
+                if let Ok(Ok(id)) = result {
                     live.push(id);
                 }
             }
@@ -532,16 +523,25 @@ fn run_campaign(seed: u64, steps: u32) -> ChaosReport {
                 let idx = h.chaos.rng().below(live.len() as u32) as usize;
                 let id = live[idx];
                 let result = client.try_cancel_stream(&id, &h.sender);
+                let cancelled = matches!(result, Ok(Ok(())));
                 h.classify("cancel_stream", result, fault, |e| (*e as u32));
-                if result.is_ok() {
+                if cancelled {
                     live.remove(idx);
                 }
             }
             _ => {
                 // Idle step: read-only, so any fault must leave escrow intact.
+                // `get_all_stream_ids` has no application-level error to
+                // classify (it never returns a StreamError), so just confirm
+                // the host-level invocation itself didn't trap unexpectedly.
                 let before = token_client.balance(&h.contract);
                 let result = client.try_get_all_stream_ids(&0, &10);
-                h.classify("get_all_stream_ids", result, fault, |e| (*e as u32));
+                if let Err(Err(invoke)) = result {
+                    let survivable = fault.map(|f| f.is_survivable()).unwrap_or(true);
+                    if survivable {
+                        h.chaos.record_panic("get_all_stream_ids", fault, &format!("{invoke:?}"));
+                    }
+                }
                 assert_eq!(
                     token_client.balance(&h.contract),
                     before,
@@ -667,7 +667,7 @@ fn chaos_campaign_leaves_no_stream_in_a_bogus_state() {
     // and its recorded escrow must be non-negative.
     let ids = client.get_all_stream_ids(&0, &50);
     for id in ids.iter() {
-        if let Ok(stream) = client.try_get_stream(&id) {
+        if let Ok(Ok(stream)) = client.try_get_stream(&id) {
             assert!(
                 stream.deposit >= 0,
                 "stream {id} recorded a negative deposit after chaos"
@@ -697,7 +697,7 @@ fn chaos_string_helpers_are_available_to_campaigns() {
     let h = Harness::with_config(ChaosConfig::new(0x7));
     let env = h.chaos.env();
     let label = String::from_str(env, "chaos-campaign");
-    assert_eq!(label.to_string(), "chaos-campaign");
+    assert_eq!(label, String::from_str(env, "chaos-campaign"));
 }
 
 #[test]

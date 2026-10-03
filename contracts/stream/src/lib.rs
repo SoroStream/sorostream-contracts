@@ -99,6 +99,7 @@ use storage::{
     add_token_to_whitelist, set_token_whitelist_enabled,
     mark_nonce_used, MAX_PAUSE_DURATION, nonce_used,
     read_admin, read_applied_migrations, read_audit_log, read_fee_discount,
+    read_migration_admin, write_migration_admin,
     read_stream_transitions,
     read_governance, read_guardian, read_max_duration,
     read_max_future_start_offset, read_min_duration, read_pending_fee_proposal,
@@ -188,6 +189,9 @@ const POINTS_PER_DISCOUNT_BPS: i128 = 1_000;
 
 /// Maximum creation-fee discount (in basis points) reward points can unlock.
 const MAX_FEE_DISCOUNT_BPS: u32 = 1_000;
+
+/// Maximum length, in bytes, of a stream's optional metadata blob.
+const MAX_STREAM_METADATA_BYTES: u32 = 256;
 
 /// Validates a metadata URI length (prefix checks omitted — String has no as_bytes).
 fn validate_metadata_uri(uri: &Option<String>) -> Result<(), StreamError> {
@@ -368,7 +372,7 @@ fn withdrawal_record_hash(env: &Env, record: &types::WithdrawalRecord) -> BytesN
     bytes.append(&Bytes::from_array(env, &record.amount.to_be_bytes()));
     bytes.append(&Bytes::from_array(env, &record.timestamp.to_be_bytes()));
     bytes.append(&Bytes::from_array(env, &record.index.to_be_bytes()));
-    env.crypto().sha256(&bytes)
+    env.crypto().sha256(&bytes).into()
 }
 
 fn withdrawal_parent_hash(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> BytesN<32> {
@@ -376,7 +380,7 @@ fn withdrawal_parent_hash(env: &Env, left: &BytesN<32>, right: &BytesN<32>) -> B
     bytes.push_back(1);
     bytes.append(&Bytes::from_array(env, &left.to_array()));
     bytes.append(&Bytes::from_array(env, &right.to_array()));
-    env.crypto().sha256(&bytes)
+    env.crypto().sha256(&bytes).into()
 }
 
 fn withdrawal_merkle_root(env: &Env, records: &Vec<types::WithdrawalRecord>) -> BytesN<32> {
@@ -385,7 +389,7 @@ fn withdrawal_merkle_root(env: &Env, records: &Vec<types::WithdrawalRecord>) -> 
         level.push_back(withdrawal_record_hash(env, &record));
     }
     if level.is_empty() {
-        return env.crypto().sha256(&Bytes::new(env));
+        return env.crypto().sha256(&Bytes::new(env)).into();
     }
 
     while level.len() > 1 {
@@ -1833,7 +1837,9 @@ impl SoroStreamContract {
                 on_complete_contract,
                 on_complete_function,
                 comment: comment.clone(),
-                collateral_vault: None,
+                collateral_vault_address: None,
+                collateral_vault_sender_bps: None,
+                collateral_vault_recipient_bps: None,
             },
         };
 
@@ -2177,7 +2183,9 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
-                collateral_vault: None,
+                collateral_vault_address: None,
+                collateral_vault_sender_bps: None,
+                collateral_vault_recipient_bps: None,
             },
         };
 
@@ -2449,7 +2457,9 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
-                collateral_vault: None,
+                collateral_vault_address: None,
+                collateral_vault_sender_bps: None,
+                collateral_vault_recipient_bps: None,
             },
         };
 
@@ -2661,7 +2671,9 @@ impl SoroStreamContract {
                 on_complete_contract,
                 on_complete_function,
                 comment: None,
-                collateral_vault: None,
+                collateral_vault_address: None,
+                collateral_vault_sender_bps: None,
+                collateral_vault_recipient_bps: None,
             },
         };
 
@@ -2860,7 +2872,9 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
-                collateral_vault: None,
+                collateral_vault_address: None,
+                collateral_vault_sender_bps: None,
+                collateral_vault_recipient_bps: None,
             },
         };
 
@@ -5848,7 +5862,9 @@ impl SoroStreamContract {
                 on_complete_contract: None,
                 on_complete_function: None,
                 comment: None,
-                collateral_vault: stream.options.collateral_vault.clone(),
+                collateral_vault_address: stream.options.collateral_vault_address.clone(),
+                collateral_vault_sender_bps: stream.options.collateral_vault_sender_bps,
+                collateral_vault_recipient_bps: stream.options.collateral_vault_recipient_bps,
             },
         };
 
@@ -6258,7 +6274,6 @@ impl SoroStreamContract {
 
         let old_rate = stream.flow_rate;
         stream.flow_rate = new_flow_rate;
-        stream.rate_per_second = new_flow_rate;
         stream.end_time = new_end_time;
         stream.options.total_withdrawn = settled_withdrawn;
 
@@ -7427,7 +7442,9 @@ impl SoroStreamContract {
                     on_complete_contract: None,
                     on_complete_function: None,
                     comment: None,
-                    collateral_vault: None,
+                    collateral_vault_address: None,
+                    collateral_vault_sender_bps: None,
+                    collateral_vault_recipient_bps: None,
                 },
             };
 
@@ -8447,12 +8464,14 @@ impl SoroStreamContract {
         if caller != stream.sender && caller != stream.recipient {
             return Err(StreamError::NotAuthorized);
         }
-        let vault_config = stream.options.collateral_vault.ok_or(StreamError::StreamNotActive)?;
-        
-        let sender_yield = (stream.deposit * vault_config.yield_split_sender_bps as i128) / 10000;
-        let recipient_yield = (stream.deposit * vault_config.yield_split_recipient_bps as i128) / 10000;
-        
-        events::collateral_yield_claimed(&env, stream_id, &vault_config.vault_address, sender_yield, recipient_yield);
+        let vault_address = stream.options.collateral_vault_address.ok_or(StreamError::StreamNotActive)?;
+        let sender_bps = stream.options.collateral_vault_sender_bps.unwrap_or(0);
+        let recipient_bps = stream.options.collateral_vault_recipient_bps.unwrap_or(0);
+
+        let sender_yield = (stream.deposit * sender_bps as i128) / 10000;
+        let recipient_yield = (stream.deposit * recipient_bps as i128) / 10000;
+
+        events::collateral_yield_claimed(&env, stream_id, &vault_address, sender_yield, recipient_yield);
         Ok((sender_yield, recipient_yield))
     }
 

@@ -1,17 +1,17 @@
-/// Duplicate stream ID collision test
-///
-/// Two streams created with identical sender, recipient, token, amount, and
-/// timing parameters in the **same simulated ledger** must:
-///
-/// 1. Produce different stream IDs.
-/// 2. Both be independently retrievable via `get_stream`.
-/// 3. Both be independently claimable / cancellable without interference.
-///
-/// Without this guard an ID collision could silently overwrite the first stream.
-///
-/// The contract already handles this via its nonce-based ID derivation and the
-/// retry loop in `create_stream`.  These tests exercise that path with distinct
-/// nonce values in the same ledger.
+// Duplicate stream ID collision test
+//
+// Two streams created with identical sender, recipient, token, amount, and
+// timing parameters in the **same simulated ledger** must:
+//
+// 1. Produce different stream IDs.
+// 2. Both be independently retrievable via `get_stream`.
+// 3. Both be independently claimable / cancellable without interference.
+//
+// Without this guard an ID collision could silently overwrite the first stream.
+//
+// The contract already handles this via its nonce-based ID derivation and the
+// retry loop in `create_stream`.  These tests exercise that path with distinct
+// nonce values in the same ledger.
 #![cfg(test)]
 
 extern crate std;
@@ -50,6 +50,7 @@ fn setup() -> T {
     let admin = Address::generate(&env);
     SoroStreamContractClient::new(&env, &contract_id)
         .initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    SoroStreamContractClient::new(&env, &contract_id).add_token_to_whitelist(&admin, &token_id);
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
 
     T { env, contract_id, token_id, sender, recipient }
@@ -76,6 +77,7 @@ fn params(nonce: u64) -> crate::types::CreateStreamParams {
 
         priority: None,
         tags: None,
+        metadata_uri: None,
     }
 }
 

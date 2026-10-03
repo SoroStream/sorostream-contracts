@@ -62,6 +62,8 @@ fn params(nonce: u64) -> crate::types::CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
+        priority: None,
+        tags: None,
         metadata_uri: None,
     }
 }
@@ -158,7 +160,7 @@ fn test_issue_521_accounting_holds_across_lifecycle() {
     assert!(contract_balance(&t) >= owed_escrow(&c, &[s1]));
 
     // Pause / resume shift the schedule but must not break accounting.
-    c.pause_stream(&s1, &t.sender);
+    c.pause_stream(&s1, &t.sender, &None::<soroban_sdk::String>);
     t.env.ledger().set_timestamp(800);
     c.resume_stream(&s1, &t.sender);
 

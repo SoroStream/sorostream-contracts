@@ -83,6 +83,7 @@ fn params_with_nonce(nonce: u64) -> crate::types::CreateStreamParams {
 
         priority: None,
         tags: None,
+        metadata_uri: None,
     }
 }
 

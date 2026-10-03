@@ -46,6 +46,8 @@ fn make_params(nonce: u64, priority: Option<u32>) -> crate::types::CreateStreamP
         sponsor: None,
         requires_recipient_approval: false,
         priority,
+        tags: None,
+        metadata_uri: None,
     }
 }
 

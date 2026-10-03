@@ -32,6 +32,7 @@ fn setup() -> TestEnv {
     let admin = Address::generate(&env);
     SoroStreamContractClient::new(&env, &contract_id)
         .initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    SoroStreamContractClient::new(&env, &contract_id).add_token_to_whitelist(&admin, &token_id);
 
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
 
@@ -62,6 +63,7 @@ fn default_params() -> crate::types::CreateStreamParams {
         min_withdrawal_amount: None,
         sponsor: None,
         requires_recipient_approval: false,
+        priority: None,
         tags: None,
         metadata_uri: None,
     }

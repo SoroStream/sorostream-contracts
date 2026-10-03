@@ -1,15 +1,15 @@
-/// feat/39-create-stream-fuzz
-///
-/// Uses `proptest` to generate random `flow_rate`, `start_time`, `end_time`,
-/// and `initial_balance` combinations.  The contract must either:
-///   - accept valid inputs and produce a well-formed stream, OR
-///   - panic with a *defined* error code
-///
-/// It must **never** produce undefined or corrupt state, and must **never**
-/// panic with an unknown error code.
-///
-/// CI configuration: 10,000 random cases per test run.
-/// A fixed proptest seed is used for reproducibility.
+// feat/39-create-stream-fuzz
+//
+// Uses `proptest` to generate random `flow_rate`, `start_time`, `end_time`,
+// and `initial_balance` combinations.  The contract must either:
+//   - accept valid inputs and produce a well-formed stream, OR
+//   - panic with a *defined* error code
+//
+// It must **never** produce undefined or corrupt state, and must **never**
+// panic with an unknown error code.
+//
+// CI configuration: 10,000 random cases per test run.
+// A fixed proptest seed is used for reproducibility.
 #![cfg(test)]
 
 extern crate std;
@@ -39,7 +39,7 @@ fn setup() -> (Env, Address, Address, Address, Address) {
     let recipient = Address::generate(&env);
 
     // Mint a large supply so balance is not the bottleneck.
-    StellarAssetClient::new(&env, &token_id).mint(&sender, &i128::MAX / 2);
+    StellarAssetClient::new(&env, &token_id).mint(&sender, &(i128::MAX / 2));
 
     // Initialise the contract.
     let admin = Address::generate(&env);
@@ -69,6 +69,7 @@ fn make_params(nonce: u64) -> crate::types::CreateStreamParams {
 
         priority: None,
         tags: None,
+        metadata_uri: None,
     }
 }
 
@@ -84,7 +85,6 @@ fn is_known_create_error(e: &StreamError) -> bool {
             | StreamError::Overflow
             | StreamError::DuplicateStream
             | StreamError::NewSenderStreamCapExceeded
-            | StreamError::SenderStreamCapReached
             | StreamError::ContractPaused
             | StreamError::InvalidCliff
             | StreamError::InvalidDuration
@@ -132,18 +132,18 @@ proptest! {
         );
 
         match result {
-            Ok(_stream_id) => {
+            Ok(Ok(_stream_id)) => {
                 // Valid inputs: assert stream is retrievable and not corrupt.
                 // (We trust the ID returned; just ensure no panic occurred.)
             }
-            Err(e) => {
-                let err = e.unwrap_err();
+            Err(Ok(err)) => {
                 prop_assert!(
                     is_known_create_error(&err),
                     "unknown error {:?} for balance={}, duration={}",
                     err, initial_balance, duration_secs,
                 );
             }
+            other => prop_assert!(false, "unexpected invocation result: {:?}", other),
         }
     }
 
@@ -171,7 +171,7 @@ proptest! {
         );
 
         match result {
-            Ok(stream_id) => {
+            Ok(Ok(stream_id)) => {
                 // Contract accepted: stream must be retrievable and have correct flow_rate.
                 let stream = c.get_stream(&stream_id);
                 prop_assert_eq!(
@@ -183,14 +183,14 @@ proptest! {
                 // Deposit must equal the streaming amount (no holdback in this test).
                 prop_assert_eq!(stream.deposit, amount);
             }
-            Err(e) => {
-                let err = e.unwrap_err();
+            Err(Ok(err)) => {
                 prop_assert!(
                     is_known_create_error(&err),
                     "unknown error {:?} for flow_rate={}, duration={}",
                     err, flow_rate, duration,
                 );
             }
+            other => prop_assert!(false, "unexpected invocation result: {:?}", other),
         }
     }
 
@@ -218,7 +218,7 @@ proptest! {
         );
 
         match result {
-            Ok(stream_id) => {
+            Ok(Ok(stream_id)) => {
                 let stream = c.get_stream(&stream_id);
                 prop_assert_eq!(
                     stream.start_time, start_time,
@@ -238,14 +238,14 @@ proptest! {
                     stream.end_time, stream.start_time,
                 );
             }
-            Err(e) => {
-                let err = e.unwrap_err();
+            Err(Ok(err)) => {
                 prop_assert!(
                     is_known_create_error(&err),
                     "unknown error {:?} for start_time={}, duration={}",
                     err, start_time, duration,
                 );
             }
+            other => prop_assert!(false, "unexpected invocation result: {:?}", other),
         }
     }
 
@@ -272,7 +272,7 @@ proptest! {
         );
 
         match result {
-            Ok(stream_id) => {
+            Ok(Ok(stream_id)) => {
                 let stream = c.get_stream(&stream_id);
                 prop_assert_eq!(
                     stream.end_time, expected_end,
@@ -280,14 +280,14 @@ proptest! {
                     stream.end_time, expected_end,
                 );
             }
-            Err(e) => {
-                let err = e.unwrap_err();
+            Err(Ok(err)) => {
                 prop_assert!(
                     is_known_create_error(&err),
                     "unknown error {:?} for start={}, duration={}",
                     err, start_time, duration_secs,
                 );
             }
+            other => prop_assert!(false, "unexpected invocation result: {:?}", other),
         }
     }
 
@@ -315,7 +315,7 @@ proptest! {
         );
 
         match result {
-            Ok(_) => {
+            Ok(Ok(_)) => {
                 let sender_after   = tok.balance(&sender);
                 let contract_after = tok.balance(&contract_id);
 
@@ -330,20 +330,20 @@ proptest! {
                     contract_after - contract_before, initial_balance,
                 );
             }
-            Err(e) => {
+            Err(Ok(err)) => {
                 // On error no funds should have moved.
                 let sender_after   = tok.balance(&sender);
                 let contract_after = tok.balance(&contract_id);
                 prop_assert_eq!(sender_before, sender_after, "sender balance must not change on error");
                 prop_assert_eq!(contract_before, contract_after, "contract balance must not change on error");
 
-                let err = e.unwrap_err();
                 prop_assert!(
                     is_known_create_error(&err),
                     "unknown error {:?}",
                     err,
                 );
             }
+            other => prop_assert!(false, "unexpected invocation result: {:?}", other),
         }
     }
 
@@ -374,7 +374,7 @@ proptest! {
             amount, duration,
         );
 
-        let err = result.unwrap_err().unwrap_err();
+        let err = result.unwrap_err().unwrap();
         prop_assert!(
             is_known_create_error(&err),
             "unknown error {:?} for amount={}, duration={}",

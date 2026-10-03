@@ -32,6 +32,7 @@ fn setup() -> TestEnv {
     let admin = Address::generate(&env);
     SoroStreamContractClient::new(&env, &contract_id)
         .initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    SoroStreamContractClient::new(&env, &contract_id).add_token_to_whitelist(&admin, &token_id);
 
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
 
@@ -207,12 +208,14 @@ fn test_auto_renew_resets_start_time_and_keeps_claimable_zero_immediately() {
             cliff_seconds: 0,
             nonce: 0,
             renew_count: None,
+            recurrence: None,
             lock_until: 0,
             allow_recipient_termination: false,
             non_transferable: false,
             holdback_amount: 0,
             withdrawal_steps: None,
             min_withdrawal_amount: None,
+            sponsor: None,
             requires_recipient_approval: false,
 
         priority: None,
@@ -247,12 +250,14 @@ fn test_same_ledger_withdraw_leaves_zero_claimable_immediately() {
             cliff_seconds: 0,
             nonce: 0,
             renew_count: None,
+            recurrence: None,
             lock_until: 0,
             allow_recipient_termination: false,
             non_transferable: false,
             holdback_amount: 0,
             withdrawal_steps: None,
             min_withdrawal_amount: None,
+            sponsor: None,
             requires_recipient_approval: false,
 
         priority: None,

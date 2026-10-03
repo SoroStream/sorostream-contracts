@@ -351,7 +351,14 @@ impl StreamingContract {
         let start_time = env.ledger().timestamp();
         let end_time = start_time + proposal.duration;
 
-        let stream_id = storage::next_stream_id(&env);
+        // Same non-enumerable ID derivation as create_stream/propose_stream.
+        let nonce = storage::next_nonce(&env);
+        let mut stream_id = storage::derive_stream_id(&env, &proposal.sender, &proposal.recipient, start_time, nonce);
+        let mut retry = nonce + 1;
+        while storage::stream_id_exists(&env, stream_id) {
+            stream_id = storage::derive_stream_id(&env, &proposal.sender, &proposal.recipient, start_time, retry);
+            retry += 1;
+        }
         storage::save_stream(
             &env,
             stream_id,
