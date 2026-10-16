@@ -312,4 +312,26 @@ mod test {
         let result = c.try_accept_admin(&wrong_admin);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_accept_admin_rejects_stale_replay_after_transfer() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &0u32);
+
+        // Complete an admin transfer: propose + accept.
+        let new_admin = Address::generate(&env);
+        c.propose_admin(&new_admin);
+        c.accept_admin(&new_admin);
+        assert_eq!(c.get_admin(), new_admin);
+
+        // Replay the stale accept_admin with the same (now-stale) credentials.
+        // PENDING_ADMIN_KEY was cleared by the first accept, so this must be
+        // rejected with NotInitialized rather than succeeding again.
+        let result = c.try_accept_admin(&new_admin);
+        assert_eq!(result, Err(Ok(ProxyError::NotInitialized)));
+
+        // Admin remains the first transfer's target throughout.
+        assert_eq!(c.get_admin(), new_admin);
+    }
 }
