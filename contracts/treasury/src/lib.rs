@@ -425,6 +425,40 @@ mod test {
     }
 
     #[test]
+    fn test_withdraw_treasury_exact_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // Mint tokens to treasury
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+        assert_eq!(c.get_balance(&t.token_id), 10_000);
+
+        // Withdrawing exactly the recorded balance via the non-withdraw_all path
+        // must succeed and leave a zero stored balance, identically to withdraw_all.
+        c.withdraw_treasury(&t.token_id, &10_000, &t.user);
+
+        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(user_balance, 10_000);
+        assert_eq!(c.get_balance(&t.token_id), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient treasury balance")]
+    fn test_withdraw_treasury_above_balance_panics() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+
+        // One unit above the recorded balance must panic with the documented message.
+        c.withdraw_treasury(&t.token_id, &10_001, &t.user);
+    }
+
+    #[test]
     #[should_panic(expected = "InvalidTreasuryAddress")]
     fn test_initialize_zero_address_rejected() {
         let env = Env::default();
