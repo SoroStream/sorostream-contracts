@@ -138,6 +138,19 @@ pub fn revoke_token_admin(env: &Env) {
 }
 
 // ── Role Aliases (Issue #623) ─────────────────────────────────────────────────
+// Why both naming schemes exist:
+// Issue #623 split the single admin key into distinct roles named `fee_admin`,
+// `emergency_admin`, and `token_admin`. Those `*_admin` names are the public
+// contract interface (see `interface.rs`). The underlying storage helpers were
+// originally named `*_manager` / `*_pause_role`, so these thin wrappers exist
+// to expose the #623 role terminology without renaming the storage functions
+// and breaking existing internal callers.
+//
+// New code should prefer the `*_admin` names: they match the public interface
+// and the documented role terminology from #623. The `*_manager` and
+// `*_pause_role` names are legacy, kept only for backward compatibility.
+//
+// Rationale: https://github.com/SoroStream/sorostream-contracts/issues/623
 
 pub fn get_fee_admin(env: &Env) -> Option<Address> {
     get_fee_manager(env)
