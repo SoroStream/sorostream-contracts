@@ -470,3 +470,6 @@ impl GovernanceContract {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod issue_773_tests;
