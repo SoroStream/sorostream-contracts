@@ -501,3 +501,7 @@ impl MultiSigContract {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod test;
+
