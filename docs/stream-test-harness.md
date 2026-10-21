@@ -10,7 +10,6 @@ and [#809](https://github.com/SoroStream/sorostream-contracts/issues/809)); see 
 requirement that prompted this list.
 
 The current wired files are:
-
 - `acl_tests.rs`
 - `batch_cancel_tests.rs`
 - `bonus_tests.rs`
@@ -71,12 +70,15 @@ The current wired files are:
 - `issue_661_tests.rs`
 - `issue_6_tests.rs`
 - `issue_763_tests.rs`
+- `issue_815_admin_uninitialized_tests.rs`
 - `lifecycle_integration_tests.rs`
 - `oracle_rate_adjustment_tests.rs`
 - `paginated_recipient_tests.rs`
 - `proptest_tests.rs`
 - `protocol_economics_tests.rs`
 - `rate_limit_tests.rs`
+- `renewal_limit_tests.rs`
+- `role_cost_bench.rs`
 - `role_holders_tests.rs`
 - `sender_whitelist_tests.rs`
 - `storage_bench.rs`
