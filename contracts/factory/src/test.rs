@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, BytesN, Env, String,
+    testutils::{Address as _, Events, Ledger},
+    Address, BytesN, Env, String, TryFromVal,
 };
 
 // ---------------------------------------------------------------------------
@@ -25,15 +25,13 @@ fn upload_child_wasm(env: &Env) -> BytesN<32> {
 }
 
 fn has_event(env: &Env, name: &str) -> bool {
-    env.events().all().iter().any(|(_, topics, _)| {
-        let topics: Vec<Val> = topics.clone();
-        topics
-            .get(0)
-            .map(|topic| {
-                let topic: Symbol = topic.into_val(env);
-                topic == Symbol::new(env, name)
-            })
-            .unwrap_or(false)
+    let events = env.events().all();
+    (0..events.len()).any(|index| {
+        let (_, topics, _) = events.get(index).unwrap();
+        topics.get(0).map(|topic| {
+            let actual = Symbol::try_from_val(env, &topic).unwrap();
+            actual == Symbol::new(env, name)
+        }).unwrap_or(false)
     })
 }
 
@@ -82,7 +80,7 @@ fn test_get_deployed_contracts_empty_before_any_deployment() {
     let admin = Address::generate(&env);
     c.initialize(&admin);
 
-    assert_eq!(c.get_deployed_contracts().len(), 0);
+    assert_eq!(c.get_deployed_contracts(&0, &20).len(), 0);
     assert_eq!(c.get_deployed_contract_count(), 0);
 }
 
@@ -199,7 +197,7 @@ fn test_deploy_rejects_caller_matching_child_contract_address() {
     let wasm_hash = upload_child_wasm(&env);
 
     // Deploy a child contract so we have a real child contract address.
-    let child_addr = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1));
+    let child_addr = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None);
 
     // Attempt to deploy again, but authenticate as the child contract's own
     // address. The child address is NOT the stored admin, so the call must be
@@ -209,6 +207,7 @@ fn test_deploy_rejects_caller_matching_child_contract_address() {
         &child_addr,
         &wasm_hash,
         &fake_salt(&env, 2),
+        &None,
     );
     assert!(result.is_err());
     match result {
@@ -250,14 +249,12 @@ fn test_deploy_records_metadata_and_registry() {
     let wasm_hash = upload_child_wasm(&env);
     let child_addr = c
         .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None::<String>);
-
+    assert!(has_event(&env, "StreamContractDeployed"));
     // Registry has one entry.
     let contracts = c.get_deployed_contracts(&0, &20);
     assert_eq!(contracts.len(), 1);
     assert_eq!(c.get_deployed_contract_count(), 1);
     assert_eq!(contracts.get(0).unwrap(), child_addr);
-    assert!(has_event(&env, "StreamContractDeployed"));
-
     // Metadata is correct.
     let info = c.get_deployment_info(&child_addr).unwrap();
     assert_eq!(info.deployer, admin);
@@ -280,7 +277,7 @@ fn test_deployment_deployer_metadata_survives_admin_transfer() {
     c.initialize(&original_admin);
 
     let wasm_hash = upload_child_wasm(&env);
-    let first_child = c.deploy_stream_contract(&original_admin, &wasm_hash, &fake_salt(&env, 41));
+    let first_child = c.deploy_stream_contract(&original_admin, &wasm_hash, &fake_salt(&env, 41), &None);
 
     c.propose_admin(&new_admin);
     c.accept_admin(&new_admin);
@@ -288,7 +285,7 @@ fn test_deployment_deployer_metadata_survives_admin_transfer() {
     let first_info = c.get_deployment_info(&first_child).unwrap();
     assert_eq!(first_info.deployer, original_admin);
 
-    let second_child = c.deploy_stream_contract(&new_admin, &wasm_hash, &fake_salt(&env, 42));
+    let second_child = c.deploy_stream_contract(&new_admin, &wasm_hash, &fake_salt(&env, 42), &None);
     let second_info = c.get_deployment_info(&second_child).unwrap();
     assert_eq!(second_info.deployer, new_admin);
 }
@@ -333,7 +330,7 @@ fn test_deploy_multiple_contracts_all_listed_in_order() {
     let addr3 = c
         .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 30), &None::<String>);
 
-    let contracts = c.get_deployed_contracts();
+    let contracts = c.get_deployed_contracts(&0, &20);
     assert_eq!(contracts.len(), 3);
     assert_eq!(contracts.get(0).unwrap(), addr1);
     assert_eq!(contracts.get(1).unwrap(), addr2);
@@ -361,4 +358,27 @@ fn test_deploy_stores_label_and_info_roundtrips() {
     let info = c.get_deployment_info(&child_addr).unwrap();
     assert_eq!(info.label, Some(label));
     assert_eq!(info.contract_address, child_addr);
+    assert_eq!(info.status, DeploymentStatus::Active);
+}
+
+#[test]
+fn test_deprecate_deployment_updates_info_and_active_listing() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+    let wasm_hash = upload_child_wasm(&env);
+    let first = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 61), &None);
+    let second = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 62), &None);
+
+    assert_eq!(c.get_active_deployed_contracts(&0, &20).len(), 2);
+    c.deprecate_deployment(&admin, &first);
+
+    assert_eq!(c.get_deployment_info(&first).unwrap().status, DeploymentStatus::Deprecated);
+    assert_eq!(c.get_deployed_contracts(&0, &20).len(), 2);
+    let active = c.get_active_deployed_contracts(&0, &20);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap(), second);
 }
