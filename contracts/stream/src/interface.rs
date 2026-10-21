@@ -614,6 +614,9 @@ pub trait SoroStreamInterface {
     /// Only the admin may call this.
     fn execute_admin_override(env: Env, request_id: u64) -> Result<(), StreamError>;
 
+    /// Cancels a pending or ready override request before it is executed.
+    fn cancel_admin_override(env: Env, request_id: u64) -> Result<(), StreamError>;
+
     /// Returns an admin override request by ID.
     fn get_override_request(env: Env, request_id: u64) -> Result<AdminOverrideRequest, StreamError>;
 

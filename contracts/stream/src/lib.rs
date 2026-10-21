@@ -25,6 +25,7 @@ pub mod roles;
 
 pub use interface::SoroStreamInterface;
 pub use errors::StreamError;
+use types::{AdminOverrideRequest, OverrideAction, OverrideRequestStatus};
 pub use types::{AuditEntry, CreateStreamOptions, CreateStreamParams, HealthStatus, RenewalLimit, Stats, Stream, StreamHealth, StreamOptions, StreamStatus, StreamTransition, VestingCurve, StreamQueryFilter, WithdrawalProof, WithdrawalRecord};
 pub use oracle::IPriceOracle;
 pub use composability::ISoroStreamComposability;
@@ -57,7 +58,9 @@ pub use roles::{AdminRole, RoleHolders};
 #[cfg(test)] mod role_holders_tests;
 
 // Test, benchmark, and fuzz modules are declared explicitly so files cannot silently
-// disappear from `cargo test`; CI checks both missing and stale declarations.
+// disappear from `cargo test`. `scripts/check_stream_test_modules.py` compares this
+// block with matching source files in this directory in both directions; see
+// `contracts/stream/TEST_MODULES.md` for the live/dormant inventory and history (#806, #807).
 #[cfg(test)] mod acl_tests;
 #[cfg(test)] mod batch_cancel_tests;
 #[cfg(test)] mod bonus_tests;
@@ -8743,6 +8746,197 @@ impl SoroStreamContract {
             leaf_count: records.len(),
             root: level.get(0).unwrap(),
         })
+    }
+
+    pub fn set_admin_override_timelock(env: Env, timelock_seconds: u64) -> Result<(), StreamError> {
+        check_admin(&env)?;
+        env.storage()
+            .instance()
+            .set(&soroban_sdk::symbol_short!("ovr_delay"), &timelock_seconds);
+        Ok(())
+    }
+
+    pub fn get_admin_override_timelock(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::symbol_short!("ovr_delay"))
+            .unwrap_or(48 * 60 * 60)
+    }
+
+    pub fn initiate_admin_override(
+        env: Env,
+        stream_id: u64,
+        action: OverrideAction,
+        reason: String,
+    ) -> Result<u64, StreamError> {
+        check_admin(&env)?;
+        if load_stream(&env, stream_id).is_none() {
+            return Err(StreamError::StreamNotFound);
+        }
+        let seq_key = soroban_sdk::symbol_short!("ovr_seq");
+        let request_id: u64 = env.storage().instance().get(&seq_key).unwrap_or(0);
+        let next_id = request_id.checked_add(1).ok_or(StreamError::Overflow)?;
+        let now = env.ledger().timestamp();
+        let executable_at = now
+            .checked_add(Self::get_admin_override_timelock(env.clone()))
+            .ok_or(StreamError::Overflow)?;
+        let request = AdminOverrideRequest {
+            request_id,
+            stream_id,
+            action,
+            initiator: read_admin(&env).ok_or(StreamError::NotInitialized)?,
+            created_at: now,
+            executable_at,
+            status: OverrideRequestStatus::Pending,
+            reason,
+        };
+        let key = (soroban_sdk::symbol_short!("ovr_req"), request_id);
+        env.storage().persistent().set(&key, &request);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, 100_000, 120_000);
+        env.storage().instance().set(&seq_key, &next_id);
+        Ok(request_id)
+    }
+
+    pub fn get_override_request(
+        env: Env,
+        request_id: u64,
+    ) -> Result<AdminOverrideRequest, StreamError> {
+        let key = (soroban_sdk::symbol_short!("ovr_req"), request_id);
+        let mut request: AdminOverrideRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(StreamError::StreamNotFound)?;
+        if request.status == OverrideRequestStatus::Pending
+            && env.ledger().timestamp() >= request.executable_at
+        {
+            request.status = OverrideRequestStatus::Ready;
+        }
+        Ok(request)
+    }
+
+    pub fn cancel_admin_override(env: Env, request_id: u64) -> Result<(), StreamError> {
+        check_admin(&env)?;
+        let key = (soroban_sdk::symbol_short!("ovr_req"), request_id);
+        let mut request: AdminOverrideRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(StreamError::StreamNotFound)?;
+        if request.status != OverrideRequestStatus::Pending
+            && request.status != OverrideRequestStatus::Ready
+        {
+            return Err(StreamError::InvalidParameter);
+        }
+        request.status = OverrideRequestStatus::Cancelled;
+        env.storage().persistent().set(&key, &request);
+        Ok(())
+    }
+
+    pub fn execute_admin_override(env: Env, request_id: u64) -> Result<(), StreamError> {
+        check_admin(&env)?;
+        let key = (soroban_sdk::symbol_short!("ovr_req"), request_id);
+        let mut request: AdminOverrideRequest = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(StreamError::StreamNotFound)?;
+        if request.status != OverrideRequestStatus::Pending
+            && request.status != OverrideRequestStatus::Ready
+        {
+            return Err(StreamError::InvalidParameter);
+        }
+        if env.ledger().timestamp() < request.executable_at {
+            return Err(StreamError::InvalidParameter);
+        }
+        let stream = match load_stream(&env, request.stream_id) {
+            Some(s) => s,
+            None => return Err(StreamError::StreamNotFound),
+        };
+        let available = stream
+            .deposit
+            .saturating_sub(stream.options.total_withdrawn)
+            .max(0);
+        let (recipient_amount, sender_amount) = match request.action {
+            OverrideAction::Complete => (available, 0),
+            OverrideAction::Cancel => {
+                let now = if stream.status == StreamStatus::Paused {
+                    stream.options.last_pause_time
+                } else {
+                    env.ledger().timestamp()
+                };
+                let earned = if stream.status == StreamStatus::PendingApproval
+                    || stream.status == StreamStatus::EscrowHold
+                {
+                    0
+                } else if stream.options.milestone_release_mode {
+                    let mut released = 0i128;
+                    for milestone in stream.options.milestones.iter() {
+                        if milestone.status == MilestoneStatus::Released
+                            || (stream.options.milestone_approver.is_none()
+                                && milestone.unlock_time <= now)
+                        {
+                            released = released
+                                .checked_add(milestone.amount)
+                                .ok_or(StreamError::Overflow)?;
+                        }
+                    }
+                    released.min(available)
+                } else if stream.options.is_step_vesting {
+                    let mut unlocked = 0i128;
+                    for tranche in load_tranches(&env, request.stream_id).iter() {
+                        if tranche.unlock_time <= now {
+                            unlocked = unlocked
+                                .checked_add(tranche.amount)
+                                .ok_or(StreamError::Overflow)?;
+                        }
+                    }
+                    unlocked.min(available)
+                } else if now < stream.cliff_time {
+                    0
+                } else {
+                    vesting_math::compute_earned(
+                        stream.flow_rate,
+                        now,
+                        stream.end_time,
+                        stream.last_withdraw_time,
+                    )
+                    .ok_or(StreamError::Overflow)?
+                    .min(available)
+                };
+                (earned, available.saturating_sub(earned))
+            }
+        };
+        if stream.status == StreamStatus::Active {
+            decrement_active_stream_count(&env);
+            decrement_token_stream_count(&env, &stream.token);
+            decrement_sender_active_count(&env, &stream.sender);
+        }
+        remove_tranches(&env, request.stream_id);
+        remove_stream(&env, request.stream_id);
+        unindex_by_sender(&env, &stream.sender, request.stream_id);
+        unindex_by_recipient(&env, &stream.recipient, request.stream_id);
+        let client = token::Client::new(&env, &stream.token);
+        if recipient_amount > 0 {
+            client.transfer(
+                &env.current_contract_address(),
+                &stream.recipient,
+                &recipient_amount,
+            );
+        }
+        if sender_amount > 0 {
+            client.transfer(
+                &env.current_contract_address(),
+                &stream.sender,
+                &sender_amount,
+            );
+        }
+        request.status = OverrideRequestStatus::Executed;
+        env.storage().persistent().set(&key, &request);
+        Self::debug_check_invariants(&env, Some(request.stream_id));
+        Ok(())
     }
 
     pub fn verify_withdrawal_proof(env: Env, proof: types::WithdrawalProof) -> bool {
