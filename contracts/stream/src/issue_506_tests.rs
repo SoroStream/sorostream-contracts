@@ -1,4 +1,3 @@
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -98,7 +97,10 @@ fn test_issue_506_ttl_extension_on_withdraw() {
     // Stream should still exist and be retrievable
     let stream = c.get_stream(&stream_id);
     assert_eq!(stream.status, StreamStatus::Active);
-    assert!(stream.options.total_withdrawn > 0, "Total withdrawn should increase");
+    assert!(
+        stream.options.total_withdrawn > 0,
+        "Total withdrawn should increase"
+    );
 }
 
 #[test]
@@ -144,7 +146,10 @@ fn test_issue_506_ttl_extension_on_metadata_update() {
         &default_params(),
     );
 
-    let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
+    let uri = Some(soroban_sdk::String::from_str(
+        &t.env,
+        "https://example.com/meta",
+    ));
     c.update_metadata_uri(&t.sender, &stream_id, &uri);
 
     // Stream should still be retrievable
@@ -175,7 +180,10 @@ fn test_issue_506_multiple_mutating_calls_extend_ttl() {
         if i % 2 == 0 {
             c.withdraw(&stream_id, &t.recipient);
         } else {
-            let uri = Some(soroban_sdk::String::from_str(&t.env, "https://example.com/meta"));
+            let uri = Some(soroban_sdk::String::from_str(
+                &t.env,
+                "https://example.com/meta",
+            ));
             c.update_metadata_uri(&t.sender, &stream_id, &uri);
         }
 

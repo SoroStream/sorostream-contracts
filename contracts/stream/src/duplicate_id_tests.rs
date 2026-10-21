@@ -26,11 +26,11 @@ use soroban_sdk::{
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 struct T {
-    env:         Env,
+    env: Env,
     contract_id: Address,
-    token_id:    Address,
-    sender:      Address,
-    recipient:   Address,
+    token_id: Address,
+    sender: Address,
+    recipient: Address,
 }
 
 fn setup() -> T {
@@ -39,10 +39,10 @@ fn setup() -> T {
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
-    let token_id    = env
+    let token_id = env
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
-    let sender    = Address::generate(&env);
+    let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
 
     StellarAssetClient::new(&env, &token_id).mint(&sender, &100_000_000);
@@ -53,7 +53,13 @@ fn setup() -> T {
     SoroStreamContractClient::new(&env, &contract_id).add_token_to_whitelist(&admin, &token_id);
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
 
-    T { env, contract_id, token_id, sender, recipient }
+    T {
+        env,
+        contract_id,
+        token_id,
+        sender,
+        recipient,
+    }
 }
 
 fn client(t: &T) -> SoroStreamContractClient<'_> {
@@ -97,19 +103,30 @@ fn test_identical_params_same_ledger_produce_different_ids() {
     t.env.ledger().set_timestamp(1_000);
 
     let id_a = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params(0), // nonce 0
     );
 
     // Same timestamp — the ledger has not advanced.
     let id_b = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params(1), // nonce 1 — distinct nonce → distinct ID
     );
 
-    assert_ne!(id_a, id_b, "two streams with different nonces must have different IDs");
+    assert_ne!(
+        id_a, id_b,
+        "two streams with different nonces must have different IDs"
+    );
 }
 
 // ── Test 2 ─────────────────────────────────────────────────────────────────────
@@ -122,13 +139,21 @@ fn test_both_streams_independently_retrievable() {
     t.env.ledger().set_timestamp(500);
 
     let id_a = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &20_000, &2_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &20_000,
+        &2_000,
+        &false,
         &params(0),
     );
     let id_b = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &20_000, &2_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &20_000,
+        &2_000,
+        &false,
         &params(1),
     );
 
@@ -159,13 +184,21 @@ fn test_both_streams_independently_claimable() {
 
     // flow_rate = 10_000 / 1_000 = 10 tokens/s
     let id_a = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params(0),
     );
     let id_b = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params(1),
     );
 
@@ -206,13 +239,21 @@ fn test_cancel_a_does_not_affect_b() {
     t.env.ledger().set_timestamp(0);
 
     let id_a = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params(0),
     );
     let id_b = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params(1),
     );
 
@@ -224,14 +265,18 @@ fn test_cancel_a_does_not_affect_b() {
     // B must still be active with the correct deposit.
     let stream_b = c.get_stream(&id_b);
     assert_eq!(
-        stream_b.status, crate::types::StreamStatus::Active,
+        stream_b.status,
+        crate::types::StreamStatus::Active,
         "stream B must still be Active after A is cancelled"
     );
     assert_eq!(stream_b.deposit, 10_000);
 
     // Stream B is still claimable (200 s elapsed → 2_000 tokens).
     let claimable_b = c.get_claimable(&id_b);
-    assert_eq!(claimable_b, 2_000, "stream B must have 2000 claimable at t=200");
+    assert_eq!(
+        claimable_b, 2_000,
+        "stream B must have 2000 claimable at t=200"
+    );
 }
 
 // ── Test 5 ─────────────────────────────────────────────────────────────────────
@@ -244,16 +289,31 @@ fn test_three_identical_params_unique_ids() {
     t.env.ledger().set_timestamp(42);
 
     let id_a = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &5_000, &500, &false, &params(10),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &5_000,
+        &500,
+        &false,
+        &params(10),
     );
     let id_b = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &5_000, &500, &false, &params(11),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &5_000,
+        &500,
+        &false,
+        &params(11),
     );
     let id_c = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &5_000, &500, &false, &params(12),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &5_000,
+        &500,
+        &false,
+        &params(12),
     );
 
     assert_ne!(id_a, id_b, "A and B must differ");

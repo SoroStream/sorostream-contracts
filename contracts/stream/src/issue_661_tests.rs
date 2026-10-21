@@ -1,4 +1,3 @@
-
 //! Issue #661: storage key hashing / lookup performance.
 //!
 //! The only actual cryptographic hash in `storage.rs` is `derive_stream_id`'s
@@ -118,7 +117,9 @@ fn test_issue_661_admin_governance_and_pause_state_roundtrip_correctly() {
     assert!(!c.is_paused()); // PAUSED_KEY + PAUSE_EFFECTIVE_LEDGER_KEY (both converted)
 
     let starting_ledger = t.env.ledger().sequence();
-    t.env.ledger().with_mut(|li| li.sequence_number = starting_ledger + 1);
+    t.env
+        .ledger()
+        .with_mut(|li| li.sequence_number = starting_ledger + 1);
     assert!(c.is_paused());
 
     c.emergency_resume();

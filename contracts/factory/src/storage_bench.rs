@@ -104,11 +104,7 @@ fn generate_factory_storage_baseline() {
 
         let cl = c(&b);
         cl.get_deployed_contracts();
-        results.push(measure(
-            &b.env,
-            "get_deployed_contracts",
-            target_size,
-        ));
+        results.push(measure(&b.env, "get_deployed_contracts", target_size));
     }
 
     // Build JSON manually (no serde in no_std crate)
@@ -158,13 +154,19 @@ fn check_factory_storage_baseline_regression() {
             if res.read_entries > read_base + MAX_REGRESSION {
                 failures.push(std::format!(
                     "n{}: read_entries {} exceeds baseline {} by more than {}",
-                    target_size, res.read_entries, read_base, MAX_REGRESSION
+                    target_size,
+                    res.read_entries,
+                    read_base,
+                    MAX_REGRESSION
                 ));
             }
             if res.write_entries > write_base + MAX_REGRESSION {
                 failures.push(std::format!(
                     "n{}: write_entries {} exceeds baseline {} by more than {}",
-                    target_size, res.write_entries, write_base, MAX_REGRESSION
+                    target_size,
+                    res.write_entries,
+                    write_base,
+                    MAX_REGRESSION
                 ));
             }
         } else {
@@ -186,7 +188,9 @@ fn parse_json_u32(s: &str, key: &str) -> u32 {
     let pattern = std::format!("\"{}\": ", key);
     if let Some(pos) = s.find(&pattern) {
         let rest = &s[pos + pattern.len()..];
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         rest[..end].parse().unwrap_or(0)
     } else {
         0

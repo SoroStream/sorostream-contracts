@@ -86,7 +86,7 @@ pub fn compute_flow_rate(deposit: i128, duration_seconds: u64) -> i128 {
 //
 // | Curve     | On-chain work per `withdraw`/`compute_claimable` call           | Storage reads | Best for                            |
 // |-----------|-----------------------------------------------------------------|---------------|-------------------------------------|
-| Linear    | Single multiply: `flow_rate × elapsed`                          | 0 (pure math) | Long-duration streams; lowest cost  |
+// | Linear    | Single multiply: `flow_rate * elapsed`                          | 0 (pure math) | Long-duration streams; lowest cost  |
 // | TimeDecay | Iterative loop: one `checked_mul` + `checked_div` per 1 ks window | 0 (pure math) | Front-weighted vesting; higher cost |
 //
 // Linear is O(1) — one multiplication regardless of stream length, so it is
@@ -95,7 +95,7 @@ pub fn compute_flow_rate(deposit: i128, duration_seconds: u64) -> i128 {
 // TimeDecay is O(windows) where `windows = elapsed / DECAY_WINDOW_SECS`.
 // Each window iteration performs a fixed-point multiply and division, so cost
 // grows linearly with stream duration. For a 1-year stream (~31.5M seconds)
-// that is ~31 500 loop iterations — roughly 30 000× the arithmetic of Linear.
+// that is ~31 500 loop iterations — roughly 30 000* the arithmetic of Linear.
 // Use TimeDecay only when front-weighted release is genuinely required, and
 // prefer shorter durations or larger windows to keep the iteration count low.
 //
@@ -140,13 +140,13 @@ const SCALE: i128 = 1_000_000_000;
 ///
 /// ```text
 /// remaining_scaled[0] = SCALE
-/// remaining_scaled[i] = remaining_scaled[i-1] × (10_000 - decay_factor) / 10_000
+/// remaining_scaled[i] = remaining_scaled[i-1] * (10_000 - decay_factor) / 10_000
 /// ```
 ///
 /// Cumulative vested at time `t`:
 ///
 /// ```text
-/// vested(t) = deposit × (SCALE - remaining_scaled[windows(t)]) / SCALE
+/// vested(t) = deposit * (SCALE - remaining_scaled[windows(t)]) / SCALE
 /// ```
 ///
 /// **Convergence guarantee**: when `query_time >= end_time` the function returns
@@ -154,7 +154,7 @@ const SCALE: i128 = 1_000_000_000;
 ///
 /// **Linear fallback**: `decay_factor == 0` ⟹ `remaining_scaled` stays at
 /// `SCALE` for every window, so `vested(t)` falls back to the linear formula
-/// `deposit × elapsed / duration`.
+/// `deposit * elapsed / duration`.
 ///
 /// # Parameters
 /// - `deposit`      – total tokens locked (stroops)
@@ -186,7 +186,7 @@ pub fn compute_cumulative_decay(
     // Linear fallback: decay_factor == 0.
     if decay_factor == 0 {
         let elapsed = effective_now - start_time;
-        // deposit × elapsed / duration  (no overflow path for reasonable deposits)
+        // deposit * elapsed / duration  (no overflow path for reasonable deposits)
         return deposit
             .checked_mul(elapsed as i128)?
             .checked_div(duration as i128);
@@ -201,7 +201,7 @@ pub fn compute_cumulative_decay(
     // Full windows completed so far.
     let full_windows = elapsed / DECAY_WINDOW_SECS;
 
-    // Compute remaining_scaled = SCALE × keep_bps^full_windows / 10_000^full_windows
+    // Compute remaining_scaled = SCALE * keep_bps^full_windows / 10_000^full_windows
     // iteratively to avoid huge intermediate values.
     let mut remaining_scaled: i128 = SCALE;
     for _ in 0..full_windows {
@@ -211,11 +211,9 @@ pub fn compute_cumulative_decay(
     }
 
     // Fraction vested = (SCALE - remaining_scaled) / SCALE
-    // vested = deposit × (SCALE - remaining_scaled) / SCALE
+    // vested = deposit * (SCALE - remaining_scaled) / SCALE
     let vested_scaled = SCALE.checked_sub(remaining_scaled)?;
-    let vested = deposit
-        .checked_mul(vested_scaled)?
-        .checked_div(SCALE)?;
+    let vested = deposit.checked_mul(vested_scaled)?.checked_div(SCALE)?;
 
     // Convergence guarantee: at end_time return full deposit.
     if effective_now >= end_time {
@@ -254,17 +252,24 @@ pub fn compute_claimable_decay(
     if effective_now >= end_time {
         let cumulative_at_end = deposit; // full deposit
         let cumulative_at_last = compute_cumulative_decay(
-            deposit, start_time, end_time, last_withdraw_time, decay_factor,
+            deposit,
+            start_time,
+            end_time,
+            last_withdraw_time,
+            decay_factor,
         )?;
         let claimable = cumulative_at_end.saturating_sub(cumulative_at_last);
         return Some(claimable.max(0));
     }
 
-    let cumulative_now = compute_cumulative_decay(
-        deposit, start_time, end_time, effective_now, decay_factor,
-    )?;
+    let cumulative_now =
+        compute_cumulative_decay(deposit, start_time, end_time, effective_now, decay_factor)?;
     let cumulative_last = compute_cumulative_decay(
-        deposit, start_time, end_time, last_withdraw_time, decay_factor,
+        deposit,
+        start_time,
+        end_time,
+        last_withdraw_time,
+        decay_factor,
     )?;
 
     Some(cumulative_now.saturating_sub(cumulative_last).max(0))
@@ -360,9 +365,13 @@ mod proofs {
         let flow_rate = compute_flow_rate(deposit, duration);
         kani::assume(flow_rate > 0);
 
-        let claimable = compute_claimable(flow_rate, now, start_time, end_time, last_withdraw_time).unwrap();
+        let claimable =
+            compute_claimable(flow_rate, now, start_time, end_time, last_withdraw_time).unwrap();
 
-        assert!(claimable <= deposit, "claimable must not exceed deposit after partial withdrawal");
+        assert!(
+            claimable <= deposit,
+            "claimable must not exceed deposit after partial withdrawal"
+        );
     }
 
     /// INVARIANT 2: claimable is non-decreasing over time.
@@ -384,8 +393,10 @@ mod proofs {
         kani::assume(end_time <= u64::MAX / 2);
         kani::assume(last_withdraw_time <= end_time);
 
-        let c1 = compute_claimable(flow_rate, t1, cliff_time, end_time, last_withdraw_time).unwrap();
-        let c2 = compute_claimable(flow_rate, t2, cliff_time, end_time, last_withdraw_time).unwrap();
+        let c1 =
+            compute_claimable(flow_rate, t1, cliff_time, end_time, last_withdraw_time).unwrap();
+        let c2 =
+            compute_claimable(flow_rate, t2, cliff_time, end_time, last_withdraw_time).unwrap();
 
         assert!(c2 >= c1, "claimable must be non-decreasing over time");
     }

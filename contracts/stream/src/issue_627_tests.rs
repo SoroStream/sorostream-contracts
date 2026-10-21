@@ -105,7 +105,10 @@ fn test_recipient_can_delegate_stream_and_delegate_withdraws() {
     c.withdraw(&stream_id, &delegate);
 
     let new_recipient_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
-    assert!(new_recipient_balance > initial_recipient_balance, "Recipient should receive withdrawn funds");
+    assert!(
+        new_recipient_balance > initial_recipient_balance,
+        "Recipient should receive withdrawn funds"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use crate::types::{AuditEntry, Stream, StreamTransition, VestingTranche, WithdrawalRecord};
-use soroban_sdk::{symbol_short, Address, Bytes, BytesN, Env, String, Symbol, Vec, xdr::ToXdr};
+use soroban_sdk::{symbol_short, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 const ADMIN_KEY: Symbol = symbol_short!("admin");
 const PAUSED_KEY: Symbol = symbol_short!("paused");
@@ -33,9 +33,7 @@ const MAX_FUTURE_OFFSET_KEY: Symbol = symbol_short!("mf_start");
 
 /// Stores the contract admin address.
 pub fn write_admin(env: &Env, admin: &Address) {
-    env.storage()
-        .instance()
-        .set(&ADMIN_KEY, admin);
+    env.storage().instance().set(&ADMIN_KEY, admin);
 }
 
 /// Loads the contract admin address.
@@ -109,9 +107,7 @@ pub fn read_storage_version(env: &Env) -> Option<u32> {
 }
 
 pub fn write_storage_version(env: &Env, version: u32) {
-    env.storage()
-        .instance()
-        .set(&STORAGE_VERSION_KEY, &version);
+    env.storage().instance().set(&STORAGE_VERSION_KEY, &version);
 }
 
 pub fn assert_storage_version(env: &Env) -> Result<(), crate::errors::StreamError> {
@@ -172,15 +168,12 @@ pub fn write_fee_discount(env: &Env, sender: &Address, discount_bps: u32) {
         .set(&fee_discount_key(env, sender), &discount_bps);
 }
 
-pub fn write_cleanup_tombstone(
-    env: &Env,
-    stream_id: u64,
-    status_discriminant: u32,
-    end_time: u64,
-) {
+pub fn write_cleanup_tombstone(env: &Env, stream_id: u64, status_discriminant: u32, end_time: u64) {
     let status_key = (symbol_short!("cleanst"), stream_id);
     let end_time_key = (symbol_short!("cleanet"), stream_id);
-    env.storage().temporary().set(&status_key, &status_discriminant);
+    env.storage()
+        .temporary()
+        .set(&status_key, &status_discriminant);
     env.storage().temporary().set(&end_time_key, &end_time);
     const TOMBSTONE_TTL: u32 = 120_960;
     env.storage()
@@ -257,7 +250,10 @@ pub fn mark_stream_cancelled(env: &Env, stream_id: u64) {
 /// Returns true if the stream was previously cancelled (sentinel is present).
 pub fn is_stream_cancelled(env: &Env, stream_id: u64) -> bool {
     let key = (symbol_short!("xcl"), stream_id);
-    env.storage().persistent().get::<_, bool>(&key).unwrap_or(false)
+    env.storage()
+        .persistent()
+        .get::<_, bool>(&key)
+        .unwrap_or(false)
 }
 
 /// Key for the monotonic event sequence number associated with a stream.
@@ -314,7 +310,9 @@ pub fn recipient_slot_key(env: &Env, addr: &Address, idx: u32) -> (Symbol, Addre
 pub fn index_by_sender(env: &Env, sender: &Address, stream_id: u64) {
     let cnt_key = sender_count_key(env, sender);
     let idx: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0u32);
-    env.storage().persistent().set(&sender_slot_key(env, sender, idx), &stream_id);
+    env.storage()
+        .persistent()
+        .set(&sender_slot_key(env, sender, idx), &stream_id);
     let next = idx.checked_add(1).expect("sender index overflow");
     env.storage().persistent().set(&cnt_key, &next);
     if load_stream(env, stream_id)
@@ -332,7 +330,9 @@ pub fn index_by_sender(env: &Env, sender: &Address, stream_id: u64) {
 pub fn index_by_recipient(env: &Env, recipient: &Address, stream_id: u64) {
     let cnt_key = recipient_count_key(env, recipient);
     let idx: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0u32);
-    env.storage().persistent().set(&recipient_slot_key(env, recipient, idx), &stream_id);
+    env.storage()
+        .persistent()
+        .set(&recipient_slot_key(env, recipient, idx), &stream_id);
     let next = idx.checked_add(1).expect("recipient index overflow");
     env.storage().persistent().set(&cnt_key, &next);
 }
@@ -348,10 +348,16 @@ pub fn unindex_by_sender(env: &Env, sender: &Address, stream_id: u64) {
             if id == stream_id {
                 let last = cnt - 1;
                 if i != last {
-                    let last_id: u64 = env.storage().persistent().get(&sender_slot_key(env, sender, last)).unwrap_or(0);
+                    let last_id: u64 = env
+                        .storage()
+                        .persistent()
+                        .get(&sender_slot_key(env, sender, last))
+                        .unwrap_or(0);
                     env.storage().persistent().set(&slot_key, &last_id);
                 }
-                env.storage().persistent().remove(&sender_slot_key(env, sender, last));
+                env.storage()
+                    .persistent()
+                    .remove(&sender_slot_key(env, sender, last));
                 env.storage().persistent().set(&cnt_key, &last);
                 return;
             }
@@ -376,9 +382,10 @@ pub fn index_active_by_sender(env: &Env, sender: &Address, stream_id: u64) {
     env.storage()
         .persistent()
         .set(&active_sender_slot_key(env, sender, idx), &stream_id);
-    env.storage()
-        .persistent()
-        .set(&count_key, &idx.checked_add(1).expect("active sender index overflow"));
+    env.storage().persistent().set(
+        &count_key,
+        &idx.checked_add(1).expect("active sender index overflow"),
+    );
 }
 
 /// Removes a stream from the sender's active-only index using swap-and-pop.
@@ -436,10 +443,16 @@ pub fn unindex_by_recipient(env: &Env, recipient: &Address, stream_id: u64) {
             if id == stream_id {
                 let last = cnt - 1;
                 if i != last {
-                    let last_id: u64 = env.storage().persistent().get(&recipient_slot_key(env, recipient, last)).unwrap_or(0);
+                    let last_id: u64 = env
+                        .storage()
+                        .persistent()
+                        .get(&recipient_slot_key(env, recipient, last))
+                        .unwrap_or(0);
                     env.storage().persistent().set(&slot_key, &last_id);
                 }
-                env.storage().persistent().remove(&recipient_slot_key(env, recipient, last));
+                env.storage()
+                    .persistent()
+                    .remove(&recipient_slot_key(env, recipient, last));
                 env.storage().persistent().set(&cnt_key, &last);
                 return;
             }
@@ -457,10 +470,18 @@ pub fn get_sender_stream_count(env: &Env, sender: &Address) -> u32 {
 
 /// Returns all stream IDs for a sender by iterating over slots.
 pub fn get_ids_by_sender(env: &Env, sender: &Address) -> Vec<u64> {
-    let cnt: u32 = env.storage().persistent().get(&sender_count_key(env, sender)).unwrap_or(0u32);
+    let cnt: u32 = env
+        .storage()
+        .persistent()
+        .get(&sender_count_key(env, sender))
+        .unwrap_or(0u32);
     let mut ids = Vec::new(env);
     for i in 0..cnt {
-        if let Some(id) = env.storage().persistent().get::<(Symbol, Address, u32), u64>(&sender_slot_key(env, sender, i)) {
+        if let Some(id) = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, Address, u32), u64>(&sender_slot_key(env, sender, i))
+        {
             ids.push_back(id);
         }
     }
@@ -469,10 +490,18 @@ pub fn get_ids_by_sender(env: &Env, sender: &Address) -> Vec<u64> {
 
 /// Returns all stream IDs for a recipient by iterating over slots.
 pub fn get_ids_by_recipient(env: &Env, recipient: &Address) -> Vec<u64> {
-    let cnt: u32 = env.storage().persistent().get(&recipient_count_key(env, recipient)).unwrap_or(0u32);
+    let cnt: u32 = env
+        .storage()
+        .persistent()
+        .get(&recipient_count_key(env, recipient))
+        .unwrap_or(0u32);
     let mut ids = Vec::new(env);
     for i in 0..cnt {
-        if let Some(id) = env.storage().persistent().get::<(Symbol, Address, u32), u64>(&recipient_slot_key(env, recipient, i)) {
+        if let Some(id) = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, Address, u32), u64>(&recipient_slot_key(env, recipient, i))
+        {
             ids.push_back(id);
         }
     }
@@ -492,7 +521,9 @@ fn tag_slot_key(env: &Env, tag: &String, idx: u32) -> (Symbol, String, u32) {
 pub fn index_by_tag(env: &Env, tag: &String, stream_id: u64) {
     let cnt_key = tag_count_key(env, tag);
     let idx: u32 = env.storage().persistent().get(&cnt_key).unwrap_or(0u32);
-    env.storage().persistent().set(&tag_slot_key(env, tag, idx), &stream_id);
+    env.storage()
+        .persistent()
+        .set(&tag_slot_key(env, tag, idx), &stream_id);
     let next = idx.checked_add(1).expect("tag index overflow");
     env.storage().persistent().set(&cnt_key, &next);
 }
@@ -506,10 +537,16 @@ pub fn unindex_by_tag(env: &Env, tag: &String, stream_id: u64) {
             if id == stream_id {
                 let last = cnt - 1;
                 if i != last {
-                    let last_id: u64 = env.storage().persistent().get(&tag_slot_key(env, tag, last)).unwrap_or(0);
+                    let last_id: u64 = env
+                        .storage()
+                        .persistent()
+                        .get(&tag_slot_key(env, tag, last))
+                        .unwrap_or(0);
                     env.storage().persistent().set(&slot_key, &last_id);
                 }
-                env.storage().persistent().remove(&tag_slot_key(env, tag, last));
+                env.storage()
+                    .persistent()
+                    .remove(&tag_slot_key(env, tag, last));
                 env.storage().persistent().set(&cnt_key, &last);
                 return;
             }
@@ -518,10 +555,18 @@ pub fn unindex_by_tag(env: &Env, tag: &String, stream_id: u64) {
 }
 
 pub fn get_ids_by_tag(env: &Env, tag: &String) -> Vec<u64> {
-    let cnt: u32 = env.storage().persistent().get(&tag_count_key(env, tag)).unwrap_or(0u32);
+    let cnt: u32 = env
+        .storage()
+        .persistent()
+        .get(&tag_count_key(env, tag))
+        .unwrap_or(0u32);
     let mut ids = Vec::new(env);
     for i in 0..cnt {
-        if let Some(id) = env.storage().persistent().get::<_, u64>(&tag_slot_key(env, tag, i)) {
+        if let Some(id) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&tag_slot_key(env, tag, i))
+        {
             ids.push_back(id);
         }
     }
@@ -537,7 +582,9 @@ pub fn get_batch_nonce(env: &Env, sender: &Address) -> u64 {
 /// Increments and stores the batch nonce for a sender.
 pub fn increment_batch_nonce(env: &Env, sender: &Address) {
     let key = (symbol_short!("bn"), sender.clone());
-    let next = get_batch_nonce(env, sender).checked_add(1).expect("batch nonce overflow");
+    let next = get_batch_nonce(env, sender)
+        .checked_add(1)
+        .expect("batch nonce overflow");
     env.storage().persistent().set(&key, &next);
 }
 pub fn nonce_used(env: &Env, sender: &Address, nonce: u64) -> bool {
@@ -554,10 +601,7 @@ pub fn mark_nonce_used(env: &Env, sender: &Address, nonce: u64) {
 /// Returns whether the contract is currently paused.
 #[allow(dead_code)]
 pub fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&PAUSED_KEY)
-        .unwrap_or(false)
+    env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
 }
 
 /// Sets the paused state.
@@ -567,9 +611,7 @@ pub fn is_paused(env: &Env) -> bool {
 /// instantly — see `is_paused_or_auto_unpause`, which is the gate every
 /// mutating entry point consults. Transitioning out clears that schedule.
 pub fn set_paused(env: &Env, paused: bool) {
-    env.storage()
-        .instance()
-        .set(&PAUSED_KEY, &paused);
+    env.storage().instance().set(&PAUSED_KEY, &paused);
     if paused {
         let effective_ledger = env
             .ledger()
@@ -596,9 +638,7 @@ pub fn get_pause_effective_ledger(env: &Env) -> u32 {
 
 /// Sets the timestamp at which the contract auto-unpauses (0 = no expiry).
 pub fn set_pause_expiry(env: &Env, expiry: u64) {
-    env.storage()
-        .instance()
-        .set(&PAUSE_EXPIRES_KEY, &expiry);
+    env.storage().instance().set(&PAUSE_EXPIRES_KEY, &expiry);
 }
 
 /// Returns the pause expiry timestamp (0 if not set).
@@ -617,10 +657,7 @@ pub fn get_pause_expiry(env: &Env) -> u64 {
 /// reads as not-paused here, so callers — including `withdraw` — proceed
 /// normally during that delay window.
 pub fn is_paused_or_auto_unpause(env: &Env) -> bool {
-    let paused: bool = env.storage()
-        .instance()
-        .get(&PAUSED_KEY)
-        .unwrap_or(false);
+    let paused: bool = env.storage().instance().get(&PAUSED_KEY).unwrap_or(false);
     if !paused {
         return false;
     }
@@ -631,12 +668,8 @@ pub fn is_paused_or_auto_unpause(env: &Env) -> bool {
     let expiry = get_pause_expiry(env);
     if expiry > 0 && env.ledger().timestamp() >= expiry {
         // Auto-unpause: clear flags without emitting an event (event is emitted by caller)
-        env.storage()
-            .instance()
-            .set(&PAUSED_KEY, &false);
-        env.storage()
-            .instance()
-            .set(&PAUSE_EXPIRES_KEY, &0u64);
+        env.storage().instance().set(&PAUSED_KEY, &false);
+        env.storage().instance().set(&PAUSE_EXPIRES_KEY, &0u64);
         return false;
     }
     true
@@ -644,9 +677,7 @@ pub fn is_paused_or_auto_unpause(env: &Env) -> bool {
 
 /// Stores the guardian address (can call `pause`).
 pub fn write_guardian(env: &Env, guardian: &Address) {
-    env.storage()
-        .instance()
-        .set(&GUARDIAN_KEY, guardian);
+    env.storage().instance().set(&GUARDIAN_KEY, guardian);
 }
 
 /// Returns the guardian address, if set.
@@ -663,12 +694,17 @@ pub fn write_governance(env: &Env, governance: &Address) {
 
 /// Returns the governance address, if set.
 pub fn read_governance(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, GOVERNANCE_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, GOVERNANCE_KEY))
 }
 
 /// Gets the protocol fee in basis points (0 = no fee).
 pub fn get_protocol_fee(env: &Env) -> u32 {
-    env.storage().instance().get(&PROTOCOL_FEE_KEY).unwrap_or(0u32)
+    env.storage()
+        .instance()
+        .get(&PROTOCOL_FEE_KEY)
+        .unwrap_or(0u32)
 }
 
 /// Sets the protocol fee in basis points.
@@ -683,7 +719,9 @@ pub fn read_pending_fee_proposal(env: &Env) -> Option<(u32, u64)> {
 
 /// Writes a pending fee proposal.
 pub fn write_pending_fee_proposal(env: &Env, new_fee_bps: u32, unlock_time: u64) {
-    env.storage().instance().set(&PENDING_FEE_KEY, &(new_fee_bps, unlock_time));
+    env.storage()
+        .instance()
+        .set(&PENDING_FEE_KEY, &(new_fee_bps, unlock_time));
 }
 
 /// Clears the pending fee proposal.
@@ -697,11 +735,17 @@ pub fn get_treasury(env: &Env) -> Option<Address> {
 }
 
 pub fn is_zero_address(env: &Env, address: &Address) -> bool {
-    let zero_account = Address::from_string(&soroban_sdk::String::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
     if address == &zero_account {
         return true;
     }
-    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"));
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+    ));
     if address == &zero_contract {
         return true;
     }
@@ -726,9 +770,7 @@ pub fn read_min_duration(env: &Env) -> u64 {
 
 /// Sets the minimum stream duration in seconds.
 pub fn write_min_duration(env: &Env, duration: u64) {
-    env.storage()
-        .instance()
-        .set(&MIN_DURATION_KEY, &duration);
+    env.storage().instance().set(&MIN_DURATION_KEY, &duration);
 }
 
 /// Gets the maximum stream duration in seconds.
@@ -736,7 +778,8 @@ pub fn write_min_duration(env: &Env, duration: u64) {
 /// A value of 0 is treated as the protocol hard cap instead of “unlimited,” so
 /// stream end times cannot be effectively unbounded.
 pub fn read_max_duration(env: &Env) -> u64 {
-    let configured = env.storage()
+    let configured = env
+        .storage()
         .instance()
         .get(&MAX_DURATION_KEY)
         .unwrap_or(crate::MAX_STREAM_DURATION_SECONDS);
@@ -757,9 +800,7 @@ pub fn write_max_duration(env: &Env, duration: u64) {
     } else {
         duration
     };
-    env.storage()
-        .instance()
-        .set(&MAX_DURATION_KEY, &capped);
+    env.storage().instance().set(&MAX_DURATION_KEY, &capped);
 }
 
 /// Gets the maximum allowed future start-time offset in seconds.
@@ -790,17 +831,23 @@ fn delegate_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
 
 /// Gets the authorized delegate for a stream.
 pub fn get_delegate(env: &Env, stream_id: u64) -> Option<Address> {
-    env.storage().persistent().get(&delegate_key(env, stream_id))
+    env.storage()
+        .persistent()
+        .get(&delegate_key(env, stream_id))
 }
 
 /// Sets the authorized delegate for a stream.
 pub fn set_delegate(env: &Env, stream_id: u64, delegate: &Address) {
-    env.storage().persistent().set(&delegate_key(env, stream_id), delegate);
+    env.storage()
+        .persistent()
+        .set(&delegate_key(env, stream_id), delegate);
 }
 
 /// Removes the authorized delegate for a stream.
 pub fn remove_delegate(env: &Env, stream_id: u64) {
-    env.storage().persistent().remove(&delegate_key(env, stream_id));
+    env.storage()
+        .persistent()
+        .remove(&delegate_key(env, stream_id));
 }
 
 const RECIPIENT_DELEGATE_KEY: &str = "rdel";
@@ -811,33 +858,35 @@ fn recipient_delegate_key(env: &Env, stream_id: u64) -> (Symbol, u64) {
 
 /// Sets the authorized recipient delegate for a stream.
 pub fn set_recipient_delegate(env: &Env, stream_id: u64, delegate: &Address) {
-    env.storage().persistent().set(&recipient_delegate_key(env, stream_id), delegate);
+    env.storage()
+        .persistent()
+        .set(&recipient_delegate_key(env, stream_id), delegate);
 }
 
 /// Reads the authorized recipient delegate for a stream.
 pub fn get_recipient_delegate(env: &Env, stream_id: u64) -> Option<Address> {
-    env.storage().persistent().get(&recipient_delegate_key(env, stream_id))
+    env.storage()
+        .persistent()
+        .get(&recipient_delegate_key(env, stream_id))
 }
 
 /// Removes the authorized recipient delegate for a stream.
 pub fn remove_recipient_delegate(env: &Env, stream_id: u64) {
-    env.storage().persistent().remove(&recipient_delegate_key(env, stream_id));
+    env.storage()
+        .persistent()
+        .remove(&recipient_delegate_key(env, stream_id));
 }
 
 // --- Version tracking ---
 
 /// Stores the contract version string.
 pub fn write_version(env: &Env, version: &soroban_sdk::String) {
-    env.storage()
-        .instance()
-        .set(&VERSION_KEY, version);
+    env.storage().instance().set(&VERSION_KEY, version);
 }
 
 /// Reads the contract version string.
 pub fn read_version(env: &Env) -> Option<soroban_sdk::String> {
-    env.storage()
-        .instance()
-        .get(&VERSION_KEY)
+    env.storage().instance().get(&VERSION_KEY)
 }
 
 // --- Rate limiting ---
@@ -852,9 +901,7 @@ pub fn get_max_streams_per_sender(env: &Env) -> u32 {
 
 /// Sets the global maximum streams per sender.
 pub fn set_max_streams_per_sender(env: &Env, max_streams: u32) {
-    env.storage()
-        .instance()
-        .set(&MAX_STREAMS_KEY, &max_streams);
+    env.storage().instance().set(&MAX_STREAMS_KEY, &max_streams);
 }
 
 /// Gets the global withdrawal cooldown in seconds (default: 0).
@@ -893,17 +940,24 @@ fn whitelist_key(env: &Env, recipient: &Address) -> (Symbol, Address) {
 
 /// Returns whether a recipient is whitelisted.
 pub fn is_whitelisted(env: &Env, recipient: &Address) -> bool {
-    env.storage().persistent().get(&whitelist_key(env, recipient)).unwrap_or(false)
+    env.storage()
+        .persistent()
+        .get(&whitelist_key(env, recipient))
+        .unwrap_or(false)
 }
 
 /// Adds a recipient to the whitelist.
 pub fn add_to_whitelist(env: &Env, recipient: &Address) {
-    env.storage().persistent().set(&whitelist_key(env, recipient), &true);
+    env.storage()
+        .persistent()
+        .set(&whitelist_key(env, recipient), &true);
 }
 
 /// Removes a recipient from the whitelist.
 pub fn remove_from_whitelist(env: &Env, recipient: &Address) {
-    env.storage().persistent().remove(&whitelist_key(env, recipient));
+    env.storage()
+        .persistent()
+        .remove(&whitelist_key(env, recipient));
 }
 
 // --- Recipient allowlist (for regulated payment scenarios) ---
@@ -931,17 +985,24 @@ fn recipient_allowlist_key(env: &Env, recipient: &Address) -> (Symbol, Address) 
 
 /// Returns whether a recipient is on the allowlist.
 pub fn is_recipient_allowed(env: &Env, recipient: &Address) -> bool {
-    env.storage().persistent().get(&recipient_allowlist_key(env, recipient)).unwrap_or(false)
+    env.storage()
+        .persistent()
+        .get(&recipient_allowlist_key(env, recipient))
+        .unwrap_or(false)
 }
 
 /// Adds a recipient to the allowlist.
 pub fn add_to_recipient_allowlist(env: &Env, recipient: &Address) {
-    env.storage().persistent().set(&recipient_allowlist_key(env, recipient), &true);
+    env.storage()
+        .persistent()
+        .set(&recipient_allowlist_key(env, recipient), &true);
 }
 
 /// Removes a recipient from the allowlist.
 pub fn remove_from_recipient_allowlist(env: &Env, recipient: &Address) {
-    env.storage().persistent().remove(&recipient_allowlist_key(env, recipient));
+    env.storage()
+        .persistent()
+        .remove(&recipient_allowlist_key(env, recipient));
 }
 
 // --- Fee exemption list ---
@@ -952,17 +1013,24 @@ fn fee_exempt_key(env: &Env, addr: &Address) -> (Symbol, Address) {
 
 /// Returns whether `addr` is exempt from the protocol fee.
 pub fn is_fee_exempt(env: &Env, addr: &Address) -> bool {
-    env.storage().persistent().get(&fee_exempt_key(env, addr)).unwrap_or(false)
+    env.storage()
+        .persistent()
+        .get(&fee_exempt_key(env, addr))
+        .unwrap_or(false)
 }
 
 /// Adds `addr` to the fee exemption list.
 pub fn add_fee_exempt(env: &Env, addr: &Address) {
-    env.storage().persistent().set(&fee_exempt_key(env, addr), &true);
+    env.storage()
+        .persistent()
+        .set(&fee_exempt_key(env, addr), &true);
 }
 
 /// Removes `addr` from the fee exemption list.
 pub fn remove_fee_exempt(env: &Env, addr: &Address) {
-    env.storage().persistent().remove(&fee_exempt_key(env, addr));
+    env.storage()
+        .persistent()
+        .remove(&fee_exempt_key(env, addr));
 }
 
 fn sender_limit_key(env: &Env, sender: &Address) -> (Symbol, Address) {
@@ -1000,11 +1068,17 @@ fn audit_slot_key(env: &Env, idx: u32) -> (Symbol, u32) {
 
 /// Appends an audit entry to the circular buffer.
 pub fn append_audit_entry(env: &Env, entry: &AuditEntry) {
-    let head: u32 = env.storage().instance().get(&AUDIT_HEAD_KEY).unwrap_or(0u32);
+    let head: u32 = env
+        .storage()
+        .instance()
+        .get(&AUDIT_HEAD_KEY)
+        .unwrap_or(0u32);
     let len: u32 = env.storage().instance().get(&AUDIT_LEN_KEY).unwrap_or(0u32);
 
     let write_idx = head % AUDIT_CAP;
-    env.storage().instance().set(&audit_slot_key(env, write_idx), entry);
+    env.storage()
+        .instance()
+        .set(&audit_slot_key(env, write_idx), entry);
 
     let new_head = (head + 1) % AUDIT_CAP;
     let new_len = (len + 1).min(AUDIT_CAP);
@@ -1014,13 +1088,21 @@ pub fn append_audit_entry(env: &Env, entry: &AuditEntry) {
 
 /// Returns all audit entries in chronological order (oldest first).
 pub fn read_audit_log(env: &Env) -> Vec<AuditEntry> {
-    let head: u32 = env.storage().instance().get(&AUDIT_HEAD_KEY).unwrap_or(0u32);
+    let head: u32 = env
+        .storage()
+        .instance()
+        .get(&AUDIT_HEAD_KEY)
+        .unwrap_or(0u32);
     let len: u32 = env.storage().instance().get(&AUDIT_LEN_KEY).unwrap_or(0u32);
     let mut result = Vec::new(env);
     for i in 0..len {
         // oldest entry is at (head - len + i) mod CAP
         let idx = (head + AUDIT_CAP - len + i) % AUDIT_CAP;
-        if let Some(entry) = env.storage().instance().get::<(Symbol, u32), AuditEntry>(&audit_slot_key(env, idx)) {
+        if let Some(entry) = env
+            .storage()
+            .instance()
+            .get::<(Symbol, u32), AuditEntry>(&audit_slot_key(env, idx))
+        {
             result.push_back(entry);
         }
     }
@@ -1037,9 +1119,7 @@ pub fn get_creation_fee_xlm(env: &Env) -> i128 {
 
 /// Sets the flat XLM creation fee in stroops.
 pub fn set_creation_fee_xlm(env: &Env, fee: i128) {
-    env.storage()
-        .instance()
-        .set(&CREATION_FEE_XLM_KEY, &fee);
+    env.storage().instance().set(&CREATION_FEE_XLM_KEY, &fee);
 }
 
 const XLM_TOKEN_KEY: Symbol = symbol_short!("xlm_tok");
@@ -1048,16 +1128,12 @@ const ACTIVE_STREAM_COUNT_KEY: Symbol = symbol_short!("act_cnt");
 
 /// Gets the XLM SAC token contract address used for creation fee collection.
 pub fn get_xlm_token(env: &Env) -> Option<Address> {
-    env.storage()
-        .instance()
-        .get(&XLM_TOKEN_KEY)
+    env.storage().instance().get(&XLM_TOKEN_KEY)
 }
 
 /// Sets the XLM SAC token contract address.
 pub fn set_xlm_token(env: &Env, xlm_token: &Address) {
-    env.storage()
-        .instance()
-        .set(&XLM_TOKEN_KEY, xlm_token);
+    env.storage().instance().set(&XLM_TOKEN_KEY, xlm_token);
 }
 
 /// Returns the current count of active streams.
@@ -1104,16 +1180,12 @@ pub fn is_reentrancy_locked(env: &Env) -> bool {
 
 /// Acquires the reentrancy lock.
 pub fn set_reentrancy_lock(env: &Env) {
-    env.storage()
-        .temporary()
-        .set(&REENTRANCY_LOCK_KEY, &true);
+    env.storage().temporary().set(&REENTRANCY_LOCK_KEY, &true);
 }
 
 /// Releases the reentrancy lock.
 pub fn clear_reentrancy_lock(env: &Env) {
-    env.storage()
-        .temporary()
-        .remove(&REENTRANCY_LOCK_KEY);
+    env.storage().temporary().remove(&REENTRANCY_LOCK_KEY);
 }
 
 // --- Migration helpers ---
@@ -1133,7 +1205,9 @@ pub fn read_applied_migrations(env: &Env) -> Vec<soroban_sdk::String> {
 pub fn record_migration(env: &Env, version: &soroban_sdk::String) {
     let mut applied = read_applied_migrations(env);
     applied.push_back(version.clone());
-    env.storage().instance().set(&Symbol::new(env, APPLIED_MIGRATIONS_KEY), &applied);
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, APPLIED_MIGRATIONS_KEY), &applied);
 }
 
 // --- Token fee tier helpers ---
@@ -1289,14 +1363,10 @@ pub fn get_rate_limit_state(env: &Env, addr: &Address) -> (u32, u32) {
 /// the entry's TTL to `window_ledgers` so the counter survives the full sliding window.
 pub fn set_rate_limit_state(env: &Env, addr: &Address, window_start: u32, count: u32) {
     let key = rate_limit_key(env, addr);
-    env.storage()
-        .temporary()
-        .set(&key, &(window_start, count));
+    env.storage().temporary().set(&key, &(window_start, count));
     // Keep the entry alive for at least one full window so it cannot expire mid-window.
     let ttl = get_rate_limit_window(env).max(1);
-    env.storage()
-        .temporary()
-        .extend_ttl(&key, ttl, ttl);
+    env.storage().temporary().extend_ttl(&key, ttl, ttl);
 }
 
 /// Returns how many more stream creations the given sender may perform in the current window.
@@ -1368,7 +1438,10 @@ pub fn set_read_rate_limit_state(env: &Env, addr: &Address, ledger: u32, count: 
 }
 
 /// Checks and increments read rate limit (max 10 calls per ledger).
-pub fn check_read_rate_limit(env: &Env, caller: &Address) -> Result<(), crate::errors::StreamError> {
+pub fn check_read_rate_limit(
+    env: &Env,
+    caller: &Address,
+) -> Result<(), crate::errors::StreamError> {
     if is_rate_limit_exempt(env, caller) {
         return Ok(());
     }
@@ -1384,7 +1457,6 @@ pub fn check_read_rate_limit(env: &Env, caller: &Address) -> Result<(), crate::e
     }
     Ok(())
 }
-
 
 // --- Token Whitelist (for tokens, not recipients) ---
 
@@ -1456,7 +1528,9 @@ pub fn accumulate_fees(env: &Env, token: &Address, amount: i128) {
         return;
     }
     let current = get_fees_collected(env, token);
-    let next = current.checked_add(amount).expect("fees_collected overflow");
+    let next = current
+        .checked_add(amount)
+        .expect("fees_collected overflow");
     env.storage()
         .persistent()
         .set(&fees_collected_key(env, token), &next);
@@ -1481,9 +1555,15 @@ pub fn set_fees_collected(env: &Env, token: &Address, amount: i128) {
 }
 
 /// Increments accumulated fees for a token.
-pub fn increment_fees_collected(env: &Env, token: &Address, amount: i128) -> Result<(), crate::errors::StreamError> {
+pub fn increment_fees_collected(
+    env: &Env,
+    token: &Address,
+    amount: i128,
+) -> Result<(), crate::errors::StreamError> {
     let current = get_fees_collected(env, token);
-    let new = current.checked_add(amount).ok_or(crate::errors::StreamError::Overflow)?;
+    let new = current
+        .checked_add(amount)
+        .ok_or(crate::errors::StreamError::Overflow)?;
     set_fees_collected(env, token, new);
     Ok(())
 }
@@ -1502,10 +1582,16 @@ pub fn get_slippage_params(env: &Env, stream_id: u64) -> Option<(i128, u32)> {
 }
 
 /// Sets slippage parameters for a stream.
-pub fn set_slippage_params(env: &Env, stream_id: u64, reference_price: i128, max_slippage_bps: u32) {
-    env.storage()
-        .persistent()
-        .set(&slippage_key(env, stream_id), &(reference_price, max_slippage_bps));
+pub fn set_slippage_params(
+    env: &Env,
+    stream_id: u64,
+    reference_price: i128,
+    max_slippage_bps: u32,
+) {
+    env.storage().persistent().set(
+        &slippage_key(env, stream_id),
+        &(reference_price, max_slippage_bps),
+    );
 }
 
 // --- Stream Creation Cooldown ---
@@ -1648,7 +1734,9 @@ pub fn get_sender_lifetime_count(env: &Env, sender: &Address) -> u32 {
 pub fn increment_sender_lifetime_count(env: &Env, sender: &Address) {
     let key = sender_lifetime_count_key(env, sender);
     let current = get_sender_lifetime_count(env, sender);
-    let next = current.checked_add(1).expect("sender lifetime count overflow");
+    let next = current
+        .checked_add(1)
+        .expect("sender lifetime count overflow");
     env.storage().persistent().set(&key, &next);
 }
 
@@ -1733,7 +1821,9 @@ fn blocklist_key(env: &Env, addr: &Address) -> (Symbol, Address) {
 
 /// Adds an address to the blocklist.
 pub fn add_to_blocklist(env: &Env, addr: &Address) {
-    env.storage().persistent().set(&blocklist_key(env, addr), &true);
+    env.storage()
+        .persistent()
+        .set(&blocklist_key(env, addr), &true);
 }
 
 /// Removes an address from the blocklist.
@@ -1743,7 +1833,10 @@ pub fn remove_from_blocklist(env: &Env, addr: &Address) {
 
 /// Returns true if the address is on the blocklist.
 pub fn is_blocked(env: &Env, addr: &Address) -> bool {
-    env.storage().persistent().get(&blocklist_key(env, addr)).unwrap_or(false)
+    env.storage()
+        .persistent()
+        .get(&blocklist_key(env, addr))
+        .unwrap_or(false)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1865,9 +1958,15 @@ pub fn set_dual_stream_withdrawn2(env: &Env, stream_id: u64, withdrawn2: i128) {
 }
 
 /// Increments the total amount withdrawn from the second token.
-pub fn increment_dual_stream_withdrawn2(env: &Env, stream_id: u64, amount: i128) -> Result<(), crate::errors::StreamError> {
+pub fn increment_dual_stream_withdrawn2(
+    env: &Env,
+    stream_id: u64,
+    amount: i128,
+) -> Result<(), crate::errors::StreamError> {
     let current = get_dual_stream_withdrawn2(env, stream_id);
-    let new = current.checked_add(amount).ok_or(crate::errors::StreamError::Overflow)?;
+    let new = current
+        .checked_add(amount)
+        .ok_or(crate::errors::StreamError::Overflow)?;
     set_dual_stream_withdrawn2(env, stream_id, new);
     Ok(())
 }
@@ -2003,9 +2102,14 @@ pub fn propose_upgrade(
         created_at: env.ledger().timestamp(),
     };
 
-    env.storage()
-        .instance()
-        .set(&upgrade_proposal_key(env), &(proposal.wasm_hash.clone(), proposal.proposed_by.clone(), proposal.created_at));
+    env.storage().instance().set(
+        &upgrade_proposal_key(env),
+        &(
+            proposal.wasm_hash.clone(),
+            proposal.proposed_by.clone(),
+            proposal.created_at,
+        ),
+    );
     env.storage()
         .instance()
         .set(&upgrade_proposal_expiry_key(env), &expiry_ledger);
@@ -2013,9 +2117,7 @@ pub fn propose_upgrade(
 }
 
 pub fn get_pending_upgrade_proposal(env: &Env) -> Option<(BytesN<32>, Address, u64)> {
-    env.storage()
-        .instance()
-        .get(&upgrade_proposal_key(env))
+    env.storage().instance().get(&upgrade_proposal_key(env))
 }
 
 pub fn get_upgrade_proposal_expiry(env: &Env) -> Option<u64> {
@@ -2025,20 +2127,16 @@ pub fn get_upgrade_proposal_expiry(env: &Env) -> Option<u64> {
 }
 
 pub fn approve_upgrade_proposal(env: &Env, approver: &Address) -> Result<BytesN<32>, &'static str> {
-    let proposal = get_pending_upgrade_proposal(env)
-        .ok_or("No pending upgrade proposal")?;
+    let proposal = get_pending_upgrade_proposal(env).ok_or("No pending upgrade proposal")?;
 
-    let expiry = get_upgrade_proposal_expiry(env)
-        .ok_or("Proposal expiry not set")?;
+    let expiry = get_upgrade_proposal_expiry(env).ok_or("Proposal expiry not set")?;
 
     if u64::from(env.ledger().sequence()) > expiry {
         clear_upgrade_proposal(env);
         return Err("Upgrade proposal expired");
     }
 
-    env.storage()
-        .instance()
-        .remove(&upgrade_proposal_key(env));
+    env.storage().instance().remove(&upgrade_proposal_key(env));
     env.storage()
         .instance()
         .remove(&upgrade_proposal_expiry_key(env));
@@ -2047,9 +2145,7 @@ pub fn approve_upgrade_proposal(env: &Env, approver: &Address) -> Result<BytesN<
 }
 
 pub fn clear_upgrade_proposal(env: &Env) {
-    env.storage()
-        .instance()
-        .remove(&upgrade_proposal_key(env));
+    env.storage().instance().remove(&upgrade_proposal_key(env));
     env.storage()
         .instance()
         .remove(&upgrade_proposal_expiry_key(env));
@@ -2075,10 +2171,7 @@ pub fn set_cancellation_fee_bps(env: &Env, bps: i128) {
 // ── Stake balance ─────────────────────────────────────────────────────────────
 pub fn get_stake_balance(env: &Env, staker: &Address, token: &Address) -> i128 {
     let key = (symbol_short!("stk"), staker.clone(), token.clone());
-    env.storage()
-        .persistent()
-        .get::<_, i128>(&key)
-        .unwrap_or(0)
+    env.storage().persistent().get::<_, i128>(&key).unwrap_or(0)
 }
 
 pub fn add_stake_balance(env: &Env, staker: &Address, token: &Address, amount: i128) {
@@ -2098,10 +2191,7 @@ const MIN_STAKE_KEY: Symbol = symbol_short!("min_stake");
 
 pub fn get_min_stake(env: &Env, token: &Address) -> i128 {
     let key = (MIN_STAKE_KEY, token.clone());
-    env.storage()
-        .instance()
-        .get::<_, i128>(&key)
-        .unwrap_or(0)
+    env.storage().instance().get::<_, i128>(&key).unwrap_or(0)
 }
 
 pub fn set_min_stake(env: &Env, token: &Address, amount: i128) {
@@ -2138,9 +2228,7 @@ pub fn get_sender_stream_cap(env: &Env) -> u32 {
 
 /// Sets the global per-sender active stream cap.  Admin-only via contract method.
 pub fn set_sender_stream_cap(env: &Env, cap: u32) {
-    env.storage()
-        .instance()
-        .set(&SENDER_STREAM_CAP_KEY, &cap);
+    env.storage().instance().set(&SENDER_STREAM_CAP_KEY, &cap);
 }
 
 /// Returns the current number of *active* streams for `sender`.
@@ -2215,9 +2303,7 @@ pub fn set_stream_metadata(env: &Env, stream_id: u64, metadata: &Bytes) {
     let key = stream_metadata_key(env, stream_id);
     env.storage().temporary().set(&key, metadata);
     // Extend TTL to ~24 hours so the blob survives between calls.
-    env.storage()
-        .temporary()
-        .extend_ttl(&key, 17_280, 17_280);
+    env.storage().temporary().extend_ttl(&key, 17_280, 17_280);
 }
 
 /// Returns the temporary metadata blob for `stream_id`, or `None` if it has
@@ -2297,11 +2383,18 @@ pub fn append_withdrawal_record(
 ) -> WithdrawalRecord {
     let key = withdrawal_count_key(env, stream_id);
     let index = env.storage().persistent().get(&key).unwrap_or(0u32);
-    let record = WithdrawalRecord { stream_id, amount, timestamp, index };
+    let record = WithdrawalRecord {
+        stream_id,
+        amount,
+        timestamp,
+        index,
+    };
     env.storage()
         .persistent()
         .set(&withdrawal_record_key(env, stream_id, index), &record);
-    env.storage().persistent().set(&key, &index.saturating_add(1));
+    env.storage()
+        .persistent()
+        .set(&key, &index.saturating_add(1));
     record
 }
 

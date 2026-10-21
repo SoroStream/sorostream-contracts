@@ -24,7 +24,8 @@ fn setup_env() -> (Env, Address, SoroStreamContractClient<'static>) {
 }
 
 fn make_token(env: &Env, admin: &Address) -> Address {
-    env.register_stellar_asset_contract_v2(admin.clone()).address()
+    env.register_stellar_asset_contract_v2(admin.clone())
+        .address()
 }
 
 fn mint(env: &Env, token_id: &Address, to: &Address, amount: i128) {

@@ -81,7 +81,9 @@ fn read_admin(env: &Env) -> Option<Address> {
 }
 
 fn read_pending_admin(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, PENDING_ADMIN_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, PENDING_ADMIN_KEY))
 }
 
 // ---------------------------------------------------------------------------
@@ -196,9 +198,7 @@ impl StreamFactory {
             .get(&contracts_key(&env))
             .unwrap_or(Vec::new(&env));
         list.push_back(child_address.clone());
-        env.storage()
-            .persistent()
-            .set(&contracts_key(&env), &list);
+        env.storage().persistent().set(&contracts_key(&env), &list);
 
         Ok(child_address)
     }
@@ -243,31 +243,24 @@ impl StreamFactory {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferProposed"),),
-            new_admin,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferProposed"),), new_admin);
         Ok(())
     }
 
     /// Accepts the admin role. The pending admin must call this.
     pub fn accept_admin(env: Env, accepted_by: Address) -> Result<(), FactoryError> {
         accepted_by.require_auth();
-        let pending = read_pending_admin(&env)
-            .ok_or(FactoryError::NotInitialized)?;
+        let pending = read_pending_admin(&env).ok_or(FactoryError::NotInitialized)?;
         if accepted_by != pending {
             return Err(FactoryError::Unauthorized);
         }
-        env.storage()
-            .instance()
-            .set(&admin_key(&env), &accepted_by);
+        env.storage().instance().set(&admin_key(&env), &accepted_by);
         env.storage()
             .instance()
             .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferAccepted"),),
-            accepted_by,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferAccepted"),), accepted_by);
         Ok(())
     }
 }

@@ -19,7 +19,7 @@
 //! ## Emergency rollback
 //! Store the previous WASM hash before upgrading. Call `upgrade(previous_hash)` to revert.
 
-use soroban_sdk::{contract, contractimpl, contracterror, Address, BytesN, Env, Symbol, String};
+use soroban_sdk::{contract, contracterror, contractimpl, Address, BytesN, Env, String, Symbol};
 
 const ADMIN_KEY: &str = "admin";
 const PENDING_ADMIN_KEY: &str = "pending_admin";
@@ -42,7 +42,9 @@ fn read_admin(env: &Env) -> Option<Address> {
 }
 
 fn read_pending_admin(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, PENDING_ADMIN_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, PENDING_ADMIN_KEY))
 }
 
 fn check_admin(env: &Env) -> Address {
@@ -52,7 +54,9 @@ fn check_admin(env: &Env) -> Address {
 }
 
 fn read_impl_hash(env: &Env) -> Option<BytesN<32>> {
-    env.storage().instance().get(&Symbol::new(env, IMPL_HASH_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, IMPL_HASH_KEY))
 }
 
 fn read_storage_version(env: &Env) -> u32 {
@@ -80,11 +84,16 @@ impl ProxyContract {
         if read_admin(&env).is_some() {
             return Err(ProxyError::AlreadyInitialized);
         }
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &admin);
-        env.storage().instance().set(&Symbol::new(&env, IMPL_HASH_KEY), &impl_hash);
         env.storage()
             .instance()
-            .set(&Symbol::new(&env, STORAGE_VERSION_KEY), &initial_storage_version);
+            .set(&Symbol::new(&env, ADMIN_KEY), &admin);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, IMPL_HASH_KEY), &impl_hash);
+        env.storage().instance().set(
+            &Symbol::new(&env, STORAGE_VERSION_KEY),
+            &initial_storage_version,
+        );
         env.events().publish(
             (Symbol::new(&env, "ProxyInitialized"),),
             (admin, impl_hash, initial_storage_version),
@@ -100,7 +109,9 @@ impl ProxyContract {
     /// Transfers the admin role to a new address.
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ProxyError> {
         check_admin(&env);
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
         Ok(())
     }
 
@@ -110,29 +121,26 @@ impl ProxyContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferProposed"),),
-            new_admin,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferProposed"),), new_admin);
         Ok(())
     }
 
     /// Accepts the admin role. The pending admin must call this.
     pub fn accept_admin(env: Env, accepted_by: Address) -> Result<(), ProxyError> {
         accepted_by.require_auth();
-        let pending = read_pending_admin(&env)
-            .ok_or(ProxyError::NotInitialized)?;
+        let pending = read_pending_admin(&env).ok_or(ProxyError::NotInitialized)?;
         if accepted_by != pending {
             return Err(ProxyError::NotAdmin);
         }
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &accepted_by);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, ADMIN_KEY), &accepted_by);
         env.storage()
             .instance()
             .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferAccepted"),),
-            accepted_by,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferAccepted"),), accepted_by);
         Ok(())
     }
 
@@ -176,9 +184,10 @@ impl ProxyContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, IMPL_HASH_KEY), &new_impl_hash);
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, STORAGE_VERSION_KEY), &new_storage_version);
+        env.storage().instance().set(
+            &Symbol::new(&env, STORAGE_VERSION_KEY),
+            &new_storage_version,
+        );
         env.events().publish(
             (Symbol::new(&env, "ProxyUpgraded"),),
             (admin, old_hash, new_impl_hash, new_storage_version),

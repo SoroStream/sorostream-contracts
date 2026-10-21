@@ -160,10 +160,7 @@ pub struct RoleHolders {
 /// Returns all currently-assigned admin roles in a single call.
 pub fn get_role_holders(env: &Env) -> RoleHolders {
     RoleHolders {
-        super_admin: env
-            .storage()
-            .instance()
-            .get(&Symbol::new(env, "admin")),
+        super_admin: env.storage().instance().get(&Symbol::new(env, "admin")),
         fee_manager: get_fee_manager(env),
         emergency_pause: get_emergency_pause_role(env),
         analytics: get_analytics_role(env),
@@ -292,11 +289,21 @@ pub fn require_analytics_or_admin(
 /// `Analytics` (read-only) is checked last. Each match returns early, skipping
 /// the remaining storage reads.
 pub fn has_any_role(env: &Env, caller: &Address, admin: &Address) -> bool {
-    if caller == admin { return true; }
-    if get_fee_manager(env).as_ref() == Some(caller) { return true; }
-    if get_emergency_pause_role(env).as_ref() == Some(caller) { return true; }
-    if get_token_admin(env).as_ref() == Some(caller) { return true; }
-    if get_analytics_role(env).as_ref() == Some(caller) { return true; }
+    if caller == admin {
+        return true;
+    }
+    if get_fee_manager(env).as_ref() == Some(caller) {
+        return true;
+    }
+    if get_emergency_pause_role(env).as_ref() == Some(caller) {
+        return true;
+    }
+    if get_token_admin(env).as_ref() == Some(caller) {
+        return true;
+    }
+    if get_analytics_role(env).as_ref() == Some(caller) {
+        return true;
+    }
     false
 }
 
@@ -304,10 +311,7 @@ pub fn has_any_role(env: &Env, caller: &Address, admin: &Address) -> bool {
 
 /// Checks that `caller` holds the `FeeManager` / `FeeAdmin` role only
 /// (the SuperAdmin is NOT implicitly authorized).
-pub fn require_fee_manager(
-    env: &Env,
-    caller: &Address,
-) -> Result<(), crate::errors::StreamError> {
+pub fn require_fee_manager(env: &Env, caller: &Address) -> Result<(), crate::errors::StreamError> {
     if let Some(ref fm) = get_fee_manager(env) {
         if caller == fm {
             return Ok(());
@@ -316,10 +320,7 @@ pub fn require_fee_manager(
     Err(crate::errors::StreamError::NotAuthorized)
 }
 
-pub fn require_fee_admin(
-    env: &Env,
-    caller: &Address,
-) -> Result<(), crate::errors::StreamError> {
+pub fn require_fee_admin(env: &Env, caller: &Address) -> Result<(), crate::errors::StreamError> {
     require_fee_manager(env, caller)
 }
 
@@ -346,10 +347,7 @@ pub fn require_emergency_admin(
 
 /// Checks that `caller` holds the `TokenAdmin` role only
 /// (the SuperAdmin is NOT implicitly authorized).
-pub fn require_token_admin(
-    env: &Env,
-    caller: &Address,
-) -> Result<(), crate::errors::StreamError> {
+pub fn require_token_admin(env: &Env, caller: &Address) -> Result<(), crate::errors::StreamError> {
     if let Some(ref ta) = get_token_admin(env) {
         if caller == ta {
             return Ok(());
@@ -360,10 +358,7 @@ pub fn require_token_admin(
 
 /// Checks that `caller` holds the `Analytics` role only
 /// (the SuperAdmin is NOT implicitly authorized).
-pub fn require_analytics(
-    env: &Env,
-    caller: &Address,
-) -> Result<(), crate::errors::StreamError> {
+pub fn require_analytics(env: &Env, caller: &Address) -> Result<(), crate::errors::StreamError> {
     if let Some(ref an) = get_analytics_role(env) {
         if caller == an {
             return Ok(());

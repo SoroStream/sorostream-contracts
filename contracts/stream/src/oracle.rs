@@ -27,7 +27,9 @@ pub trait IPriceOracle {
 /// Returns `StreamError::InvalidSlippage` if the call fails or the returned price is ≤ 0.
 pub fn fetch_price(env: &Env, oracle: &Address, token: &Address) -> Result<i128, StreamError> {
     let client = PriceOracleClient::new(env, oracle);
-    let price = client.try_get_price(token).map_err(|_| StreamError::InvalidSlippage)?;
+    let price = client
+        .try_get_price(token)
+        .map_err(|_| StreamError::InvalidSlippage)?;
     let price = price.map_err(|_| StreamError::InvalidSlippage)?;
     if price <= 0 {
         return Err(StreamError::InvalidSlippage);
@@ -76,6 +78,7 @@ pub fn check_oracle(
     max_deviation_bps: u32,
 ) -> Result<(i128, u32), StreamError> {
     let current_price = fetch_price(env, oracle, token)?;
-    let deviation_bps = assert_price_within_bounds(creation_price, current_price, max_deviation_bps)?;
+    let deviation_bps =
+        assert_price_within_bounds(creation_price, current_price, max_deviation_bps)?;
     Ok((current_price, deviation_bps))
 }

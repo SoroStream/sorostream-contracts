@@ -1,4 +1,3 @@
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, IssuerFlags, Ledger},
@@ -121,10 +120,7 @@ fn test_issue_402_metadata_uri_over_128_bytes_rejected_at_creation() {
     let c = client(&t);
     t.env.ledger().set_timestamp(0);
 
-    let too_long = soroban_sdk::String::from_str(
-        &t.env,
-        &"a".repeat(129),
-    );
+    let too_long = soroban_sdk::String::from_str(&t.env, &"a".repeat(129));
     let result = c.try_create_stream(
         &t.sender,
         &t.recipient,

@@ -20,7 +20,7 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracterror, contracttype, Address, Bytes, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -94,18 +94,33 @@ fn owner_slot_key(env: &Env, idx: u32) -> (Symbol, u32) {
 }
 
 fn is_owner(env: &Env, addr: &Address) -> bool {
-    env.storage().persistent().get(&owner_key(env, addr)).unwrap_or(false)
+    env.storage()
+        .persistent()
+        .get(&owner_key(env, addr))
+        .unwrap_or(false)
 }
 
 fn add_owner_storage(env: &Env, addr: &Address) {
-    let cnt: u32 = env.storage().instance().get(&Symbol::new(env, OWNER_COUNT_KEY)).unwrap_or(0);
+    let cnt: u32 = env
+        .storage()
+        .instance()
+        .get(&Symbol::new(env, OWNER_COUNT_KEY))
+        .unwrap_or(0);
     env.storage().persistent().set(&owner_key(env, addr), &true);
-    env.storage().persistent().set(&owner_slot_key(env, cnt), addr);
-    env.storage().instance().set(&Symbol::new(env, OWNER_COUNT_KEY), &(cnt + 1));
+    env.storage()
+        .persistent()
+        .set(&owner_slot_key(env, cnt), addr);
+    env.storage()
+        .instance()
+        .set(&Symbol::new(env, OWNER_COUNT_KEY), &(cnt + 1));
 }
 
 fn remove_owner_storage(env: &Env, addr: &Address) {
-    let cnt: u32 = env.storage().instance().get(&Symbol::new(env, OWNER_COUNT_KEY)).unwrap_or(0);
+    let cnt: u32 = env
+        .storage()
+        .instance()
+        .get(&Symbol::new(env, OWNER_COUNT_KEY))
+        .unwrap_or(0);
     env.storage().persistent().remove(&owner_key(env, addr));
     // Compact the slot array (swap-and-pop)
     for i in 0..cnt {
@@ -113,20 +128,31 @@ fn remove_owner_storage(env: &Env, addr: &Address) {
         if slot.as_ref() == Some(addr) {
             let last = cnt - 1;
             if i != last {
-                let last_addr: Address = env.storage().persistent()
+                let last_addr: Address = env
+                    .storage()
+                    .persistent()
                     .get(&owner_slot_key(env, last))
                     .unwrap();
-                env.storage().persistent().set(&owner_slot_key(env, i), &last_addr);
+                env.storage()
+                    .persistent()
+                    .set(&owner_slot_key(env, i), &last_addr);
             }
-            env.storage().persistent().remove(&owner_slot_key(env, last));
-            env.storage().instance().set(&Symbol::new(env, OWNER_COUNT_KEY), &last);
+            env.storage()
+                .persistent()
+                .remove(&owner_slot_key(env, last));
+            env.storage()
+                .instance()
+                .set(&Symbol::new(env, OWNER_COUNT_KEY), &last);
             return;
         }
     }
 }
 
 fn owner_count(env: &Env) -> u32 {
-    env.storage().instance().get(&Symbol::new(env, OWNER_COUNT_KEY)).unwrap_or(0)
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, OWNER_COUNT_KEY))
+        .unwrap_or(0)
 }
 
 /// Returns every intent id proposed by `proposer` (any status).
@@ -140,13 +166,20 @@ fn target_intents_key(env: &Env, target: &Address) -> (Symbol, Address) {
 }
 
 fn append_intent_index(env: &Env, key: (Symbol, Address), id: u64) {
-    let mut list: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
+    let mut list: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
     list.push_back(id);
     env.storage().persistent().set(&key, &list);
 }
 
 fn get_threshold(env: &Env) -> u32 {
-    env.storage().instance().get(&Symbol::new(env, THRESHOLD_KEY)).unwrap_or(1)
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, THRESHOLD_KEY))
+        .unwrap_or(1)
 }
 
 fn get_and_increment_nonce(env: &Env) -> u64 {
@@ -161,7 +194,9 @@ fn intent_key(id: u64) -> u64 {
 }
 
 fn save_intent(env: &Env, intent: &Intent) {
-    env.storage().persistent().set(&intent_key(intent.id), intent);
+    env.storage()
+        .persistent()
+        .set(&intent_key(intent.id), intent);
 }
 
 fn load_intent(env: &Env, id: u64) -> Option<Intent> {
@@ -197,7 +232,9 @@ fn read_admin(env: &Env) -> Option<Address> {
 }
 
 fn read_pending_admin(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, PENDING_ADMIN_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, PENDING_ADMIN_KEY))
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -210,12 +247,13 @@ impl MultiSigContract {
     /// Initialises the multi-sig contract with an owner set and a threshold.
     ///
     /// `threshold` must be >= 1 and <= `owners.len()`.
-    pub fn initialize(
-        env: Env,
-        owners: Vec<Address>,
-        threshold: u32,
-    ) -> Result<(), MultiSigError> {
-        if env.storage().instance().get::<Symbol, bool>(&Symbol::new(&env, "init")).unwrap_or(false) {
+    pub fn initialize(env: Env, owners: Vec<Address>, threshold: u32) -> Result<(), MultiSigError> {
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&Symbol::new(&env, "init"))
+            .unwrap_or(false)
+        {
             return Err(MultiSigError::AlreadyInitialized);
         }
         if owners.is_empty() || threshold == 0 || threshold > owners.len() {
@@ -234,8 +272,12 @@ impl MultiSigContract {
         for owner in owners.iter() {
             add_owner_storage(&env, &owner);
         }
-        env.storage().instance().set(&Symbol::new(&env, THRESHOLD_KEY), &threshold);
-        env.storage().instance().set(&Symbol::new(&env, "init"), &true);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, THRESHOLD_KEY), &threshold);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "init"), &true);
 
         env.events().publish(
             (Symbol::new(&env, "MultiSigInitialized"),),
@@ -301,18 +343,13 @@ impl MultiSigContract {
     /// Consequently, a multi-sig intent cannot directly invoke the stream
     /// contract's real entry points through this path; an adapter accepting a
     /// single `Bytes` argument would be required.
-    pub fn approve(
-        env: Env,
-        owner: Address,
-        intent_id: u64,
-    ) -> Result<bool, MultiSigError> {
+    pub fn approve(env: Env, owner: Address, intent_id: u64) -> Result<bool, MultiSigError> {
         owner.require_auth();
         if !is_owner(&env, &owner) {
             return Err(MultiSigError::NotOwner);
         }
 
-        let mut intent = load_intent(&env, intent_id)
-            .ok_or(MultiSigError::IntentNotFound)?;
+        let mut intent = load_intent(&env, intent_id).ok_or(MultiSigError::IntentNotFound)?;
 
         if intent.status != IntentStatus::Pending {
             return Err(MultiSigError::IntentNotPending);
@@ -339,17 +376,13 @@ impl MultiSigContract {
 
         if intent.approval_count >= threshold {
             intent.status = IntentStatus::Executed;
-        save_intent(&env, &intent);
+            save_intent(&env, &intent);
 
-        // Secondary indexes so intents can be listed by proposer or target.
-        append_intent_index(
-            &env,
-            proposer_intents_key(&env, &proposer),
-            id,
-        );
-        append_intent_index(&env, target_intents_key(&env, &target), id);
+            // Secondary indexes so intents can be listed by proposer or target.
+            append_intent_index(&env, proposer_intents_key(&env, &proposer), id);
+            append_intent_index(&env, target_intents_key(&env, &target), id);
 
-        env.events().publish(
+            env.events().publish(
                 (Symbol::new(&env, "ThresholdReached"), intent_id),
                 threshold,
             );
@@ -357,13 +390,14 @@ impl MultiSigContract {
             env.invoke_contract::<()>(
                 &intent.target,
                 &intent.function,
-                Vec::from_array(&env, [soroban_sdk::IntoVal::into_val(&intent.calldata, &env)]),
+                Vec::from_array(
+                    &env,
+                    [soroban_sdk::IntoVal::into_val(&intent.calldata, &env)],
+                ),
             );
 
-            env.events().publish(
-                (Symbol::new(&env, "ExecutionCompleted"), intent_id),
-                (),
-            );
+            env.events()
+                .publish((Symbol::new(&env, "ExecutionCompleted"), intent_id), ());
 
             Ok(true)
         } else {
@@ -375,18 +409,13 @@ impl MultiSigContract {
     /// Cancels a pending intent. Only the original proposer may cancel;
     /// other owners must not be able to unilaterally kill an intent they
     /// did not propose (e.g. one already backed by several approvals).
-    pub fn cancel(
-        env: Env,
-        owner: Address,
-        intent_id: u64,
-    ) -> Result<(), MultiSigError> {
+    pub fn cancel(env: Env, owner: Address, intent_id: u64) -> Result<(), MultiSigError> {
         owner.require_auth();
         if !is_owner(&env, &owner) {
             return Err(MultiSigError::NotOwner);
         }
 
-        let mut intent = load_intent(&env, intent_id)
-            .ok_or(MultiSigError::IntentNotFound)?;
+        let mut intent = load_intent(&env, intent_id).ok_or(MultiSigError::IntentNotFound)?;
 
         if intent.status != IntentStatus::Pending {
             return Err(MultiSigError::IntentNotPending);
@@ -399,10 +428,8 @@ impl MultiSigContract {
         intent.status = IntentStatus::Cancelled;
         save_intent(&env, &intent);
 
-        env.events().publish(
-            (Symbol::new(&env, "IntentCancelled"), intent_id),
-            owner,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "IntentCancelled"), intent_id), owner);
 
         Ok(())
     }
@@ -414,10 +441,8 @@ impl MultiSigContract {
             return Err(MultiSigError::OwnerAlreadyExists);
         }
         add_owner_storage(&env, &new_owner);
-        env.events().publish(
-            (Symbol::new(&env, "OwnerAdded"),),
-            new_owner,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "OwnerAdded"),), new_owner);
         Ok(())
     }
 
@@ -434,10 +459,8 @@ impl MultiSigContract {
             return Err(MultiSigError::ThresholdExceedsOwners);
         }
         remove_owner_storage(&env, &owner);
-        env.events().publish(
-            (Symbol::new(&env, "OwnerRemoved"),),
-            owner,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "OwnerRemoved"),), owner);
         Ok(())
     }
 
@@ -447,11 +470,11 @@ impl MultiSigContract {
         if new_threshold == 0 || new_threshold > owner_count(&env) {
             return Err(MultiSigError::InvalidThreshold);
         }
-        env.storage().instance().set(&Symbol::new(&env, THRESHOLD_KEY), &new_threshold);
-        env.events().publish(
-            (Symbol::new(&env, "ThresholdChanged"),),
-            new_threshold,
-        );
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, THRESHOLD_KEY), &new_threshold);
+        env.events()
+            .publish((Symbol::new(&env, "ThresholdChanged"),), new_threshold);
         Ok(())
     }
 
@@ -530,11 +553,11 @@ impl MultiSigContract {
     /// Sets the admin. Only the multi-sig contract itself may call this (via propose+approve).
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
-        env.events().publish(
-            (Symbol::new(&env, "AdminSet"),),
-            new_admin,
-        );
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+        env.events()
+            .publish((Symbol::new(&env, "AdminSet"),), new_admin);
         Ok(())
     }
 
@@ -558,12 +581,12 @@ impl MultiSigContract {
         save_intent(&env, &intent);
 
         // Store the proposed admin separately
-        env.storage().instance().set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
 
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferProposed"), id),
-            new_admin,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferProposed"), id), new_admin);
 
         Ok(id)
     }
@@ -572,14 +595,15 @@ impl MultiSigContract {
     /// Called internally by the approve process.
     pub fn accept_transfer_admin(env: Env) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
-        let pending = read_pending_admin(&env)
-            .ok_or(MultiSigError::OwnerNotFound)?;
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &pending);
-        env.storage().instance().remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferAccepted"),),
-            pending,
-        );
+        let pending = read_pending_admin(&env).ok_or(MultiSigError::OwnerNotFound)?;
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, ADMIN_KEY), &pending);
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferAccepted"),), pending);
         Ok(())
     }
 }

@@ -108,11 +108,8 @@ pub trait ISoroStreamComposability {
     /// - [`StreamError::NotRecipient`]    — caller is not the stream recipient.
     /// - [`StreamError::StreamNotActive`] — stream is not in Active state.
     /// - [`StreamError::ZeroAmount`]      — nothing claimable at this time.
-    fn composable_withdraw(
-        env: Env,
-        stream_id: u64,
-        recipient: Address,
-    ) -> Result<(), StreamError>;
+    fn composable_withdraw(env: Env, stream_id: u64, recipient: Address)
+        -> Result<(), StreamError>;
 
     /// Returns the amount of tokens currently claimable by the recipient.
     ///

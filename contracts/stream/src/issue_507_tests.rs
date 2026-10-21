@@ -1,4 +1,3 @@
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -127,7 +126,10 @@ fn test_issue_507_archive_stream_preserves_history() {
 
     let after_withdraw = c.get_stream(&stream_id);
     let withdrawn_amount = after_withdraw.options.total_withdrawn;
-    assert!(withdrawn_amount > 0, "Stream should track withdrawal history");
+    assert!(
+        withdrawn_amount > 0,
+        "Stream should track withdrawal history"
+    );
 }
 
 #[test]
@@ -169,10 +171,10 @@ fn test_issue_507_completed_streams_reduce_storage_footprint() {
                 sponsor: None,
                 requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+                priority: None,
+                tags: None,
+                metadata_uri: None,
+            },
         );
 
         completed_stream_ids.push(stream_id);

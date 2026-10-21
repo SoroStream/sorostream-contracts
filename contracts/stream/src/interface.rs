@@ -6,7 +6,11 @@
 use soroban_sdk::{contractclient, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 use crate::errors::StreamError;
-use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats, Stream, StreamHealth, StreamOptions, StreamQueryFilter, StreamTransition, VestingCurve, VestingTranche, WithdrawalProof};
+use crate::types::{
+    AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats,
+    Stream, StreamHealth, StreamOptions, StreamQueryFilter, StreamTransition, VestingCurve,
+    VestingTranche, WithdrawalProof,
+};
 
 #[contractclient(name = "SoroStreamClient")]
 pub trait SoroStreamInterface {
@@ -24,7 +28,11 @@ pub trait SoroStreamInterface {
     fn set_admin(env: Env, new_admin: Address) -> Result<(), StreamError>;
     fn set_fee_admin(env: Env, admin: Address, fee_admin: Address) -> Result<(), StreamError>;
     fn get_fee_admin(env: Env) -> Option<Address>;
-    fn set_emergency_admin(env: Env, admin: Address, emergency_admin: Address) -> Result<(), StreamError>;
+    fn set_emergency_admin(
+        env: Env,
+        admin: Address,
+        emergency_admin: Address,
+    ) -> Result<(), StreamError>;
     fn get_emergency_admin(env: Env) -> Option<Address>;
     fn set_token_admin(env: Env, admin: Address, token_admin: Address) -> Result<(), StreamError>;
     fn get_token_admin(env: Env) -> Option<Address>;
@@ -104,7 +112,7 @@ pub trait SoroStreamInterface {
         recipient: Address,
         token: Address,
         deposit: i128,
-        milestones: Vec<(i128, u64, BytesN<32>)>,  // (amount, unlock_time, description_hash)
+        milestones: Vec<(i128, u64, BytesN<32>)>, // (amount, unlock_time, description_hash)
         nonce: u64,
         lock_until: u64,
         allow_recipient_termination: bool,
@@ -118,25 +126,42 @@ pub trait SoroStreamInterface {
         recipient: Address,
         token: Address,
         deposit: i128,
-        milestones: Vec<(i128, BytesN<32>)>,  // (amount, description_hash)
+        milestones: Vec<(i128, BytesN<32>)>, // (amount, description_hash)
         nonce: u64,
         lock_until: u64,
         allow_recipient_termination: bool,
         approver: Address,
     ) -> Result<u64, StreamError>;
 
-    fn register_federation(env: Env, admin: Address, federation_name: String, stellar_address: Address) -> Result<(), StreamError>;
-    fn unregister_federation(env: Env, admin: Address, federation_name: String) -> Result<(), StreamError>;
+    fn register_federation(
+        env: Env,
+        admin: Address,
+        federation_name: String,
+        stellar_address: Address,
+    ) -> Result<(), StreamError>;
+    fn unregister_federation(
+        env: Env,
+        admin: Address,
+        federation_name: String,
+    ) -> Result<(), StreamError>;
     fn resolve_federation(env: Env, federation_name: String) -> Result<Address, StreamError>;
 
     fn release_holdback(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
     fn claw_back_holdback(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
     fn clawback_stream(env: Env, stream_id: u64, issuer: Address) -> Result<(), StreamError>;
 
-    fn set_withdrawal_cooldown(env: Env, admin: Address, cooldown_seconds: u64) -> Result<(), StreamError>;
+    fn set_withdrawal_cooldown(
+        env: Env,
+        admin: Address,
+        cooldown_seconds: u64,
+    ) -> Result<(), StreamError>;
     fn set_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), StreamError>;
     fn add_to_whitelist(env: Env, admin: Address, recipient: Address) -> Result<(), StreamError>;
-    fn remove_from_whitelist(env: Env, admin: Address, recipient: Address) -> Result<(), StreamError>;
+    fn remove_from_whitelist(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+    ) -> Result<(), StreamError>;
 
     /// Sets whether the recipient allowlist is enabled globally.
     ///
@@ -145,7 +170,11 @@ pub trait SoroStreamInterface {
     ///
     /// Note: This is distinct from the stream creation whitelist (for general compliance).
     /// The recipient allowlist is for per-stream enforcement scenarios.
-    fn set_recipient_allowlist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), StreamError>;
+    fn set_recipient_allowlist_enabled(
+        env: Env,
+        admin: Address,
+        enabled: bool,
+    ) -> Result<(), StreamError>;
 
     /// Returns whether the recipient allowlist is currently enabled.
     fn is_recipient_allowlist_enabled(env: Env) -> bool;
@@ -154,18 +183,31 @@ pub trait SoroStreamInterface {
     ///
     /// Only the admin may call this. Once added, this address can receive streams
     /// that have `enforce_recipient_allowlist = true`.
-    fn add_to_recipient_allowlist(env: Env, admin: Address, recipient: Address) -> Result<(), StreamError>;
+    fn add_to_recipient_allowlist(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+    ) -> Result<(), StreamError>;
 
     /// Removes a recipient address from the allowlist.
     ///
     /// Only the admin may call this. After removal, this address cannot receive
     /// new streams with `enforce_recipient_allowlist = true`.
-    fn remove_from_recipient_allowlist(env: Env, admin: Address, recipient: Address) -> Result<(), StreamError>;
+    fn remove_from_recipient_allowlist(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+    ) -> Result<(), StreamError>;
 
     /// Returns whether a recipient is on the allowlist.
     fn is_recipient_allowed(env: Env, recipient: Address) -> bool;
 
-    fn update_metadata(env: Env, sender: Address, stream_id: u64, metadata: Bytes) -> Result<(), StreamError>;
+    fn update_metadata(
+        env: Env,
+        sender: Address,
+        stream_id: u64,
+        metadata: Bytes,
+    ) -> Result<(), StreamError>;
     /// Returns the temporary metadata blob attached to a stream, if it has not expired.
     fn get_metadata(env: Env, stream_id: u64) -> Option<Bytes>;
     fn cancel_auto_renew(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError>;
@@ -215,10 +257,31 @@ pub trait SoroStreamInterface {
     ) -> Result<u64, StreamError>;
     fn cancel_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
     fn stop_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
-    fn transfer_sender(env: Env, stream_id: u64, current_sender: Address, new_sender: Address) -> Result<(), StreamError>;
-    fn transfer_recipient(env: Env, stream_id: u64, current_recipient: Address, new_recipient: Address) -> Result<(), StreamError>;
-    fn partial_cancel_stream(env: Env, stream_id: u64, sender: Address, cancel_amount: i128) -> Result<u64, StreamError>;
-    fn top_up(env: Env, stream_id: u64, sender: Address, token: Address, amount: i128) -> Result<(), StreamError>;
+    fn transfer_sender(
+        env: Env,
+        stream_id: u64,
+        current_sender: Address,
+        new_sender: Address,
+    ) -> Result<(), StreamError>;
+    fn transfer_recipient(
+        env: Env,
+        stream_id: u64,
+        current_recipient: Address,
+        new_recipient: Address,
+    ) -> Result<(), StreamError>;
+    fn partial_cancel_stream(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        cancel_amount: i128,
+    ) -> Result<u64, StreamError>;
+    fn top_up(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<(), StreamError>;
 
     /// Adds funds to multiple streams atomically in a single transaction.
     ///
@@ -239,7 +302,7 @@ pub trait SoroStreamInterface {
         token: Address,
         stream_amounts: Vec<(u64, i128)>,
     ) -> Result<(), StreamError>;
-    
+
     /// Updates the token-per-second flow rate of an active stream.
     ///
     /// Only the stream's sender may call this.  The recipient's currently-accrued
@@ -255,23 +318,77 @@ pub trait SoroStreamInterface {
     /// - `ZeroFlowRate` — the calculated new flow rate is zero.
     /// - `InsufficientBalance` — insufficient remaining balance to support the new rate until end_time.
     /// - `Overflow` — arithmetic overflow during calculations.
-    fn update_stream_rate(env: Env, stream_id: u64, sender: Address, new_rate: i128) -> Result<(), StreamError>;
-    fn update_stream(env: Env, stream_id: u64, new_flow_rate: i128, new_end_time: u64) -> Result<(), StreamError>;
-    
-    fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+    fn update_stream_rate(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        new_rate: i128,
+    ) -> Result<(), StreamError>;
+    fn update_stream(
+        env: Env,
+        stream_id: u64,
+        new_flow_rate: i128,
+        new_end_time: u64,
+    ) -> Result<(), StreamError>;
+
+    /// Changes the flow rate of an active stream (Issue #78).
+    ///
+    /// Only the stream sender may call this. The balance accrued at the old
+    /// rate is locked at the modification timestamp and remains claimable;
+    /// the new rate applies only from that timestamp onward. `end_time` is
+    /// recalculated from the remaining balance and the new rate.
+    ///
+    /// # Errors
+    /// - `StreamNotFound` — stream does not exist.
+    /// - `NotSender` — caller is not the stream sender.
+    /// - `StreamNotActive` — stream is not in Active state.
+    /// - `ZeroFlowRate` — `new_rate` is zero or negative.
+    /// - `Overflow` — arithmetic overflow during schedule recalculation.
+    fn modify_flow_rate(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        new_rate: i128,
+    ) -> Result<(), StreamError>;
+
+    fn recipient_terminate(env: Env, stream_id: u64, recipient: Address)
+        -> Result<(), StreamError>;
 
     fn get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError>;
     /// Returns up to the last 10 persisted lifecycle transitions, oldest first.
-    fn get_stream_transitions(env: Env, stream_id: u64) -> Result<Vec<StreamTransition>, StreamError>;
+    fn get_stream_transitions(
+        env: Env,
+        stream_id: u64,
+    ) -> Result<Vec<StreamTransition>, StreamError>;
     fn get_all_stream_ids(env: Env, start: u32, limit: u32) -> Vec<u64>;
     fn get_claimable(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn get_stream_earnings_estimate(env: Env, stream_id: u64) -> Result<i128, StreamError>;
-    fn get_accrued_balance(env: Env, stream_id: u64, recipient: Address) -> Result<i128, StreamError>;
+    fn get_accrued_balance(
+        env: Env,
+        stream_id: u64,
+        recipient: Address,
+    ) -> Result<i128, StreamError>;
     fn is_participant(env: Env, stream_id: u64, address: Address) -> Result<bool, StreamError>;
     fn get_streams_by_sender(env: Env, sender: Address, start: u32, limit: u32) -> Vec<Stream>;
-    fn get_streams_by_recipient(env: Env, recipient: Address, start: u32, limit: u32) -> Vec<Stream>;
-    fn get_streams_by_tag(env: Env, sender: Address, tag: String, start: u32, limit: u32) -> Vec<Stream>;
-    fn set_stream_tag(env: Env, stream_id: u64, sender: Address, tag: Option<String>) -> Result<(), StreamError>;
+    fn get_streams_by_recipient(
+        env: Env,
+        recipient: Address,
+        start: u32,
+        limit: u32,
+    ) -> Vec<Stream>;
+    fn get_streams_by_tag(
+        env: Env,
+        sender: Address,
+        tag: String,
+        start: u32,
+        limit: u32,
+    ) -> Vec<Stream>;
+    fn set_stream_tag(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        tag: Option<String>,
+    ) -> Result<(), StreamError>;
     fn get_active_streams_by_sender(env: Env, sender: Address) -> Vec<Stream>;
     /// Returns active stream IDs for a sender using the on-chain active index.
     fn get_active_stream_ids_by_sender(env: Env, sender: Address) -> Vec<u64>;
@@ -313,10 +430,21 @@ pub trait SoroStreamInterface {
         end_times: Vec<u64>,
         nonce: u64,
     ) -> Result<Vec<u64>, StreamError>;
-    fn batch_withdraw(env: Env, stream_ids: Vec<u64>, recipient: Address) -> Result<Vec<i128>, StreamError>;
-    fn batch_cancel_stream(env: Env, stream_ids: Vec<u64>, sender: Address) -> Result<Vec<Result<(), StreamError>>, StreamError>;
+    fn batch_withdraw(
+        env: Env,
+        stream_ids: Vec<u64>,
+        recipient: Address,
+    ) -> Result<Vec<i128>, StreamError>;
+    fn batch_cancel_stream(
+        env: Env,
+        stream_ids: Vec<u64>,
+        sender: Address,
+    ) -> Result<Vec<Result<(), StreamError>>, StreamError>;
     /// Cancels all currently active streams for a sender, capped at 20 entries.
-    fn batch_cancel_streams(env: Env, sender: Address) -> Result<Vec<Result<(), StreamError>>, StreamError>;
+    fn batch_cancel_streams(
+        env: Env,
+        sender: Address,
+    ) -> Result<Vec<Result<(), StreamError>>, StreamError>;
 
     fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError>;
     fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError>;
@@ -391,7 +519,11 @@ pub trait SoroStreamInterface {
 
     /// Sets the maximum deposit amount for a single stream using a specific token.
     /// Setting to 0 disables the limit for that token. Admin only.
-    fn set_max_deposit_per_token(env: Env, token: Address, max_deposit: i128) -> Result<(), StreamError>;
+    fn set_max_deposit_per_token(
+        env: Env,
+        token: Address,
+        max_deposit: i128,
+    ) -> Result<(), StreamError>;
 
     /// Returns the maximum deposit amount for a single stream using the given token.
     /// Returns 0 if no limit is set (unlimited).
@@ -436,40 +568,92 @@ pub trait SoroStreamInterface {
     fn set_creation_fee(env: Env, fee: i128, xlm_token: Address) -> Result<(), StreamError>;
     fn get_creation_fee(env: Env) -> i128;
 
-    fn set_token_fee_tier(env: Env, admin: Address, token: Address, fee_bps: u32) -> Result<(), StreamError>;
+    fn set_token_fee_tier(
+        env: Env,
+        admin: Address,
+        token: Address,
+        fee_bps: u32,
+    ) -> Result<(), StreamError>;
     fn remove_token_fee_tier(env: Env, admin: Address, token: Address) -> Result<(), StreamError>;
     fn get_token_fee_tier(env: Env, token: Address) -> u32;
 
     fn get_metadata_uri(env: Env, stream_id: u64) -> Option<String>;
-    fn update_metadata_uri(env: Env, stream_id: u64, sender: Address, new_uri: Option<String>) -> Result<(), StreamError>;
-    fn release_milestone(env: Env, stream_id: u64, milestone_index: u32, sender: Address) -> Result<(), StreamError>;
-    fn approve_milestone(env: Env, stream_id: u64, milestone_id: u32, approver: Address) -> Result<(), StreamError>;
+    fn update_metadata_uri(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        new_uri: Option<String>,
+    ) -> Result<(), StreamError>;
+    fn release_milestone(
+        env: Env,
+        stream_id: u64,
+        milestone_index: u32,
+        sender: Address,
+    ) -> Result<(), StreamError>;
+    fn approve_milestone(
+        env: Env,
+        stream_id: u64,
+        milestone_id: u32,
+        approver: Address,
+    ) -> Result<(), StreamError>;
 
-    fn set_delegate(env: Env, sender: Address, stream_id: u64, delegate: Address) -> Result<(), StreamError>;
+    fn set_delegate(
+        env: Env,
+        sender: Address,
+        stream_id: u64,
+        delegate: Address,
+    ) -> Result<(), StreamError>;
     fn revoke_delegate(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError>;
     fn get_delegate(env: Env, stream_id: u64) -> Option<Address>;
-    fn delegate_stream(env: Env, stream_id: u64, delegate_address: Address) -> Result<(), StreamError>;
+    fn delegate_stream(
+        env: Env,
+        stream_id: u64,
+        delegate_address: Address,
+    ) -> Result<(), StreamError>;
     fn get_recipient_delegate(env: Env, stream_id: u64) -> Option<Address>;
 
     /// Sets the sliding-window size for the per-sender rate limit, in **ledgers**.
     /// Default: 720 ledgers (~1 hour at 5 s/ledger). Only admin may call this.
-    fn set_rate_limit_window(env: Env, admin: Address, window_ledgers: u32) -> Result<(), StreamError>;
+    fn set_rate_limit_window(
+        env: Env,
+        admin: Address,
+        window_ledgers: u32,
+    ) -> Result<(), StreamError>;
     /// Sets the maximum number of streams a sender may create within one window.
     /// Default: 20. Only admin may call this.
     fn set_rate_limit_max(env: Env, admin: Address, max_creations: u32) -> Result<(), StreamError>;
     /// Exempts an address from all rate limiting. Only admin may call this.
-    fn add_rate_limit_exempt(env: Env, admin: Address, address: Address) -> Result<(), StreamError>;
+    fn add_rate_limit_exempt(env: Env, admin: Address, address: Address)
+        -> Result<(), StreamError>;
     /// Removes a rate-limit exemption. Only admin may call this.
-    fn remove_rate_limit_exempt(env: Env, admin: Address, address: Address) -> Result<(), StreamError>;
+    fn remove_rate_limit_exempt(
+        env: Env,
+        admin: Address,
+        address: Address,
+    ) -> Result<(), StreamError>;
     /// Returns the number of stream creations the sender may still perform in the current window.
     /// Returns `u32::MAX` for exempt addresses.
     fn remaining_quota(env: Env, address: Address) -> u32;
 
-    fn set_token_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), StreamError>;
+    fn set_token_whitelist_enabled(
+        env: Env,
+        admin: Address,
+        enabled: bool,
+    ) -> Result<(), StreamError>;
     fn add_token_to_whitelist(env: Env, admin: Address, token: Address) -> Result<(), StreamError>;
-    fn remove_token_from_whitelist(env: Env, admin: Address, token: Address) -> Result<(), StreamError>;
+    fn remove_token_from_whitelist(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), StreamError>;
 
-    fn set_slippage_params(env: Env, sender: Address, stream_id: u64, reference_price: i128, max_slippage_bps: u32) -> Result<(), StreamError>;
+    fn set_slippage_params(
+        env: Env,
+        sender: Address,
+        stream_id: u64,
+        reference_price: i128,
+        max_slippage_bps: u32,
+    ) -> Result<(), StreamError>;
 
     // ── Feature (a): StreamExpiryWarning ─────────────────────────────────────
 
@@ -522,7 +706,12 @@ pub trait SoroStreamInterface {
     /// - `StreamNotFound` — target stream does not exist.
     /// - `NotAuthorized` — target stream's recipient differs from this stream's.
     /// - `CircularRedirect` — setting this redirect would create a cycle.
-    fn set_redirect(env: Env, stream_id: u64, target_stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+    fn set_redirect(
+        env: Env,
+        stream_id: u64,
+        target_stream_id: u64,
+        recipient: Address,
+    ) -> Result<(), StreamError>;
 
     /// Clears the redirect target for a stream. Only the recipient may call this.
     fn clear_redirect(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
@@ -605,15 +794,27 @@ pub trait SoroStreamInterface {
     fn execute_admin_override(env: Env, request_id: u64) -> Result<(), StreamError>;
 
     /// Returns an admin override request by ID.
-    fn get_override_request(env: Env, request_id: u64) -> Result<AdminOverrideRequest, StreamError>;
+    fn get_override_request(env: Env, request_id: u64)
+        -> Result<AdminOverrideRequest, StreamError>;
 
     /// Prunes expired/completed streams from storage to reclaim space (Admin only - Issue #401).
-    fn prune_expired_streams(env: Env, admin: Address, stream_ids: Vec<u64>) -> Result<u32, StreamError>;
+    fn prune_expired_streams(
+        env: Env,
+        admin: Address,
+        stream_ids: Vec<u64>,
+    ) -> Result<u32, StreamError>;
 
     /// Reads stream details with rate-limiting per caller (Issue #615).
-    fn get_stream_with_rate_limit(env: Env, caller: Address, stream_id: u64) -> Result<Stream, StreamError>;
+    fn get_stream_with_rate_limit(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+    ) -> Result<Stream, StreamError>;
 
     /// Claims accrued yield from a collateral vault (Issue #472).
-    fn claim_collateral_yield(env: Env, stream_id: u64, caller: Address) -> Result<(i128, i128), StreamError>;
+    fn claim_collateral_yield(
+        env: Env,
+        stream_id: u64,
+        caller: Address,
+    ) -> Result<(i128, i128), StreamError>;
 }
-

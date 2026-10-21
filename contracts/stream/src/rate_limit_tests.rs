@@ -36,7 +36,9 @@ fn rl_setup() -> RlTestEnv {
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
-    let token_id = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
 
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
@@ -50,7 +52,14 @@ fn rl_setup() -> RlTestEnv {
     // Disable the minimum duration check so tiny-duration streams work in tests.
     c.set_min_duration(&admin, &0u64);
 
-    RlTestEnv { env, contract_id, token_id, sender, recipient, admin }
+    RlTestEnv {
+        env,
+        contract_id,
+        token_id,
+        sender,
+        recipient,
+        admin,
+    }
 }
 
 fn rl_client(t: &RlTestEnv) -> SoroStreamContractClient<'_> {
@@ -82,8 +91,13 @@ fn rl_params(nonce: u64) -> CreateStreamParams {
 /// Helper: create one stream with a unique nonce.  Returns the stream ID.
 fn make_stream(t: &RlTestEnv, nonce: u64) -> u64 {
     rl_client(t).create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(nonce),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(nonce),
     )
 }
 
@@ -101,10 +115,18 @@ fn test_rl_allows_under_cap() {
 
     for nonce in 0u64..3 {
         let result = c.try_create_stream(
-            &t.sender, &t.recipient, &t.token_id,
-            &10_000, &3600u64, &false, &rl_params(nonce),
+            &t.sender,
+            &t.recipient,
+            &t.token_id,
+            &10_000,
+            &3600u64,
+            &false,
+            &rl_params(nonce),
         );
-        assert!(result.is_ok(), "stream {nonce} should be allowed under the cap");
+        assert!(
+            result.is_ok(),
+            "stream {nonce} should be allowed under the cap"
+        );
     }
 }
 
@@ -124,8 +146,13 @@ fn test_rl_blocks_at_cap() {
 
     // One over the cap.
     let result = c.try_create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(3),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(3),
     );
     assert_eq!(
         result,
@@ -151,8 +178,13 @@ fn test_rl_resets_after_window() {
 
     // Blocked within the window.
     let blocked = c.try_create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(2),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(2),
     );
     assert_eq!(blocked, Err(Ok(StreamError::RateLimitExceeded)));
 
@@ -162,8 +194,13 @@ fn test_rl_resets_after_window() {
 
     // Fresh window — first creation should succeed.
     let result = c.try_create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(2),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(2),
     );
     assert!(result.is_ok(), "creation after window reset should succeed");
 }
@@ -184,8 +221,13 @@ fn test_rl_exempt_bypasses_cap() {
     // Create well over the limit — all should succeed.
     for nonce in 0u64..5 {
         let result = c.try_create_stream(
-            &t.sender, &t.recipient, &t.token_id,
-            &10_000, &3600u64, &false, &rl_params(nonce),
+            &t.sender,
+            &t.recipient,
+            &t.token_id,
+            &10_000,
+            &3600u64,
+            &false,
+            &rl_params(nonce),
         );
         assert!(result.is_ok(), "exempt sender stream {nonce} must succeed");
     }
@@ -209,8 +251,13 @@ fn test_rl_remove_exempt_reapplies_limit() {
 
     // Second is rejected.
     let result = c.try_create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(1),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(1),
     );
     assert_eq!(result, Err(Ok(StreamError::RateLimitExceeded)));
 }
@@ -283,17 +330,30 @@ fn test_rl_is_per_sender() {
     make_stream(&t, 1);
 
     let blocked = c.try_create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(2),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(2),
     );
     assert_eq!(blocked, Err(Ok(StreamError::RateLimitExceeded)));
 
     // sender2 is unaffected.
     let ok = c.try_create_stream(
-        &sender2, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(0),
+        &sender2,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(0),
     );
-    assert!(ok.is_ok(), "sender2 must not be rate-limited by sender1's usage");
+    assert!(
+        ok.is_ok(),
+        "sender2 must not be rate-limited by sender1's usage"
+    );
 }
 
 /// Admin can update window and max; new settings take effect immediately.
@@ -309,7 +369,15 @@ fn test_rl_admin_can_update_config() {
 
     // Blocked at cap of 1.
     assert_eq!(
-        c.try_create_stream(&t.sender, &t.recipient, &t.token_id, &10_000, &3600u64, &false, &rl_params(1)),
+        c.try_create_stream(
+            &t.sender,
+            &t.recipient,
+            &t.token_id,
+            &10_000,
+            &3600u64,
+            &false,
+            &rl_params(1)
+        ),
         Err(Ok(StreamError::RateLimitExceeded))
     );
 
@@ -320,8 +388,13 @@ fn test_rl_admin_can_update_config() {
     // started at ledger when first stream was created — still same window).
     // Actually: after raising the cap, the sender has count=1, max=5 → 4 more allowed.
     let result = c.try_create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &3600u64, &false, &rl_params(1),
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &3600u64,
+        &false,
+        &rl_params(1),
     );
     assert!(result.is_ok(), "creation after cap increase should succeed");
 }

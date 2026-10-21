@@ -38,7 +38,6 @@
 //! [`SOROSTREAM_CHAOS_SEED`]: std::env
 
 use super::*;
-use std::format;
 use crate::chaos::{
     duplicate_error_codes, is_defined_error_code, ChaosConfig, ChaosEnv, ChaosReport, ChaosRng,
     ChaosToken, ChaosTokenClient, FaultKind,
@@ -48,6 +47,7 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, String,
 };
+use std::format;
 
 /// The shape a generated `try_<entrypoint>` returns for a `Result<T, E>`
 /// contract function.
@@ -541,7 +541,8 @@ fn run_campaign(seed: u64, steps: u32) -> ChaosReport {
                 if let Err(Err(invoke)) = result {
                     let survivable = fault.map(|f| f.is_survivable()).unwrap_or(true);
                     if survivable {
-                        h.chaos.record_panic("get_all_stream_ids", fault, &format!("{invoke:?}"));
+                        h.chaos
+                            .record_panic("get_all_stream_ids", fault, &format!("{invoke:?}"));
                     }
                 }
                 assert_eq!(

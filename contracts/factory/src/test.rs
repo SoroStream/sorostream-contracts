@@ -201,8 +201,8 @@ fn test_deploy_records_metadata_and_registry() {
     c.initialize(&admin);
 
     let wasm_hash = upload_child_wasm(&env);
-    let child_addr = c
-        .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None::<String>);
+    let child_addr =
+        c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None::<String>);
 
     // Registry has one entry.
     let contracts = c.get_deployed_contracts();
@@ -231,10 +231,8 @@ fn test_different_salts_give_different_addresses() {
 
     let wasm_hash = upload_child_wasm(&env);
 
-    let addr1 = c
-        .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None::<String>);
-    let addr2 = c
-        .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 2), &None::<String>);
+    let addr1 = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None::<String>);
+    let addr2 = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 2), &None::<String>);
 
     // Different salts must produce different child addresses.
     assert_ne!(addr1, addr2);
@@ -252,12 +250,9 @@ fn test_deploy_multiple_contracts_all_listed_in_order() {
 
     let wasm_hash = upload_child_wasm(&env);
 
-    let addr1 = c
-        .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 10), &None::<String>);
-    let addr2 = c
-        .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 20), &None::<String>);
-    let addr3 = c
-        .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 30), &None::<String>);
+    let addr1 = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 10), &None::<String>);
+    let addr2 = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 20), &None::<String>);
+    let addr3 = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 30), &None::<String>);
 
     let contracts = c.get_deployed_contracts();
     assert_eq!(contracts.len(), 3);
@@ -280,8 +275,12 @@ fn test_deploy_stores_label_and_info_roundtrips() {
 
     let wasm_hash = upload_child_wasm(&env);
     let label = String::from_str(&env, "production-mainnet-v2");
-    let child_addr = c
-        .deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 5), &Some(label.clone()));
+    let child_addr = c.deploy_stream_contract(
+        &admin,
+        &wasm_hash,
+        &fake_salt(&env, 5),
+        &Some(label.clone()),
+    );
 
     let info = c.get_deployment_info(&child_addr).unwrap();
     assert_eq!(info.label, Some(label));

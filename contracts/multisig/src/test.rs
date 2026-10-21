@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Vec,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
 fn env_with_auth() -> Env {
     let env = Env::default();
@@ -76,9 +73,27 @@ fn test_get_intents_by_proposer_and_target() {
     c.initialize(&owners, 1);
 
     let calldata = soroban_sdk::Bytes::new(&env);
-    let id1 = c.propose(&proposer, &target_a, &soroban_sdk::symbol!("fn_a"), &calldata, 1000);
-    let id2 = c.propose(&proposer, &target_b, &soroban_sdk::symbol!("fn_b"), &calldata, 1000);
-    let id3 = c.propose(&other, &target_a, &soroban_sdk::symbol!("fn_a"), &calldata, 1000);
+    let id1 = c.propose(
+        &proposer,
+        &target_a,
+        &soroban_sdk::symbol!("fn_a"),
+        &calldata,
+        1000,
+    );
+    let id2 = c.propose(
+        &proposer,
+        &target_b,
+        &soroban_sdk::symbol!("fn_b"),
+        &calldata,
+        1000,
+    );
+    let id3 = c.propose(
+        &other,
+        &target_a,
+        &soroban_sdk::symbol!("fn_a"),
+        &calldata,
+        1000,
+    );
 
     // Proposer index.
     let by_proposer = c.get_intents_by_proposer(&proposer);

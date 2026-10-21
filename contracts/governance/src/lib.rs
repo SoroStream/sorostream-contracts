@@ -14,7 +14,7 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracterror, contracttype, token, Address, Bytes, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token, Address, Bytes, Env, Symbol, Vec,
 };
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ const TIMELOCK_PERIOD_KEY: &str = "tlp";
 const PROPOSAL_COUNT_KEY: &str = "p_cnt";
 
 const DEFAULT_VOTING_PERIOD: u64 = 7 * 24 * 60 * 60; // 7 days
-const DEFAULT_TIMELOCK_PERIOD: u64 = 48 * 60 * 60;   // 48 hours
+const DEFAULT_TIMELOCK_PERIOD: u64 = 48 * 60 * 60; // 48 hours
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -102,11 +102,15 @@ fn read_admin(env: &Env) -> Option<Address> {
 }
 
 fn read_pending_admin(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, PENDING_ADMIN_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, PENDING_ADMIN_KEY))
 }
 
 fn read_pending_guardian(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, PENDING_GUARDIAN_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, PENDING_GUARDIAN_KEY))
 }
 
 fn check_admin(env: &Env) {
@@ -120,7 +124,9 @@ fn proposal_key(id: u64) -> u64 {
 }
 
 fn save_proposal(env: &Env, proposal: &Proposal) {
-    env.storage().persistent().set(&proposal_key(proposal.id), proposal);
+    env.storage()
+        .persistent()
+        .set(&proposal_key(proposal.id), proposal);
 }
 
 fn load_proposal(env: &Env, id: u64) -> Option<Proposal> {
@@ -152,7 +158,10 @@ fn mark_voted(env: &Env, proposal_id: u64, voter: &Address) {
 }
 
 fn get_u64(env: &Env, key: &str, default: u64) -> u64 {
-    env.storage().instance().get(&Symbol::new(env, key)).unwrap_or(default)
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, key))
+        .unwrap_or(default)
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -184,15 +193,38 @@ impl GovernanceContract {
         if read_admin(&env).is_some() {
             return Err(GovernanceError::AlreadyInitialized);
         }
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &admin);
-        env.storage().instance().set(&Symbol::new(&env, GUARDIAN_KEY), &guardian);
-        env.storage().instance().set(&Symbol::new(&env, TOKEN_KEY), &token);
-        env.storage().instance().set(&Symbol::new(&env, PROPOSAL_THRESHOLD_KEY), &proposal_threshold);
-        env.storage().instance().set(&Symbol::new(&env, QUORUM_KEY), &quorum);
-        let vp = if voting_period == 0 { DEFAULT_VOTING_PERIOD } else { voting_period };
-        let tlp = if timelock_period == 0 { DEFAULT_TIMELOCK_PERIOD } else { timelock_period };
-        env.storage().instance().set(&Symbol::new(&env, VOTING_PERIOD_KEY), &vp);
-        env.storage().instance().set(&Symbol::new(&env, TIMELOCK_PERIOD_KEY), &tlp);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, ADMIN_KEY), &admin);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, GUARDIAN_KEY), &guardian);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, TOKEN_KEY), &token);
+        env.storage().instance().set(
+            &Symbol::new(&env, PROPOSAL_THRESHOLD_KEY),
+            &proposal_threshold,
+        );
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, QUORUM_KEY), &quorum);
+        let vp = if voting_period == 0 {
+            DEFAULT_VOTING_PERIOD
+        } else {
+            voting_period
+        };
+        let tlp = if timelock_period == 0 {
+            DEFAULT_TIMELOCK_PERIOD
+        } else {
+            timelock_period
+        };
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, VOTING_PERIOD_KEY), &vp);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, TIMELOCK_PERIOD_KEY), &tlp);
         env.events().publish(
             (Symbol::new(&env, "GovernanceInitialized"),),
             (admin, guardian, token, proposal_threshold, quorum, vp, tlp),
@@ -212,7 +244,9 @@ impl GovernanceContract {
     ) -> Result<u64, GovernanceError> {
         proposer.require_auth();
 
-        let token: Address = env.storage().instance()
+        let token: Address = env
+            .storage()
+            .instance()
             .get(&Symbol::new(&env, TOKEN_KEY))
             .ok_or(GovernanceError::NotInitialized)?;
         let threshold = get_u64(&env, PROPOSAL_THRESHOLD_KEY, 0);
@@ -268,8 +302,8 @@ impl GovernanceContract {
     ) -> Result<(), GovernanceError> {
         voter.require_auth();
 
-        let mut proposal = load_proposal(&env, proposal_id)
-            .ok_or(GovernanceError::ProposalNotFound)?;
+        let mut proposal =
+            load_proposal(&env, proposal_id).ok_or(GovernanceError::ProposalNotFound)?;
 
         let now = env.ledger().timestamp();
         if proposal.status != ProposalStatus::Active
@@ -283,7 +317,9 @@ impl GovernanceContract {
             return Err(GovernanceError::AlreadyVoted);
         }
 
-        let token: Address = env.storage().instance()
+        let token: Address = env
+            .storage()
+            .instance()
             .get(&Symbol::new(&env, TOKEN_KEY))
             .ok_or(GovernanceError::NotInitialized)?;
         let balance = token::Client::new(&env, &token).balance(&voter) as u64;
@@ -310,8 +346,8 @@ impl GovernanceContract {
     /// Callable by anyone after voting ends. Fails if quorum was not reached or the
     /// proposal did not receive more yes votes than no votes.
     pub fn queue(env: Env, proposal_id: u64) -> Result<(), GovernanceError> {
-        let mut proposal = load_proposal(&env, proposal_id)
-            .ok_or(GovernanceError::ProposalNotFound)?;
+        let mut proposal =
+            load_proposal(&env, proposal_id).ok_or(GovernanceError::ProposalNotFound)?;
 
         let now = env.ledger().timestamp();
         if proposal.status != ProposalStatus::Active || now <= proposal.vote_end {
@@ -356,12 +392,10 @@ impl GovernanceContract {
     /// invoke the stream contract's real entry points through this path; an
     /// adapter accepting a single `Bytes` argument would be required.
     pub fn execute(env: Env, proposal_id: u64) -> Result<(), GovernanceError> {
-        let mut proposal = load_proposal(&env, proposal_id)
-            .ok_or(GovernanceError::ProposalNotFound)?;
+        let mut proposal =
+            load_proposal(&env, proposal_id).ok_or(GovernanceError::ProposalNotFound)?;
 
-        if proposal.status != ProposalStatus::Queued
-            && proposal.status != ProposalStatus::Failed
-        {
+        if proposal.status != ProposalStatus::Queued && proposal.status != ProposalStatus::Failed {
             return Err(GovernanceError::ProposalNotQueued);
         }
 
@@ -373,7 +407,10 @@ impl GovernanceContract {
         let invoke_result = env.try_invoke_contract::<()>(
             &proposal.target,
             &proposal.function,
-            Vec::from_array(&env, [soroban_sdk::IntoVal::into_val(&proposal.calldata, &env)]),
+            Vec::from_array(
+                &env,
+                [soroban_sdk::IntoVal::into_val(&proposal.calldata, &env)],
+            ),
         );
 
         match invoke_result {
@@ -381,10 +418,8 @@ impl GovernanceContract {
                 proposal.status = ProposalStatus::Executed;
                 save_proposal(&env, &proposal);
 
-                env.events().publish(
-                    (Symbol::new(&env, "ProposalExecuted"), proposal_id),
-                    (),
-                );
+                env.events()
+                    .publish((Symbol::new(&env, "ProposalExecuted"), proposal_id), ());
 
                 Ok(())
             }
@@ -392,10 +427,8 @@ impl GovernanceContract {
                 proposal.status = ProposalStatus::Failed;
                 save_proposal(&env, &proposal);
 
-                env.events().publish(
-                    (Symbol::new(&env, "ProposalFailed"), proposal_id),
-                    (),
-                );
+                env.events()
+                    .publish((Symbol::new(&env, "ProposalFailed"), proposal_id), ());
 
                 Err(GovernanceError::InvokeFailed)
             }
@@ -406,15 +439,17 @@ impl GovernanceContract {
     pub fn veto(env: Env, guardian: Address, proposal_id: u64) -> Result<(), GovernanceError> {
         guardian.require_auth();
 
-        let stored: Address = env.storage().instance()
+        let stored: Address = env
+            .storage()
+            .instance()
             .get(&Symbol::new(&env, GUARDIAN_KEY))
             .ok_or(GovernanceError::NotInitialized)?;
         if guardian != stored {
             return Err(GovernanceError::NotGuardian);
         }
 
-        let mut proposal = load_proposal(&env, proposal_id)
-            .ok_or(GovernanceError::ProposalNotFound)?;
+        let mut proposal =
+            load_proposal(&env, proposal_id).ok_or(GovernanceError::ProposalNotFound)?;
 
         if proposal.status != ProposalStatus::Queued {
             return Err(GovernanceError::ProposalNotQueued);
@@ -423,10 +458,8 @@ impl GovernanceContract {
         proposal.status = ProposalStatus::Vetoed;
         save_proposal(&env, &proposal);
 
-        env.events().publish(
-            (Symbol::new(&env, "ProposalVetoed"), proposal_id),
-            guardian,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "ProposalVetoed"), proposal_id), guardian);
 
         Ok(())
     }
@@ -447,7 +480,9 @@ impl GovernanceContract {
     /// Updates the guardian address. Only admin may call this.
     pub fn set_guardian(env: Env, new_guardian: Address) -> Result<(), GovernanceError> {
         check_admin(&env);
-        env.storage().instance().set(&Symbol::new(&env, GUARDIAN_KEY), &new_guardian);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, GUARDIAN_KEY), &new_guardian);
         Ok(())
     }
 
@@ -471,13 +506,16 @@ impl GovernanceContract {
     /// Accepts the guardian role. The pending guardian must call this.
     pub fn accept_guardian(env: Env, accepted_by: Address) -> Result<(), GovernanceError> {
         accepted_by.require_auth();
-        let pending = read_pending_guardian(&env)
-            .ok_or(GovernanceError::NotInitialized)?;
+        let pending = read_pending_guardian(&env).ok_or(GovernanceError::NotInitialized)?;
         if accepted_by != pending {
             return Err(GovernanceError::NotAdmin);
         }
-        env.storage().instance().set(&Symbol::new(&env, GUARDIAN_KEY), &accepted_by);
-        env.storage().instance().remove(&Symbol::new(&env, PENDING_GUARDIAN_KEY));
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, GUARDIAN_KEY), &accepted_by);
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, PENDING_GUARDIAN_KEY));
         env.events().publish(
             (Symbol::new(&env, "GuardianTransferAccepted"),),
             accepted_by,
@@ -488,14 +526,18 @@ impl GovernanceContract {
     /// Updates the proposal threshold. Only admin may call this.
     pub fn set_proposal_threshold(env: Env, threshold: u64) -> Result<(), GovernanceError> {
         check_admin(&env);
-        env.storage().instance().set(&Symbol::new(&env, PROPOSAL_THRESHOLD_KEY), &threshold);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PROPOSAL_THRESHOLD_KEY), &threshold);
         Ok(())
     }
 
     /// Updates the quorum. Only admin may call this.
     pub fn set_quorum(env: Env, quorum: u64) -> Result<(), GovernanceError> {
         check_admin(&env);
-        env.storage().instance().set(&Symbol::new(&env, QUORUM_KEY), &quorum);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, QUORUM_KEY), &quorum);
         Ok(())
     }
 
@@ -505,7 +547,9 @@ impl GovernanceContract {
         if seconds == 0 {
             return Err(GovernanceError::InvalidParam);
         }
-        env.storage().instance().set(&Symbol::new(&env, VOTING_PERIOD_KEY), &seconds);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, VOTING_PERIOD_KEY), &seconds);
         Ok(())
     }
 
@@ -515,35 +559,38 @@ impl GovernanceContract {
         if seconds == 0 {
             return Err(GovernanceError::InvalidParam);
         }
-        env.storage().instance().set(&Symbol::new(&env, TIMELOCK_PERIOD_KEY), &seconds);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, TIMELOCK_PERIOD_KEY), &seconds);
         Ok(())
     }
 
     /// Proposes a new admin. Only admin may call this.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), GovernanceError> {
         check_admin(&env);
-        env.storage().instance().set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferProposed"),),
-            new_admin,
-        );
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferProposed"),), new_admin);
         Ok(())
     }
 
     /// Accepts the admin role. The pending admin must call this.
     pub fn accept_admin(env: Env, accepted_by: Address) -> Result<(), GovernanceError> {
         accepted_by.require_auth();
-        let pending = read_pending_admin(&env)
-            .ok_or(GovernanceError::NotInitialized)?;
+        let pending = read_pending_admin(&env).ok_or(GovernanceError::NotInitialized)?;
         if accepted_by != pending {
             return Err(GovernanceError::NotAdmin);
         }
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &accepted_by);
-        env.storage().instance().remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferAccepted"),),
-            accepted_by,
-        );
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, ADMIN_KEY), &accepted_by);
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferAccepted"),), accepted_by);
         Ok(())
     }
 }
@@ -551,8 +598,8 @@ impl GovernanceContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
     use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
@@ -566,15 +613,7 @@ mod test {
             .address();
         let c = GovernanceContractClient::new(&env, &contract_id);
         assert!(c
-            .initialize(
-                &admin,
-                &guardian,
-                &token_id,
-                &100u64,
-                &10u64,
-                &0u64,
-                &0u64
-            )
+            .initialize(&admin, &guardian, &token_id, &100u64, &10u64, &0u64, &0u64)
             .is_ok());
         (env, contract_id, token_id)
     }

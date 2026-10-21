@@ -1,4 +1,3 @@
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, IssuerFlags, Ledger},
@@ -83,10 +82,10 @@ fn test_issue_520_cliff_prevents_early_withdrawal() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     // Try to withdraw before cliff is reached
@@ -102,7 +101,10 @@ fn test_issue_520_cliff_prevents_early_withdrawal() {
 
     // Verify withdrawal succeeded and tokens were transferred
     let balance = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
-    assert!(balance > 0, "Recipient should have received tokens after cliff");
+    assert!(
+        balance > 0,
+        "Recipient should have received tokens after cliff"
+    );
 }
 
 #[test]
@@ -134,10 +136,10 @@ fn test_issue_520_cliff_zero_claimable_before_cliff_time() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     // Move time to 1000 seconds (before cliff at 2000)
@@ -145,7 +147,10 @@ fn test_issue_520_cliff_zero_claimable_before_cliff_time() {
 
     // Recipient balance should still be zero since cliff not reached
     let initial_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
-    assert_eq!(initial_balance, 0, "No tokens should be claimable before cliff");
+    assert_eq!(
+        initial_balance, 0,
+        "No tokens should be claimable before cliff"
+    );
 }
 
 #[test]
@@ -177,10 +182,10 @@ fn test_issue_520_cliff_exact_boundary() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     // Withdraw one second before cliff — no tokens should accrue before cliff
@@ -188,7 +193,10 @@ fn test_issue_520_cliff_exact_boundary() {
     let _ = c.try_withdraw(&stream_id, &t.recipient);
 
     let balance = TokenClient::new(&t.env, &t.token_id).balance(&t.recipient);
-    assert_eq!(balance, 0, "No tokens should be earned before cliff boundary");
+    assert_eq!(
+        balance, 0,
+        "No tokens should be earned before cliff boundary"
+    );
 }
 
 #[test]
@@ -218,19 +226,29 @@ fn test_auto_renew_resets_start_time_and_keeps_claimable_zero_immediately() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     t.env.ledger().set_timestamp(1000);
     c.withdraw(&stream_id, &t.recipient);
 
     let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.start_time, 1000, "renewal should reset start_time to the expiry ledger");
-    assert_eq!(stream.end_time, 2000, "renewal should extend from the expiry ledger");
-    assert_eq!(c.get_claimable(&stream_id), 0, "claimable should stay zero immediately after auto-renewal");
+    assert_eq!(
+        stream.start_time, 1000,
+        "renewal should reset start_time to the expiry ledger"
+    );
+    assert_eq!(
+        stream.end_time, 2000,
+        "renewal should extend from the expiry ledger"
+    );
+    assert_eq!(
+        c.get_claimable(&stream_id),
+        0,
+        "claimable should stay zero immediately after auto-renewal"
+    );
 }
 
 #[test]
@@ -260,18 +278,25 @@ fn test_same_ledger_withdraw_leaves_zero_claimable_immediately() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     t.env.ledger().set_timestamp(500);
     c.withdraw(&stream_id, &t.recipient);
 
-    assert_eq!(c.get_claimable(&stream_id), 0, "same-ledger claimable must be zero after a withdrawal at the same timestamp");
+    assert_eq!(
+        c.get_claimable(&stream_id),
+        0,
+        "same-ledger claimable must be zero after a withdrawal at the same timestamp"
+    );
     let stream = c.get_stream(&stream_id);
-    assert_eq!(stream.last_withdraw_time, 500, "stored withdrawal boundary should be the ledger timestamp that was just claimed");
+    assert_eq!(
+        stream.last_withdraw_time, 500,
+        "stored withdrawal boundary should be the ledger timestamp that was just claimed"
+    );
 }
 
 #[test]

@@ -1,10 +1,5 @@
-
 use super::*;
-use soroban_sdk::{
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env};
 
 struct TestEnv {
     env: Env,
@@ -65,7 +60,7 @@ fn test_issue_505_storage_optimized_boolean_fields() {
         &t.token_id,
         &500_000,
         &5000u64,
-        &true,   // auto_renew = true
+        &true, // auto_renew = true
         &crate::types::CreateStreamParams {
             cliff_seconds: 0,
             nonce: 0,
@@ -80,20 +75,32 @@ fn test_issue_505_storage_optimized_boolean_fields() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     let stream = c.get_stream(&stream_id);
 
     // Verify all boolean fields are correctly stored and retrieved
     assert_eq!(stream.auto_renew, true, "auto_renew field not preserved");
-    assert_eq!(stream.options.allow_recipient_termination, false, "allow_recipient_termination field not preserved");
-    assert_eq!(stream.options.non_transferable, false, "non_transferable field not preserved");
-    assert_eq!(stream.options.sender_locked, false, "sender_locked field not preserved");
-    assert_eq!(stream.options.is_dual_stream, false, "is_dual_stream field not preserved");
+    assert_eq!(
+        stream.options.allow_recipient_termination, false,
+        "allow_recipient_termination field not preserved"
+    );
+    assert_eq!(
+        stream.options.non_transferable, false,
+        "non_transferable field not preserved"
+    );
+    assert_eq!(
+        stream.options.sender_locked, false,
+        "sender_locked field not preserved"
+    );
+    assert_eq!(
+        stream.options.is_dual_stream, false,
+        "is_dual_stream field not preserved"
+    );
 }
 
 #[test]
@@ -107,8 +114,8 @@ fn test_issue_505_storage_optimized_type_conversions() {
         &t.sender,
         &t.recipient,
         &t.token_id,
-        &999_999_999,      // Large amount
-        &100_000u64,       // Large duration
+        &999_999_999, // Large amount
+        &100_000u64,  // Large duration
         &false,
         &crate::types::CreateStreamParams {
             cliff_seconds: 0,
@@ -124,17 +131,23 @@ fn test_issue_505_storage_optimized_type_conversions() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     let stream = c.get_stream(&stream_id);
 
     // Verify large values are correctly preserved through storage optimization
-    assert_eq!(stream.deposit, 999_999_999, "Large deposit value not preserved");
-    assert_eq!(stream.end_time, 100_000, "Large duration value not preserved");
+    assert_eq!(
+        stream.deposit, 999_999_999,
+        "Large deposit value not preserved"
+    );
+    assert_eq!(
+        stream.end_time, 100_000,
+        "Large duration value not preserved"
+    );
 }
 
 #[test]
@@ -164,10 +177,10 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     let other_recipient = Address::generate(&t.env);
@@ -194,10 +207,10 @@ fn test_issue_505_storage_multiple_boolean_combinations() {
             sponsor: None,
             requires_recipient_approval: false,
 
-        priority: None,
-        tags: None,
-        metadata_uri: None,
-    },
+            priority: None,
+            tags: None,
+            metadata_uri: None,
+        },
     );
 
     let s1 = c.get_stream(&stream_1);

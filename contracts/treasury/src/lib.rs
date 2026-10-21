@@ -16,7 +16,9 @@ fn read_admin(env: &Env) -> Option<Address> {
 }
 
 fn read_pending_admin(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&Symbol::new(env, PENDING_ADMIN_KEY))
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, PENDING_ADMIN_KEY))
 }
 
 fn read_lp_pool(env: &Env) -> Option<Address> {
@@ -43,11 +45,17 @@ fn balance_key(env: &Env, token: &Address) -> (Symbol, Address) {
 }
 
 fn is_zero_address(env: &Env, address: &Address) -> bool {
-    let zero_account = Address::from_string(&soroban_sdk::String::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    ));
     if address == &zero_account {
         return true;
     }
-    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"));
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    ));
     if address == &zero_contract {
         return true;
     }
@@ -90,18 +98,15 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferProposed"),),
-            new_admin,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferProposed"),), new_admin);
     }
 
     /// Accepts the pending admin role. Must be called by the pending admin itself.
     pub fn accept_admin(env: Env, accepted_by: Address) {
         accepted_by.require_auth();
         validate_treasury_address(&env, &accepted_by);
-        let pending = read_pending_admin(&env)
-            .expect("no pending admin transfer");
+        let pending = read_pending_admin(&env).expect("no pending admin transfer");
         if accepted_by != pending {
             panic!("caller is not the pending admin");
         }
@@ -111,10 +116,8 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferAccepted"),),
-            accepted_by,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "AdminTransferAccepted"),), accepted_by);
     }
 
     /// Immediately transfers the admin role. Only the current admin may call this.
@@ -142,9 +145,7 @@ impl TreasuryContract {
     pub fn deposit(env: Env, token: Address, amount: i128) {
         let key = balance_key(&env, &token);
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&key, &(current + amount));
+        env.storage().persistent().set(&key, &(current + amount));
     }
 
     /// Returns the recorded balance of `token` held by the treasury.
@@ -163,9 +164,7 @@ impl TreasuryContract {
         if amount > current {
             panic!("insufficient treasury balance");
         }
-        env.storage()
-            .persistent()
-            .set(&key, &(current - amount));
+        env.storage().persistent().set(&key, &(current - amount));
         token::Client::new(&env, &token).transfer(
             &env.current_contract_address(),
             &destination,
@@ -227,10 +226,8 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, TREASURY_SPLIT_BPS_KEY), &treasury_bps);
-        env.events().publish(
-            (Symbol::new(&env, "TreasurySplitSet"),),
-            treasury_bps,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "TreasurySplitSet"),), treasury_bps);
     }
 
     /// Returns the configured treasury split in basis points.
@@ -271,11 +268,7 @@ impl TreasuryContract {
         }
         if lp_amount > 0 {
             let lp_pool = read_lp_pool(&env).expect("lp_pool not configured");
-            token_client.transfer(
-                &env.current_contract_address(),
-                &lp_pool,
-                &lp_amount,
-            );
+            token_client.transfer(&env.current_contract_address(), &lp_pool, &lp_amount);
         }
 
         env.events().publish(
@@ -291,7 +284,7 @@ impl TreasuryContract {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _},
+        testutils::Address as _,
         token::{Client as TokenClient, StellarAssetClient},
         Address, Env,
     };
@@ -444,7 +437,10 @@ mod test {
         env.mock_all_auths_allowing_non_root_auth();
         let treasury_id = env.register(TreasuryContract, ());
         let c = TreasuryContractClient::new(&env, &treasury_id);
-        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(
+            &env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
         c.initialize(&zero_addr);
     }
 
@@ -454,7 +450,10 @@ mod test {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
-        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&t.env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(
+            &t.env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
         c.set_treasury(&zero_addr);
     }
 
@@ -478,4 +477,3 @@ mod test {
         assert!(c.get_lp_pool().is_none());
     }
 }
-

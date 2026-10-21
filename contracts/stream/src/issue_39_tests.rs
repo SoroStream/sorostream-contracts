@@ -14,9 +14,9 @@
 
 extern crate std;
 
-use crate::{SoroStreamContract, SoroStreamContractClient};
 use crate::errors::StreamError;
 use crate::types::StreamStatus;
+use crate::{SoroStreamContract, SoroStreamContractClient};
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},

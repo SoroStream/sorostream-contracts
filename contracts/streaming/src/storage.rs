@@ -18,7 +18,13 @@ const LEDGER_THRESHOLD: u32 = 432_000;
 ///
 /// `nonce` is a per-call counter stored in contract instance storage that ensures
 /// two streams created in the same ledger second get distinct IDs.
-pub fn derive_stream_id(env: &Env, sender: &Address, recipient: &Address, timestamp: u64, nonce: u64) -> u64 {
+pub fn derive_stream_id(
+    env: &Env,
+    sender: &Address,
+    recipient: &Address,
+    timestamp: u64,
+    nonce: u64,
+) -> u64 {
     let mut buf = Bytes::new(env);
     buf.append(&sender.to_xdr(env));
     buf.append(&recipient.to_xdr(env));
@@ -56,9 +62,7 @@ pub fn next_nonce(env: &Env) -> u64 {
 
 /// Returns `true` if a stream with the given ID already exists in persistent storage.
 pub fn stream_id_exists(env: &Env, stream_id: u64) -> bool {
-    env.storage()
-        .persistent()
-        .has(&DataKey::Stream(stream_id))
+    env.storage().persistent().has(&DataKey::Stream(stream_id))
 }
 
 pub fn save_stream(env: &Env, stream_id: u64, stream: &Stream) {

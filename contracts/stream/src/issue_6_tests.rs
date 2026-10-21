@@ -59,7 +59,13 @@ fn setup() -> TestEnv {
     // Disable the minimum-duration gate for unit tests.
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
 
-    TestEnv { env, contract_id, token_id, sender, recipient }
+    TestEnv {
+        env,
+        contract_id,
+        token_id,
+        sender,
+        recipient,
+    }
 }
 
 fn client(t: &TestEnv) -> SoroStreamContractClient<'_> {
@@ -98,8 +104,12 @@ fn test_resume_clears_paused_at() {
     // Create stream: 1 token/s for 1000 s.
     t.env.ledger().set_timestamp(0);
     let stream_id = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &1_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &1_000,
+        &1_000,
+        &false,
         &params_with_nonce(0),
     );
 
@@ -109,7 +119,10 @@ fn test_resume_clears_paused_at() {
 
     {
         let s = c.get_stream(&stream_id);
-        assert_eq!(s.options.last_pause_time, 100, "last_pause_time must be set to pause ledger");
+        assert_eq!(
+            s.options.last_pause_time, 100,
+            "last_pause_time must be set to pause ledger"
+        );
     }
 
     // Resume at t=200.
@@ -141,8 +154,12 @@ fn test_pause_resume_pause_claimable() {
     // flow_rate = 1_000 / 1_000 = 1 token/s
     t.env.ledger().set_timestamp(0);
     let stream_id = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &1_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &1_000,
+        &1_000,
+        &false,
         &params_with_nonce(0),
     );
 
@@ -152,7 +169,10 @@ fn test_pause_resume_pause_claimable() {
 
     let claimable_at_pause = c.get_claimable(&stream_id);
     // Paused stream reports claimable frozen at pause time (100 - 0 = 100 tokens).
-    assert_eq!(claimable_at_pause, 100, "claimable at first pause must be 100");
+    assert_eq!(
+        claimable_at_pause, 100,
+        "claimable at first pause must be 100"
+    );
 
     // ── Resume at t=200 ──────────────────────────────────────────────────────
     // Paused for 100 s. All time fields shift +100.
@@ -165,7 +185,10 @@ fn test_pause_resume_pause_claimable() {
 
     {
         let s = c.get_stream(&stream_id);
-        assert_eq!(s.options.last_pause_time, 0, "last_pause_time cleared after resume");
+        assert_eq!(
+            s.options.last_pause_time, 0,
+            "last_pause_time cleared after resume"
+        );
         assert_eq!(s.end_time, 1100, "end_time extended by pause duration");
     }
 
@@ -181,7 +204,10 @@ fn test_pause_resume_pause_claimable() {
     // The key invariant is that the PAUSED window (t=100..t=200) is NOT double-counted.
     assert!(claimable_mid > 0, "claimable after resume must be positive");
     // Exactly: last_withdraw_time = 100, now = 300 → elapsed = 200 → claimable = 200.
-    assert_eq!(claimable_mid, 200, "claimable at t=300 must be 200 (100..300 elapsed since shifted LWT)");
+    assert_eq!(
+        claimable_mid, 200,
+        "claimable at t=300 must be 200 (100..300 elapsed since shifted LWT)"
+    );
 
     // ── Pause again at t=300 ─────────────────────────────────────────────────
     t.env.ledger().set_timestamp(300);
@@ -189,7 +215,10 @@ fn test_pause_resume_pause_claimable() {
 
     {
         let s = c.get_stream(&stream_id);
-        assert_eq!(s.options.last_pause_time, 300, "second pause records correct timestamp");
+        assert_eq!(
+            s.options.last_pause_time, 300,
+            "second pause records correct timestamp"
+        );
     }
 
     // Advance ledger to t=400 — claimable must remain frozen at the second-pause value.
@@ -212,8 +241,12 @@ fn test_claimable_zero_during_pause() {
     // Use 10_000 tokens / 1_000 s = 10 tokens/s.
     t.env.ledger().set_timestamp(0);
     let stream_id = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params_with_nonce(0),
     );
 
@@ -231,7 +264,10 @@ fn test_claimable_zero_during_pause() {
         claimable_at_pause, claimable_after_wait,
         "claimable must not grow while stream is paused"
     );
-    assert!(claimable_at_pause > 0, "sanity: some tokens were earned before pause");
+    assert!(
+        claimable_at_pause > 0,
+        "sanity: some tokens were earned before pause"
+    );
 }
 
 // ── Test 4 ────────────────────────────────────────────────────────────────────
@@ -249,8 +285,12 @@ fn test_second_pause_after_resume_no_stale_paused_at() {
     // 10 tokens/s
     t.env.ledger().set_timestamp(0);
     let stream_id = c.create_stream(
-        &t.sender, &t.recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &t.recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &params_with_nonce(0),
     );
 

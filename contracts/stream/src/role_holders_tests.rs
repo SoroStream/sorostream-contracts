@@ -1,7 +1,7 @@
 extern crate std;
 
 use crate::{RoleHolders, SoroStreamContract, SoroStreamContractClient};
-use soroban_sdk::testutils::Ledger;
+use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env};
 
 fn setup() -> (Env, Address, Address) {
@@ -12,18 +12,13 @@ fn setup() -> (Env, Address, Address) {
     let admin = Address::generate(&env);
 
     let client = SoroStreamContractClient::new(&env, &contract);
-    client
-        .initialize(
-            &admin,
-            &soroban_sdk::String::from_str(&env, "1.0.0"),
-        )
-        .expect("initialize should succeed");
+    client.initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
     client.set_min_duration(&admin, &0u64);
 
     (env, contract, admin)
 }
 
-fn client(env: &Env, contract: &Address) -> SoroStreamContractClient<'_> {
+fn client<'a>(env: &'a Env, contract: &'a Address) -> SoroStreamContractClient<'a> {
     SoroStreamContractClient::new(env, contract)
 }
 
@@ -51,14 +46,10 @@ fn test_get_role_holders_aggregates_all_assigned_roles() {
     let analytics = Address::generate(&env);
     let token_admin = Address::generate(&env);
 
-    c.assign_fee_manager(&admin, &fee_manager)
-        .expect("assign_fee_manager should succeed");
-    c.assign_emergency_pause_role(&admin, &emergency)
-        .expect("assign_emergency_pause_role should succeed");
-    c.assign_analytics_role(&admin, &analytics)
-        .expect("assign_analytics_role should succeed");
-    c.assign_token_admin(&admin, &token_admin)
-        .expect("assign_token_admin should succeed");
+    c.assign_fee_manager(&admin, &fee_manager);
+    c.assign_emergency_pause_role(&admin, &emergency);
+    c.assign_analytics_role(&admin, &analytics);
+    c.assign_token_admin(&admin, &token_admin);
 
     let holders = c.get_role_holders();
 

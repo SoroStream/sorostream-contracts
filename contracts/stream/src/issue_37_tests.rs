@@ -11,8 +11,8 @@
 
 extern crate std;
 
-use crate::{SoroStreamContract, SoroStreamContractClient};
 use crate::errors::StreamError;
+use crate::{SoroStreamContract, SoroStreamContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
@@ -22,11 +22,11 @@ use soroban_sdk::{
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 struct T {
-    env:         Env,
+    env: Env,
     contract_id: Address,
-    token_id:    Address,
-    admin:       Address,
-    sender:      Address,
+    token_id: Address,
+    admin: Address,
+    sender: Address,
 }
 
 fn setup() -> T {
@@ -39,7 +39,7 @@ fn setup() -> T {
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
     let sender = Address::generate(&env);
-    let admin  = Address::generate(&env);
+    let admin = Address::generate(&env);
 
     StellarAssetClient::new(&env, &token_id).mint(&sender, &100_000_000_000);
 
@@ -48,7 +48,13 @@ fn setup() -> T {
     SoroStreamContractClient::new(&env, &contract_id).add_token_to_whitelist(&admin, &token_id);
     SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&admin, &0u64);
 
-    T { env, contract_id, token_id, admin, sender }
+    T {
+        env,
+        contract_id,
+        token_id,
+        admin,
+        sender,
+    }
 }
 
 fn client(t: &T) -> SoroStreamContractClient<'_> {
@@ -78,11 +84,15 @@ fn make_params(nonce: u64) -> crate::types::CreateStreamParams {
 
 /// Create one stream from `sender` to a fresh recipient and return its ID.
 fn create_one(t: &T, nonce: u64) -> u64 {
-    let c         = client(t);
+    let c = client(t);
     let recipient = Address::generate(&t.env);
     c.create_stream(
-        &t.sender, &recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &make_params(nonce),
     )
 }
@@ -110,8 +120,12 @@ fn test_cap_plus_one_rejected() {
     // The (cap + 1)-th stream must be rejected.
     let recipient = Address::generate(&t.env);
     let result = c.try_create_stream(
-        &t.sender, &recipient, &t.token_id,
-        &10_000, &1_000, &false,
+        &t.sender,
+        &recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
         &make_params(CAP as u64),
     );
 
@@ -162,21 +176,35 @@ fn test_cancel_decrements_count() {
     {
         let recipient = Address::generate(&t.env);
         let r = c.try_create_stream(
-            &t.sender, &recipient, &t.token_id,
-            &10_000, &1_000, &false, &make_params(2),
+            &t.sender,
+            &recipient,
+            &t.token_id,
+            &10_000,
+            &1_000,
+            &false,
+            &make_params(2),
         );
-        assert!(r.is_err(), "third stream must be rejected while count == cap");
+        assert!(
+            r.is_err(),
+            "third stream must be rejected while count == cap"
+        );
     }
 
     // Cancel one stream.
     c.cancel_stream(&id0, &t.sender);
-    assert_eq!(c.get_sender_active_stream_count(&t.sender), 1,
-        "count must drop to 1 after cancel");
+    assert_eq!(
+        c.get_sender_active_stream_count(&t.sender),
+        1,
+        "count must drop to 1 after cancel"
+    );
 
     // Now a new stream must be accepted.
     let id2 = create_one(&t, 3);
-    assert_eq!(c.get_sender_active_stream_count(&t.sender), 2,
-        "count must be 2 after creating a replacement");
+    assert_eq!(
+        c.get_sender_active_stream_count(&t.sender),
+        2,
+        "count must be 2 after creating a replacement"
+    );
 
     // Clean up.
     c.cancel_stream(&id1, &t.sender);
@@ -197,8 +225,13 @@ fn test_expiry_decrements_count() {
 
     let recipient = Address::generate(&t.env);
     let stream_id = c.create_stream(
-        &t.sender, &recipient, &t.token_id,
-        &10_000, &1_000, &false, &make_params(0),
+        &t.sender,
+        &recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
+        &make_params(0),
     );
 
     assert_eq!(c.get_sender_active_stream_count(&t.sender), 1);
@@ -208,17 +241,26 @@ fn test_expiry_decrements_count() {
     c.withdraw(&stream_id, &recipient);
 
     assert_eq!(
-        c.get_sender_active_stream_count(&t.sender), 0,
+        c.get_sender_active_stream_count(&t.sender),
+        0,
         "count must drop to 0 after stream completes",
     );
 
     // The sender can now create another stream.
     let recipient2 = Address::generate(&t.env);
     let r = c.try_create_stream(
-        &t.sender, &recipient2, &t.token_id,
-        &10_000, &1_000, &false, &make_params(1),
+        &t.sender,
+        &recipient2,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
+        &make_params(1),
     );
-    assert!(r.is_ok(), "new stream must be accepted after previous expired");
+    assert!(
+        r.is_ok(),
+        "new stream must be accepted after previous expired"
+    );
 }
 
 // ── Test 5 ─────────────────────────────────────────────────────────────────────
@@ -242,8 +284,13 @@ fn test_cap_zero_means_unlimited() {
     {
         let recipient = Address::generate(&t.env);
         let r = c.try_create_stream(
-            &t.sender, &recipient, &t.token_id,
-            &10_000, &1_000, &false, &make_params(100),
+            &t.sender,
+            &recipient,
+            &t.token_id,
+            &10_000,
+            &1_000,
+            &false,
+            &make_params(100),
         );
         assert!(r.is_err(), "must be blocked at cap=3");
     }
@@ -255,8 +302,13 @@ fn test_cap_zero_means_unlimited() {
     // Now creation must be allowed even though active count is 3.
     let recipient = Address::generate(&t.env);
     let r = c.try_create_stream(
-        &t.sender, &recipient, &t.token_id,
-        &10_000, &1_000, &false, &make_params(200),
+        &t.sender,
+        &recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
+        &make_params(200),
     );
     assert!(r.is_ok(), "cap=0 should mean unlimited");
 }
@@ -281,21 +333,26 @@ fn test_count_is_per_sender() {
     // sender2 creates 1 stream independently.
     let recipient = Address::generate(&t.env);
     let id_c = c.create_stream(
-        &sender2, &recipient, &t.token_id,
-        &10_000, &1_000, &false, &make_params(0),
+        &sender2,
+        &recipient,
+        &t.token_id,
+        &10_000,
+        &1_000,
+        &false,
+        &make_params(0),
     );
 
-    assert_eq!(c.get_sender_active_stream_count(&t.sender),  2);
-    assert_eq!(c.get_sender_active_stream_count(&sender2),   1);
+    assert_eq!(c.get_sender_active_stream_count(&t.sender), 2);
+    assert_eq!(c.get_sender_active_stream_count(&sender2), 1);
 
     // Cancel sender's stream — only sender's count drops.
     c.cancel_stream(&id_a, &t.sender);
-    assert_eq!(c.get_sender_active_stream_count(&t.sender),  1);
-    assert_eq!(c.get_sender_active_stream_count(&sender2),   1);
+    assert_eq!(c.get_sender_active_stream_count(&t.sender), 1);
+    assert_eq!(c.get_sender_active_stream_count(&sender2), 1);
 
     c.cancel_stream(&id_b, &t.sender);
     c.cancel_stream(&id_c, &sender2);
 
-    assert_eq!(c.get_sender_active_stream_count(&t.sender),  0);
-    assert_eq!(c.get_sender_active_stream_count(&sender2),   0);
+    assert_eq!(c.get_sender_active_stream_count(&t.sender), 0);
+    assert_eq!(c.get_sender_active_stream_count(&sender2), 0);
 }

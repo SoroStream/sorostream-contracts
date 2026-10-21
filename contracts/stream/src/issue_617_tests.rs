@@ -1,4 +1,3 @@
-
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, IssuerFlags, Ledger},
@@ -96,7 +95,9 @@ fn test_issue_617_pause_takes_exactly_one_ledger_to_activate() {
     assert!(!c.is_paused());
 
     // One ledger later, the pause is active.
-    t.env.ledger().with_mut(|li| li.sequence_number = starting_ledger + 1);
+    t.env
+        .ledger()
+        .with_mut(|li| li.sequence_number = starting_ledger + 1);
     assert!(c.is_paused());
 }
 
@@ -146,7 +147,9 @@ fn test_issue_617_withdraw_is_blocked_once_pause_activates() {
 
     let starting_ledger = t.env.ledger().sequence();
     c.emergency_pause();
-    t.env.ledger().with_mut(|li| li.sequence_number = starting_ledger + 1);
+    t.env
+        .ledger()
+        .with_mut(|li| li.sequence_number = starting_ledger + 1);
 
     let result = c.try_withdraw(&stream_id, &t.recipient);
     assert_eq!(result, Err(Ok(StreamError::ContractPaused)));
@@ -159,7 +162,9 @@ fn test_issue_617_resume_is_immediate_not_delayed() {
 
     let starting_ledger = t.env.ledger().sequence();
     c.emergency_pause();
-    t.env.ledger().with_mut(|li| li.sequence_number = starting_ledger + 1);
+    t.env
+        .ledger()
+        .with_mut(|li| li.sequence_number = starting_ledger + 1);
     assert!(c.is_paused());
 
     c.emergency_resume();

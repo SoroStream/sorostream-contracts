@@ -134,7 +134,6 @@ pub struct StreamOptions {
     pub locked: bool,
 
     // ── Step-vesting (tranche) fields ────────────────────────────────────────
-
     /// Whether this stream uses step-vesting (tranche-based release).
     /// When `true`, token release is governed by `tranches` rather than the
     /// continuous flow rate.
@@ -143,7 +142,6 @@ pub struct StreamOptions {
     pub tranches_claimed: u32,
 
     // ── Oracle price-check fields ────────────────────────────────────────────
-
     /// Optional oracle contract address for on-chain price validation.
     /// When set, price is checked on stream creation and withdrawal.
     pub oracle: Option<Address>,
@@ -155,13 +153,11 @@ pub struct StreamOptions {
     pub creation_price: i128,
 
     // ── Vesting curve ────────────────────────────────────────────────────────
-
     /// Release curve governing how tokens become claimable over time.
     /// Defaults to `VestingCurve::Linear` for all existing streams.
     pub curve: VestingCurve,
 
     // ── Withdrawal steps ─────────────────────────────────────────────────────
-
     /// Optional number of evenly-spaced withdrawal steps.
     ///
     /// When `Some(n)`, the stream duration is divided into `n` equal intervals
@@ -176,7 +172,6 @@ pub struct StreamOptions {
     pub current_step: u32,
 
     // ── Minimum withdrawal amount ─────────────────────────────────────────────
-
     /// Optional minimum claimable amount required before a withdrawal is accepted.
     ///
     /// When `Some(floor)`, `withdraw` rejects any call where the claimable
@@ -186,7 +181,6 @@ pub struct StreamOptions {
     pub min_withdrawal_amount: Option<i128>,
 
     // ── Non-transferable flag ─────────────────────────────────────────────────
-
     /// Whether the stream's recipient rights are locked to the original recipient.
     ///
     /// When `true`, any call to `transfer_recipient` on this stream will return
@@ -196,7 +190,6 @@ pub struct StreamOptions {
     pub non_transferable: bool,
 
     // ── Recipient approval ────────────────────────────────────────────────────
-
     /// Whether this stream requires explicit recipient approval before tokens
     /// begin to accrue.
     ///
@@ -228,7 +221,6 @@ pub struct StreamOptions {
     pub escrow_recipient_approved: bool,
 
     // ── Sender-initiated irrevocable lock ─────────────────────────────────────
-
     /// Whether the sender has voluntarily renounced their right to cancel.
     ///
     /// Starts `false`.  Once `lock_stream` is called, transitions to `true`
@@ -241,7 +233,6 @@ pub struct StreamOptions {
     pub redirect_to_stream_id: Option<u64>,
 
     // ── On-complete callback (composable DeFi) ──────────────────────────────
-
     /// Optional contract address to invoke when the stream completes.
     /// If set, the contract's function specified by `on_complete_function` will be called.
     pub on_complete_contract: Option<Address>,
@@ -250,13 +241,11 @@ pub struct StreamOptions {
     pub on_complete_function: Option<Symbol>,
 
     // ── Stream comment (issue #513) ──────────────────────────────────────────
-
     /// Optional human-readable payment reference attached by the sender at
     /// creation time. UTF-8 text, at most 256 bytes.
     pub comment: Option<String>,
 
     // ── Holdback escrow ──────────────────────────────────────────────────────
-
     /// Amount held back in escrow at creation time (separate from the streaming
     /// deposit). Released to the recipient via `release_holdback`. 0 = no holdback.
     pub holdback_amount: i128,
@@ -264,7 +253,6 @@ pub struct StreamOptions {
     pub holdback_claimed: bool,
 
     // ── Dual-token stream flag ───────────────────────────────────────────────
-
     /// Whether this stream is a dual-token stream (two token contract addresses).
     pub is_dual_stream: bool,
 
@@ -277,7 +265,6 @@ pub struct StreamOptions {
     // a combination nested custom structs inside Option can never satisfy. This
     // breaks any client codegen path gated behind the testutils feature
     // (i.e. `cargo test`), even though the contract itself builds fine.
-
     /// On-chain yield vault contract address, if collateral vault routing is enabled.
     pub collateral_vault_address: Option<Address>,
     /// Basis points of accrued yield assigned to sender (e.g. 5000 = 50%).
@@ -389,7 +376,6 @@ impl CreateStreamOptions {
     }
 }
 
-
 /// Health status of a stream's on-chain storage entry, based on its TTL.
 ///
 /// Thresholds:
@@ -499,7 +485,6 @@ pub struct AuditEntry {
     /// Serialised parameters (JSON-style string for human readability).
     pub params: String,
 }
-
 
 /// Override action type for administrative dispute resolution.
 #[contracttype]

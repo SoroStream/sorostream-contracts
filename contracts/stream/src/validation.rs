@@ -87,10 +87,7 @@ pub fn require_duration_within_cap(
 /// Rejects a holdback that is negative or consumes the whole deposit.
 ///
 /// A holdback must leave a strictly positive amount to stream.
-pub fn require_holdback_in_range(
-    amount: i128,
-    holdback_amount: i128,
-) -> Result<(), StreamError> {
+pub fn require_holdback_in_range(amount: i128, holdback_amount: i128) -> Result<(), StreamError> {
     if holdback_amount < 0 || holdback_amount >= amount {
         Err(StreamError::ZeroAmount)
     } else {
@@ -135,11 +132,7 @@ pub fn require_valid_fee_bps(fee_bps: u32) -> Result<(), StreamError> {
 }
 
 /// Rejects a basis-point value above `max_bps`, reporting `err` on failure.
-pub fn require_bps_within(
-    bps: u32,
-    max_bps: u32,
-    err: StreamError,
-) -> Result<(), StreamError> {
+pub fn require_bps_within(bps: u32, max_bps: u32, err: StreamError) -> Result<(), StreamError> {
     if bps > max_bps {
         Err(err)
     } else {
