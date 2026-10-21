@@ -101,7 +101,7 @@ pub use roles::{AdminRole, RoleHolders};
 #[cfg(test)] mod lifecycle_integration_tests;
 #[cfg(test)] mod oracle_rate_adjustment_tests;
 #[cfg(test)] mod paginated_recipient_tests;
-#[cfg(test)] mod proptest_tests;
+#[cfg(test)] mod proptest_tests; // Restored property coverage for issue #806.
 #[cfg(test)] mod protocol_economics_tests;
 #[cfg(test)] mod sender_whitelist_tests;
 #[cfg(test)] mod storage_bench;
