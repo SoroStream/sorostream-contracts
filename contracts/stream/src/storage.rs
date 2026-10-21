@@ -253,14 +253,10 @@ pub fn load_stream(env: &Env, stream_id: u64) -> Option<Stream> {
 /// Loads the public stream view without converting the legacy inline metadata
 /// blob. Current metadata blobs are stored separately in temporary storage.
 pub fn load_stream_view(env: &Env, stream_id: u64) -> Option<Stream> {
-    let mut fields: Vec<Val> = env.storage().persistent().get(&stream_id)?;
-    let options_value = fields.get(14)?;
-    let mut options_fields = Vec::<Val>::try_from_val(env, &options_value).ok()?;
-    options_fields.set(6, Bytes::new(env).into_val(env));
-    fields.set(14, options_fields.into_val(env));
-    Stream::try_from_val(env, &fields).ok()
+    let mut stream = load_stream(env, stream_id)?;
+    stream.options.metadata = Bytes::new(env);
+    Some(stream)
 }
-
 /// Returns the encoded stored-value size, including any legacy inline metadata.
 pub fn stream_entry_value_size(env: &Env, stream_id: u64) -> Option<u32> {
     let value: Val = env.storage().persistent().get(&stream_id)?;

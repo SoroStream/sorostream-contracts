@@ -93,6 +93,14 @@ The current wired files are:
 - `upgrade_migration_tests.rs`
 - `upgrade_proposal_tests.rs`
 
+`proptest_tests.rs` contains the property checks originally associated with
+[#97](https://github.com/SoroStream/sorostream-contracts/issues/97),
+[#258](https://github.com/SoroStream/sorostream-contracts/issues/258),
+[#578](https://github.com/SoroStream/sorostream-contracts/issues/578), and
+[#647](https://github.com/SoroStream/sorostream-contracts/issues/647); these are
+now part of the compiled suite after the omission was identified in
+[#806](https://github.com/SoroStream/sorostream-contracts/issues/806).
+
 `differential_fuzz.rs` and `cost_bench.rs` are the shared differential-fuzz and
 resource-cost harnesses. New harness extensions such as the roles benchmark in
 [#843](https://github.com/SoroStream/sorostream-contracts/issues/843) and new
