@@ -36,7 +36,6 @@ pub enum StreamError {
     NotAuthorized = 20,
     StreamNotPaused = 21,
     StreamDurationTooShort = 22,
-    InvalidNonce = 25,
     MigrationAlreadyApplied = 26,
     StreamNotSettled = 27,
     WithdrawalCooldownActive = 28,
@@ -58,7 +57,6 @@ pub enum StreamError {
     /// step boundary has not yet been reached (prerequisite 50-variant-cap
     /// cleanup: folded in the former, separate `NextStepNotReached`).
     AmountBelowMinimum = 49,
-    InvalidExpiryWindow = 50,
     NewSenderStreamCapExceeded = 51,
     CircularRedirect = 53,
     /// `transfer_recipient` was called on a stream marked as non-transferable at creation.
@@ -81,6 +79,10 @@ pub enum StreamError {
     InvalidParameter = 69,
     /// `create_stream` was called with a zero or otherwise unusable duration.
     MinimumDurationNotMet = 68,
+    /// A fee rate exceeds the supported 100% maximum.
+    InvalidFeeBps = 70,
+    /// A withdrawal-step count is invalid.
+    InvalidWithdrawalSteps = 71,
 }
 
 #[allow(non_upper_case_globals)]
@@ -106,4 +108,10 @@ impl StreamError {
     pub const TagTooLong: Self = Self::InvalidParameter;
     pub const TooManyRecipients: Self = Self::InvalidParameter;
     pub const TooManyTags: Self = Self::InvalidParameter;
+    /// Consolidated into `InvalidParameter` to keep the error enum under its
+    /// 50-case XDR limit.
+    pub const InvalidNonce: Self = Self::InvalidParameter;
+    /// Consolidated into `InvalidDuration` to keep the error enum under its
+    /// 50-case XDR limit; the rejected value is an invalid time window.
+    pub const InvalidExpiryWindow: Self = Self::InvalidDuration;
 }

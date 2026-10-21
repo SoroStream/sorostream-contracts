@@ -86,11 +86,11 @@ pub fn require_duration_within_cap(
 
 /// Rejects a holdback that is negative or consumes the whole deposit.
 ///
-/// A holdback must leave a strictly positive amount to stream.
-pub fn require_holdback_in_range(
-    amount: i128,
-    holdback_amount: i128,
-) -> Result<(), StreamError> {
+/// A holdback must leave a strictly positive amount to stream. Both invalid
+/// cases use `ZeroAmount` as a deliberate 50-variant-cap tradeoff: this enum
+/// has no dedicated holdback error, and the guard's existing contract is to
+/// reject either value before stream creation.
+pub fn require_holdback_in_range(amount: i128, holdback_amount: i128) -> Result<(), StreamError> {
     if holdback_amount < 0 || holdback_amount >= amount {
         Err(StreamError::ZeroAmount)
     } else {
@@ -114,13 +114,9 @@ pub fn require_cliff_within_duration(
 ///
 /// `None` means "no step gating"; `Some(0)` is nonsensical and is refused
 /// rather than silently treated as free-form withdrawal.
-  /// `InvalidDuration` is intentionally reused here because `StreamError` is
-  /// capped at 50 contract-error variants. The reuse is a documented slot-
-  /// conservation tradeoff, not a statement that zero steps are a duration
-  /// error. Revisit this mapping when the consolidation work for #402, #617,
-  /// #620, and #661 frees a variant slot; #834 tracks that follow-up.pub fn require_withdrawal_steps(steps: Option<u32>) -> Result<(), StreamError> {
+pub fn require_withdrawal_steps(steps: Option<u32>) -> Result<(), StreamError> {
     match steps {
-        Some(0) => Err(StreamError::InvalidDuration),
+        Some(0) => Err(StreamError::InvalidWithdrawalSteps),
         _ => Ok(()),
     }
 }
@@ -134,19 +130,12 @@ pub fn require_min_withdrawal_amount(floor: Option<i128>) -> Result<(), StreamEr
 }
 
 /// Rejects a basis-point rate above 100 % (`10_000` bps).
-  /// The failure currently maps to `InvalidDuration` for the same deliberate
-  /// 50-variant-cap slot-conservation reason documented above. It should gain
-  /// a dedicated fee error after the #402/#617/#620/#661 consolidation work;
-  /// see #834 so this semantic mismatch is not mistaken for an oversight.pub fn require_valid_fee_bps(fee_bps: u32) -> Result<(), StreamError> {
-    require_bps_within(fee_bps, 10_000, StreamError::InvalidDuration)
+pub fn require_valid_fee_bps(fee_bps: u32) -> Result<(), StreamError> {
+    require_bps_within(fee_bps, 10_000, StreamError::InvalidFeeBps)
 }
 
 /// Rejects a basis-point value above `max_bps`, reporting `err` on failure.
-pub fn require_bps_within(
-    bps: u32,
-    max_bps: u32,
-    err: StreamError,
-) -> Result<(), StreamError> {
+pub fn require_bps_within(bps: u32, max_bps: u32, err: StreamError) -> Result<(), StreamError> {
     if bps > max_bps {
         Err(err)
     } else {
@@ -255,7 +244,7 @@ mod tests {
         assert!(require_withdrawal_steps(Some(1)).is_ok());
         assert_eq!(
             require_withdrawal_steps(Some(0)),
-            Err(StreamError::InvalidDuration)
+            Err(StreamError::InvalidWithdrawalSteps)
         );
 
         assert!(require_min_withdrawal_amount(None).is_ok());
@@ -272,7 +261,7 @@ mod tests {
         assert!(require_valid_fee_bps(10_000).is_ok());
         assert_eq!(
             require_valid_fee_bps(10_001),
-            Err(StreamError::InvalidDuration)
+            Err(StreamError::InvalidFeeBps)
         );
     }
 
