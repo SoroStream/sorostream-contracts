@@ -9,6 +9,9 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 mod errors;
 mod storage;
 mod types;
@@ -18,6 +21,7 @@ mod test;
 
 pub use types::{DataKey, Stream, StreamProposal};
 
+use crate::errors::StreamingError;
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol};
 
 #[contract]
@@ -176,6 +180,8 @@ impl StreamingContract {
     }
 
     /// Claim all vested tokens up to the current timestamp.
+    /// Emits `StreamWithdrawn` with recipient, token, claim amount, and updated
+    /// cumulative claimed amount; the stream ID is the second event topic.
     pub fn claim(env: Env, stream_id: u64) -> i128 {
         let mut stream = storage::get_stream(&env, stream_id);
         stream.recipient.require_auth();
@@ -193,10 +199,15 @@ impl StreamingContract {
             &stream.recipient,
             &claimable,
         );
+        env.events().publish(
+            (Symbol::new(&env, "StreamWithdrawn"), stream_id),
+            (stream.recipient, stream.token, claimable, stream.claimed),
+        );
         claimable
     }
 
     /// Cancel a stream. Vested tokens go to recipient; remainder goes back to sender.
+    /// Emits `StreamCancelled` with sender, recipient, token, vested amount, and refund.
     pub fn cancel(env: Env, stream_id: u64) {
         let mut stream = storage::get_stream(&env, stream_id);
         stream.sender.require_auth();
@@ -223,6 +234,10 @@ impl StreamingContract {
         if refund > 0 {
             token_client.transfer(&env.current_contract_address(), &stream.sender, &refund);
         }
+        env.events().publish(
+            (Symbol::new(&env, "StreamCancelled"), stream_id),
+            (stream.sender, stream.recipient, stream.token, claimable, refund),
+        );
         // Cancelled streams do NOT increment reputation.
     }
 
@@ -232,6 +247,8 @@ impl StreamingContract {
     /// is exactly the previous `end_time` (not `now`), preserving correct
     /// accounting. The sender must maintain enough token allowance for this
     /// renewal; any caller may then trigger it.
+    /// Emits `StreamRenewed` with participants, token, flushed vested amount,
+    /// renewed deposit, and the next cycle's start and end times.
     pub fn renew(env: Env, stream_id: u64) {
         let mut stream = storage::get_stream(&env, stream_id);
 
@@ -271,6 +288,19 @@ impl StreamingContract {
         stream.claimed = 0;
 
         storage::save_stream(&env, stream_id, &stream);
+
+        env.events().publish(
+            (Symbol::new(&env, "StreamRenewed"), stream_id),
+            (
+                stream.sender.clone(),
+                stream.recipient.clone(),
+                stream.token.clone(),
+                claimable,
+                stream.deposit,
+                stream.start_time,
+                stream.end_time,
+            ),
+        );
 
         // Reputation is incremented on each successful natural-completion + renewal.
         storage::increment_reputation(&env, &stream.sender);

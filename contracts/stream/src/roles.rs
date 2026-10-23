@@ -22,6 +22,15 @@
 //! * Compromise of a restricted role exposes only the operations listed above —
 //!   other sensitive operations (upgrade, migration, blocklist management, etc.)
 //!   remain gated behind `SuperAdmin`.
+//!
+//! ## Audit interpretation
+//!
+//! Role getters report current state only. `None` is indistinguishable between
+//! a role that was never assigned and one that was later revoked. The main
+//! stream contract records assignment/revocation in its bounded admin audit log
+//! and emits `RoleAssigned` / `RoleRevoked` events through `role_assigned` and
+//! `role_revoked`. Those records can establish that history while available;
+//! the getter alone cannot.
 
 #![allow(dead_code)]
 use soroban_sdk::{contracttype, Address, Env, Symbol};
@@ -347,6 +356,32 @@ pub fn has_any_role(env: &Env, caller: &Address, admin: &Address) -> bool {
     if get_token_admin(env).as_ref() == Some(caller) { return true; }
     if get_analytics_role(env).as_ref() == Some(caller) { return true; }
     false
+}
+
+#[cfg(test)]
+mod issue_803_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn getter_cannot_distinguish_never_assigned_from_revoked_role() {
+        let env = Env::default();
+        let contract_id = env.register(crate::SoroStreamContract, ());
+        let never_assigned = Address::generate(&env);
+        let assigned_then_revoked = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(get_fee_manager(&env), None);
+            set_fee_manager(&env, &assigned_then_revoked);
+            assert_eq!(get_fee_manager(&env), Some(assigned_then_revoked.clone()));
+            revoke_fee_manager(&env);
+
+            assert_eq!(get_fee_manager(&env), None);
+            // The getter exposes only the current holder; both historical cases
+            // produce the same result (the address values are intentionally distinct).
+            assert_ne!(never_assigned, assigned_then_revoked);
+        });
+    }
 }
 
 // ── Role-only auth helpers (no SuperAdmin fallback) ──────────────────────────

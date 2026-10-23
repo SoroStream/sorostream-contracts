@@ -17,7 +17,7 @@ use std::println;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::Address as _,
     Address, BytesN, Env,
 };
 
@@ -56,15 +56,22 @@ fn c(b: &StorageBenchEnv) -> StreamFactoryClient<'_> {
     StreamFactoryClient::new(&b.env, &b.contract_id)
 }
 
-fn fake_salt(env: &Env, n: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[n; 32])
+fn fake_salt(env: &Env, n: u32) -> BytesN<32> {
+    let mut salt = [0u8; 32];
+    salt[..4].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(env, &salt)
 }
 
 /// Deploy `n` child contracts through the factory and return the client.
 fn deploy_n(b: &mut StorageBenchEnv, n: u32) {
     let cl = c(b);
     for i in 0..n {
-        cl.deploy_stream_contract(&b.admin, &b.wasm_hash, &fake_salt(&b.env, i + 1));
+        cl.deploy_stream_contract(
+            &b.admin,
+            &b.wasm_hash,
+            &fake_salt(&b.env, i + 1),
+            &None,
+        );
     }
 }
 
@@ -103,7 +110,7 @@ fn generate_factory_storage_baseline() {
         deploy_n(&mut b, target_size);
 
         let cl = c(&b);
-        cl.get_deployed_contracts();
+        cl.get_deployed_contracts(&0, &20);
         results.push(measure(
             &b.env,
             "get_deployed_contracts",
@@ -146,7 +153,7 @@ fn check_factory_storage_baseline_regression() {
         let mut b = setup();
         deploy_n(&mut b, target_size);
         let cl = c(&b);
-        cl.get_deployed_contracts();
+        cl.get_deployed_contracts(&0, &20);
         let res = b.env.cost_estimate().resources();
 
         let key = std::format!("get_deployed_contracts_n{}", target_size);
