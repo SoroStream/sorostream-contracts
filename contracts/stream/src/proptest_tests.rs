@@ -2,7 +2,7 @@
 
 extern crate std;
 
-use crate::{SoroStreamContract, SoroStreamContractClient};
+use crate::{SoroStreamContract, SoroStreamContractClient, StreamError};
 use crate::types::StreamStatus;
 use proptest::prelude::*;
 use soroban_sdk::{
@@ -12,10 +12,9 @@ use soroban_sdk::{
 };
 
 fn setup_env_with_fee(fee_bps: u32) -> (Env, Address, Address, Address, Address) {
-    let (env, contract_id, token_id, sender, recipient) = setup_env();
+    let (env, contract_id, token_id, sender, recipient) = setup_env_base();
     let c = SoroStreamContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    c.initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+    let admin = initialize_stream_env(&env, &contract_id, &token_id);
     if fee_bps > 0 {
         c.set_protocol_fee(&fee_bps);
         c.set_treasury_address(&admin);
@@ -24,6 +23,21 @@ fn setup_env_with_fee(fee_bps: u32) -> (Env, Address, Address, Address, Address)
 }
 
 fn setup_env() -> (Env, Address, Address, Address, Address) {
+    let (env, contract_id, token_id, sender, recipient) = setup_env_base();
+    initialize_stream_env(&env, &contract_id, &token_id);
+    (env, contract_id, token_id, sender, recipient)
+}
+
+fn initialize_stream_env(env: &Env, contract_id: &Address, token_id: &Address) -> Address {
+    let c = SoroStreamContractClient::new(env, contract_id);
+    let admin = Address::generate(env);
+    c.initialize(&admin, &soroban_sdk::String::from_str(env, "1.0.0"));
+    c.set_min_duration(&admin, &0u64);
+    c.add_token_to_whitelist(&admin, token_id);
+    admin
+}
+
+fn setup_env_base() -> (Env, Address, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(SoroStreamContract, ());
@@ -34,10 +48,6 @@ fn setup_env() -> (Env, Address, Address, Address, Address) {
     let sender = Address::generate(&env);
     let recipient = Address::generate(&env);
     StellarAssetClient::new(&env, &token_id).mint(&sender, &10_000_000_000);
-
-    // Disable minimum duration for tests
-    SoroStreamContractClient::new(&env, &contract_id).set_min_duration(&sender, &0u64);
-
     (env, contract_id, token_id, sender, recipient)
 }
 
@@ -58,6 +68,7 @@ fn make_params(cliff_seconds: u64, nonce: u64, lock_until: u64, allow_recipient_
 
         priority: None,
         tags: None,
+        metadata_uri: None,
     }
 }
 
@@ -279,9 +290,9 @@ proptest! {
         let sender_after = token.balance(&sender);
         let recipient_after = token.balance(&recipient);
 
-        let sender_net_loss = sender_before - sender_after;
+        let sender_refund = sender_after - sender_before + amount;
         prop_assert_eq!(
-            sender_net_loss + recipient_after, amount,
+            sender_refund + recipient_after, amount,
             "tokens must be fully conserved on cancel"
         );
     }
@@ -307,8 +318,11 @@ proptest! {
         env.ledger().set_timestamp(1);
         c.cancel_stream(&stream_id, &sender);
 
-        let stream = c.get_stream(&stream_id);
-        prop_assert_eq!(stream.status, StreamStatus::Cancelled);
+        prop_assert!(c.try_get_stream(&stream_id).is_err());
+        prop_assert_eq!(
+            c.try_cancel_stream(&stream_id, &sender),
+            Err(Ok(StreamError::StreamAlreadyCancelled)),
+        );
     }
 }
 
@@ -323,15 +337,18 @@ proptest! {
         do_pause in proptest::bool::ANY,
         do_unpause in proptest::bool::ANY,
     ) {
-        let (env, contract_id, token_id, sender, recipient) = setup_env();
+        let (env, contract_id, token_id, sender, recipient) = setup_env_base();
         let c = SoroStreamContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        c.initialize(&admin, &soroban_sdk::String::from_str(&env, "1.0.0"));
+        let admin = initialize_stream_env(&env, &contract_id, &token_id);
+        c.set_guardian(&admin);
+        c.set_governance(&admin);
 
         prop_assert!(!c.is_paused());
 
         if do_pause {
-            c.pause();
+            c.pause(&admin);
+            let sequence = env.ledger().sequence();
+            env.ledger().set_sequence_number(sequence.saturating_add(1));
             prop_assert!(c.is_paused());
 
             // create_stream must fail when paused
@@ -342,7 +359,7 @@ proptest! {
             prop_assert!(result.is_err());
 
             if do_unpause {
-                c.unpause();
+                c.unpause(&admin);
                 prop_assert!(!c.is_paused());
 
                 // create_stream must work after unpause
@@ -382,10 +399,8 @@ proptest! {
         );
 
         // No panics should occur. The result is either Ok or an expected error.
-        if let Err(e) = &result {
-            let err = e.clone().unwrap_err();
-            // Must be one of the expected error variants
-            prop_assert!(
+        match result {
+            Err(Ok(err)) => prop_assert!(
                 matches!(
                     err,
                     StreamError::ZeroAmount
@@ -395,10 +410,18 @@ proptest! {
                         | StreamError::Overflow
                         | StreamError::DuplicateStream
                         | StreamError::NewSenderStreamCapExceeded
+                        | StreamError::MinimumDurationNotMet
+                        | StreamError::DurationExceedsMax
                 ),
                 "unexpected error variant: {:?} (amount={}, duration={})",
                 err, amount, duration,
-            );
+            ),
+            Err(Err(invocation_error)) => prop_assert!(
+                false,
+                "create_stream panicked (amount={}, duration={}): {:?}",
+                amount, duration, invocation_error,
+            ),
+            Ok(_) => (),
         }
     }
 
@@ -478,19 +501,26 @@ proptest! {
         );
 
         // No panics allowed
-        if let Err(e) = &result {
-            let err = e.clone().unwrap_err();
-            prop_assert!(
+        match result {
+            Err(Ok(err)) => prop_assert!(
                 matches!(
                     err,
                     StreamError::ZeroFlowRate
                         | StreamError::StreamDurationTooShort
                         | StreamError::Overflow
                         | StreamError::InvalidEndTime
+                        | StreamError::DurationExceedsMax
+                        | StreamError::MinimumDurationNotMet
                 ),
                 "unexpected error for large duration: {:?}",
                 err,
-            );
+            ),
+            Err(Err(invocation_error)) => prop_assert!(
+                false,
+                "create_stream panicked for duration {}: {:?}",
+                large_duration, invocation_error,
+            ),
+            Ok(_) => (),
         }
     }
 }
@@ -674,7 +704,7 @@ proptest! {
         let sender_after = token.balance(&sender);
         let recipient_after = token.balance(&recipient);
 
-        let sender_refund = sender_after - sender_before;
+        let sender_refund = sender_after - sender_before + amount;
         let recipient_claimable = recipient_after;
 
         // Invariant: refund + claimable = deposit (no fee on cancel)
@@ -711,22 +741,20 @@ proptest! {
             &default_params(),
         );
 
-        // Optionally withdraw before cancel
-        let mut fees_collected_before: i128 = 0;
+        // Optionally withdraw before cancel while the stream is still active.
+        let cancel_time = cancel_time.min(duration);
         if withdraw_before_cancel && cancel_time > 1 {
-            let withdraw_time = (cancel_time / 2).max(1);
+            let withdraw_time = (cancel_time / 2).max(1).min(duration - 1);
             env.ledger().set_timestamp(withdraw_time);
             let _ = c.try_withdraw(&stream_id, &recipient);
-            fees_collected_before = c.get_fees_collected(&token_id);
         }
 
-        let cancel_time = cancel_time.min(duration);
         env.ledger().set_timestamp(cancel_time);
         c.cancel_stream(&stream_id, &sender);
 
         let sender_after = token.balance(&sender);
         let recipient_after = token.balance(&recipient);
-        let sender_refund = sender_after - sender_before;
+        let sender_refund = sender_after - sender_before + amount;
         let total_recipient = recipient_after;
         let total_fees = c.get_fees_collected(&token_id);
 

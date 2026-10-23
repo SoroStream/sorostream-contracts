@@ -101,7 +101,7 @@ pub use roles::{AdminRole, RoleHolders};
 #[cfg(test)] mod lifecycle_integration_tests;
 #[cfg(test)] mod oracle_rate_adjustment_tests;
 #[cfg(test)] mod paginated_recipient_tests;
-#[cfg(test)] mod proptest_tests;
+#[cfg(test)] mod proptest_tests; // Restored property coverage for issue #806.
 #[cfg(test)] mod protocol_economics_tests;
 #[cfg(test)] mod sender_whitelist_tests;
 #[cfg(test)] mod storage_bench;
@@ -6738,23 +6738,23 @@ impl SoroStreamContract {
 
     /// Estimates the XLM rent for the stream value over `ledgers` ledgers.
     ///
-    /// `rent_rate_stroops_per_kib_per_ledger` must be the current network rate.
+    /// `rent_rate_per_kib_per_ledger` must be the current network rate.
     /// The result is in stroops and covers the stream value only; it excludes
     /// the storage key and auxiliary index entries, so treat it as a baseline.
     pub fn estimate_stream_rent_cost(
         env: Env,
         stream_id: u64,
-        rent_rate_stroops_per_kib_per_ledger: i128,
+        rent_rate_per_kib_per_ledger: i128,
         ledgers: u32,
     ) -> Result<i128, StreamError> {
-        if rent_rate_stroops_per_kib_per_ledger < 0 {
-            return Err(StreamError::InvalidAmount);
+        if rent_rate_per_kib_per_ledger < 0 {
+            return Err(StreamError::InvalidParameter);
         }
         let value_bytes = stream_entry_value_size(&env, stream_id)
             .ok_or(StreamError::StreamNotFound)? as i128;
         let byte_ledger_cost = value_bytes
             .checked_mul(ledgers as i128)
-            .and_then(|cost| cost.checked_mul(rent_rate_stroops_per_kib_per_ledger))
+            .and_then(|cost| cost.checked_mul(rent_rate_per_kib_per_ledger))
             .ok_or(StreamError::Overflow)?;
         let cost_stroops = byte_ledger_cost
             .checked_add(1023)
