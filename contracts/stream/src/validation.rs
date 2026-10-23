@@ -86,11 +86,11 @@ pub fn require_duration_within_cap(
 
 /// Rejects a holdback that is negative or consumes the whole deposit.
 ///
-/// A holdback must leave a strictly positive amount to stream.
-pub fn require_holdback_in_range(
-    amount: i128,
-    holdback_amount: i128,
-) -> Result<(), StreamError> {
+/// A holdback must leave a strictly positive amount to stream. Both invalid
+/// cases use `ZeroAmount` as a deliberate 50-variant-cap tradeoff: this enum
+/// has no dedicated holdback error, and the guard's existing contract is to
+/// reject either value before stream creation.
+pub fn require_holdback_in_range(amount: i128, holdback_amount: i128) -> Result<(), StreamError> {
     if holdback_amount < 0 || holdback_amount >= amount {
         Err(StreamError::ZeroAmount)
     } else {
@@ -121,7 +121,7 @@ pub fn require_cliff_within_duration(
 /// #620, and #661 frees a variant slot; #834 tracks that follow-up.
 pub fn require_withdrawal_steps(steps: Option<u32>) -> Result<(), StreamError> {
     match steps {
-        Some(0) => Err(StreamError::InvalidDuration),
+        Some(0) => Err(StreamError::InvalidWithdrawalSteps),
         _ => Ok(()),
     }
 }
@@ -144,11 +144,7 @@ pub fn require_valid_fee_bps(fee_bps: u32) -> Result<(), StreamError> {
 }
 
 /// Rejects a basis-point value above `max_bps`, reporting `err` on failure.
-pub fn require_bps_within(
-    bps: u32,
-    max_bps: u32,
-    err: StreamError,
-) -> Result<(), StreamError> {
+pub fn require_bps_within(bps: u32, max_bps: u32, err: StreamError) -> Result<(), StreamError> {
     if bps > max_bps {
         Err(err)
     } else {
@@ -257,7 +253,7 @@ mod tests {
         assert!(require_withdrawal_steps(Some(1)).is_ok());
         assert_eq!(
             require_withdrawal_steps(Some(0)),
-            Err(StreamError::InvalidDuration)
+            Err(StreamError::InvalidWithdrawalSteps)
         );
 
         assert!(require_min_withdrawal_amount(None).is_ok());
@@ -274,7 +270,7 @@ mod tests {
         assert!(require_valid_fee_bps(10_000).is_ok());
         assert_eq!(
             require_valid_fee_bps(10_001),
-            Err(StreamError::InvalidDuration)
+            Err(StreamError::InvalidFeeBps)
         );
     }
 

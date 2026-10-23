@@ -214,9 +214,9 @@ impl ChaosToken {
 /// check meaningful at runtime, where only the `u32` discriminant survives the
 /// contract boundary.
 pub const DEFINED_ERROR_CODES: &[u32] = &[
-    1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31,
-    34, 35, 36, 37, 38, 41, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 57, 58, 59, 60, 61, 64,
-    65, 66, 67,
+    1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 20, 21, 22, 26, 27, 28, 29, 30, 31, 34,
+    35, 36, 37, 38, 41, 43, 44, 46, 47, 48, 49, 51, 52, 53, 54, 55, 57, 58, 59, 60, 61, 64, 65, 66,
+    67, 70, 71,
 ];
 
 /// Human-readable names for the codes in [`DEFINED_ERROR_CODES`].
@@ -242,7 +242,6 @@ pub const ERROR_CODE_NAMES: &[&str] = &[
     "NotAuthorized",
     "StreamNotPaused",
     "StreamDurationTooShort",
-    "InvalidNonce",
     "MigrationAlreadyApplied",
     "StreamNotSettled",
     "WithdrawalCooldownActive",
@@ -261,7 +260,6 @@ pub const ERROR_CODE_NAMES: &[&str] = &[
     "IdCollision",
     "NextStepNotReached",
     "AmountBelowMinimum",
-    "InvalidExpiryWindow",
     "NewSenderStreamCapExceeded",
     "InvalidRedirectTarget",
     "CircularRedirect",
@@ -276,6 +274,8 @@ pub const ERROR_CODE_NAMES: &[&str] = &[
     "CommentTooLong",
     "InsufficientStake",
     "StreamPausedOrInvalidParameter",
+    "InvalidFeeBps",
+    "InvalidWithdrawalSteps",
 ];
 
 /// Returns `true` when `code` is a declared `StreamError` discriminant.
