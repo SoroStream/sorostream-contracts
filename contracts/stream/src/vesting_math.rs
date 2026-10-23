@@ -103,7 +103,7 @@ pub fn compute_flow_rate(deposit: i128, duration_seconds: u64) -> i128 {
 //
 // | Curve     | On-chain work per `withdraw`/`compute_claimable` call           | Storage reads | Best for                            |
 // |-----------|-----------------------------------------------------------------|---------------|-------------------------------------|
-| Linear    | Single multiply: `flow_rate × elapsed`                          | 0 (pure math) | Long-duration streams; lowest cost  |
+// | Linear    | Single multiply: `flow_rate × elapsed`                          | 0 (pure math) | Long-duration streams; lowest cost  |
 // | TimeDecay | Iterative loop: one `checked_mul` + `checked_div` per 1 ks window | 0 (pure math) | Front-weighted vesting; higher cost |
 //
 // Linear is O(1) — one multiplication regardless of stream length, so it is

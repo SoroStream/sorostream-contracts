@@ -1,5 +1,8 @@
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 // StreamFactory — Issue #237
 //
 // An on-chain registry and factory that deploys child `SoroStreamContract`
@@ -54,6 +57,16 @@ pub struct DeploymentInfo {
     /// Optional human-readable label supplied by the deployer (e.g.
     /// "production-mainnet-v2") for dashboard identification.
     pub label: Option<String>,
+    /// Whether this deployment is still active.
+    pub status: DeploymentStatus,
+}
+
+/// Lifecycle status recorded by the factory for each deployment.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeploymentStatus {
+    Active,
+    Deprecated,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +79,7 @@ const CONTRACTS_KEY: &str = "contracts";
 const CONTRACTS_COUNT_KEY: &str = "contracts_count";
 const INFO_PREFIX: &str = "info";
 const MAX_DEPLOYMENT_PAGE_SIZE: u32 = 20;
+const CONTRACT_PREFIX: &str = "contract";
 
 fn admin_key(env: &Env) -> Symbol {
     Symbol::new(env, ADMIN_KEY)
@@ -77,6 +91,10 @@ fn contract_index_key(env: &Env, index: u32) -> (Symbol, u32) {
 
 fn contracts_count_key(env: &Env) -> Symbol {
     Symbol::new(env, CONTRACTS_COUNT_KEY)
+}
+
+fn contracts_key(env: &Env) -> Symbol {
+    Symbol::new(env, CONTRACTS_KEY)
 }
 
 fn info_key(env: &Env, addr: &Address) -> (Symbol, Address) {
@@ -109,6 +127,8 @@ pub enum FactoryError {
     NotInitialized = 3,
     /// The proposed admin is the same as the current admin.
     NewAdminSameAsCurrent = 4,
+    /// Address was not deployed through this factory.
+    UnknownDeployment = 5,
 }
 
 // ---------------------------------------------------------------------------
@@ -194,23 +214,24 @@ impl StreamFactory {
             deploy_timestamp: env.ledger().timestamp(),
             wasm_hash,
             label,
+            status: DeploymentStatus::Active,
         };
         env.storage()
             .persistent()
             .set(&info_key(&env, &child_address), &info);
 
         // Store each address separately so append and paginated reads stay bounded.
-        let count: u32 = env
-            .storage()
-            .persistent()
-            .get(&Symbol::new(&env, CONTRACT_COUNT_KEY))
-            .unwrap_or(0);
+        let count = Self::get_deployed_contract_count(env.clone());
         env.storage()
             .persistent()
-            .set(&contracts_key(&env), &list);
+            .set(&contract_index_key(&env, count), &child_address);
         env.storage()
             .persistent()
-            .set(&contracts_count_key(&env), &list.len());
+            .set(&contracts_count_key(&env), &(count + 1));
+        env.events().publish(
+            (Symbol::new(&env, "StreamContractDeployed"),),
+            (child_address.clone(), admin, info.deploy_ledger, info.wasm_hash),
+        );
 
         Ok(child_address)
     }
@@ -225,7 +246,7 @@ impl StreamFactory {
     pub fn get_deployed_contracts(env: Env, start: u32, limit: u32) -> Vec<Address> {
         let count: u32 = env.storage()
             .persistent()
-            .get(&Symbol::new(&env, CONTRACT_COUNT_KEY))
+            .get(&contracts_count_key(&env))
             .unwrap_or(0);
         let end = start
             .saturating_add(limit.min(MAX_DEPLOYMENT_PAGE_SIZE))
@@ -274,6 +295,59 @@ impl StreamFactory {
             .get(&info_key(&env, &contract_address))
     }
 
+    /// Marks a deployment deprecated. Only the current factory admin may do this.
+    pub fn deprecate_deployment(
+        env: Env,
+        admin: Address,
+        contract_address: Address,
+    ) -> Result<(), FactoryError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(FactoryError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(FactoryError::Unauthorized);
+        }
+        let mut info: DeploymentInfo = env
+            .storage()
+            .persistent()
+            .get(&info_key(&env, &contract_address))
+            .ok_or(FactoryError::UnknownDeployment)?;
+        info.status = DeploymentStatus::Deprecated;
+        env.storage()
+            .persistent()
+            .set(&info_key(&env, &contract_address), &info);
+        env.events().publish(
+            (Symbol::new(&env, "DeploymentDeprecated"),),
+            contract_address,
+        );
+        Ok(())
+    }
+
+    /// Returns a page containing only active deployments, in deployment order.
+    pub fn get_active_deployed_contracts(env: Env, start: u32, limit: u32) -> Vec<Address> {
+        let mut active = Vec::new(&env);
+        let count = Self::get_deployed_contract_count(env.clone());
+        let end = start.saturating_add(limit.min(MAX_DEPLOYMENT_PAGE_SIZE)).min(count);
+        for index in start..end {
+            let Some(address) = env
+                .storage()
+                .persistent()
+                .get::<_, Address>(&contract_index_key(&env, index))
+            else {
+                continue;
+            };
+            let is_active = env
+                .storage()
+                .persistent()
+                .get::<_, DeploymentInfo>(&info_key(&env, &address))
+                .map(|info| info.status == DeploymentStatus::Active)
+                .unwrap_or(true);
+            if is_active {
+                active.push_back(address);
+            }
+        }
+        active
+    }
+
     /// Returns the current factory admin address.
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&admin_key(&env))
@@ -308,11 +382,6 @@ impl StreamFactory {
         if accepted_by != pending {
             return Err(FactoryError::Unauthorized);
         }
-        let current_admin: Address = env
-            .storage()
-            .instance()
-            .get(&admin_key(&env))
-            .ok_or(FactoryError::NotInitialized)?;
         env.storage()
             .instance()
             .set(&admin_key(&env), &accepted_by);

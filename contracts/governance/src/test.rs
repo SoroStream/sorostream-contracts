@@ -137,3 +137,39 @@ fn test_accept_guardian_wrong_caller_fails() {
         _ => panic!("expected NotAdmin"),
     }
 }
+
+#[test]
+fn test_queue_quorum_boundary_evenly_split() {
+    // Issue #824: Test boundary where total_votes exactly equals quorum
+    // but votes_for equals votes_against (tie at exactly quorum threshold).
+    // The queue() function requires: total_votes >= quorum AND votes_for > votes_against
+    // This test ensures the proposal is Defeated, not accidentally passed.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+    let quorum = 4u32;  // Set quorum to 4 votes
+
+    c.initialize(&admin, &guardian, &token, quorum, 100, 0, 0);
+
+    // Create a proposal: total_votes = 4 (exactly at quorum), split 2 for / 2 against
+    let prop_id = c.propose(&admin, b"test proposal".to_vec());
+
+    // Vote 2 for, 2 against (exactly equal, exactly at quorum)
+    let voter1 = Address::generate(&env);
+    let voter2 = Address::generate(&env);
+    let voter3 = Address::generate(&env);
+    let voter4 = Address::generate(&env);
+
+    c.vote(&voter1, &prop_id, true);  // vote_for
+    c.vote(&voter2, &prop_id, true);  // vote_for
+    c.vote(&voter3, &prop_id, false); // vote_against
+    c.vote(&voter4, &prop_id, false); // vote_against
+
+    // Try to queue: should fail because votes_for (2) == votes_against (2), tie not >
+    let result = c.try_queue(&admin, &prop_id);
+    assert!(result.is_err(), "Tied proposal at quorum boundary should not queue");
+}

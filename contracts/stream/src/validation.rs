@@ -114,6 +114,11 @@ pub fn require_cliff_within_duration(
 ///
 /// `None` means "no step gating"; `Some(0)` is nonsensical and is refused
 /// rather than silently treated as free-form withdrawal.
+/// `InvalidDuration` is intentionally reused here because `StreamError` is
+/// capped at 50 contract-error variants. The reuse is a documented slot-
+/// conservation tradeoff, not a statement that zero steps are a duration
+/// error. Revisit this mapping when the consolidation work for #402, #617,
+/// #620, and #661 frees a variant slot; #834 tracks that follow-up.
 pub fn require_withdrawal_steps(steps: Option<u32>) -> Result<(), StreamError> {
     match steps {
         Some(0) => Err(StreamError::InvalidWithdrawalSteps),
@@ -130,8 +135,12 @@ pub fn require_min_withdrawal_amount(floor: Option<i128>) -> Result<(), StreamEr
 }
 
 /// Rejects a basis-point rate above 100 % (`10_000` bps).
+/// The failure currently maps to `InvalidDuration` for the same deliberate
+/// 50-variant-cap slot-conservation reason documented above. It should gain
+/// a dedicated fee error after the #402/#617/#620/#661 consolidation work;
+/// see #834 so this semantic mismatch is not mistaken for an oversight.
 pub fn require_valid_fee_bps(fee_bps: u32) -> Result<(), StreamError> {
-    require_bps_within(fee_bps, 10_000, StreamError::InvalidFeeBps)
+    require_bps_within(fee_bps, 10_000, StreamError::InvalidDuration)
 }
 
 /// Rejects a basis-point value above `max_bps`, reporting `err` on failure.

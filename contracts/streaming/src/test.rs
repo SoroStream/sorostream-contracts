@@ -11,10 +11,17 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Persistent, Address as _, Ledger, LedgerInfo},
+    testutils::{storage::Persistent, Address as _, Events, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, Env, IntoVal,
 };
+
+fn lifecycle_event(env: &Env, name: &str) -> Option<(soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val)> {
+    env.events().all().iter().find_map(|(_, topics, data)| {
+        let topic: soroban_sdk::Symbol = topics.get(0)?.into_val(env);
+        (topic == soroban_sdk::Symbol::new(env, name)).then(|| (topics.clone(), data.clone()))
+    })
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Shared test helpers
@@ -196,6 +203,22 @@ fn test_claim_returns_correct_amount_at_midpoint() {
 }
 
 #[test]
+fn test_claim_emits_lifecycle_event_payload() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let stream_id = client.create_stream(&t.sender, &t.recipient, &t.token, &1_000, &start, &(start + 1_000), &false);
+    t.set_time(start + 500);
+    client.claim(&stream_id);
+
+    let (topics, data) = lifecycle_event(&t.env, "StreamWithdrawn").unwrap();
+    let event_stream_id: u64 = topics.get(1).unwrap().into_val(&t.env);
+    assert_eq!(event_stream_id, stream_id);
+    let payload: (Address, Address, i128, i128) = data.into_val(&t.env);
+    assert_eq!(payload, (t.recipient, t.token, 500, 500));
+}
+
+#[test]
 fn test_cancel_splits_vested_and_remainder() {
     let t = TestEnv::new();
     let client = t.client();
@@ -218,6 +241,40 @@ fn test_cancel_splits_vested_and_remainder() {
     assert_eq!(t.token_client().balance(&t.recipient), 300);
     // sender started with 10_000_000, deposited 1_000, got back 700
     assert_eq!(t.token_client().balance(&t.sender), 9_999_700);
+}
+
+#[test]
+fn test_cancel_emits_lifecycle_event_payload() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let stream_id = client.create_stream(&t.sender, &t.recipient, &t.token, &1_000, &start, &(start + 1_000), &false);
+    t.set_time(start + 300);
+    client.cancel(&stream_id);
+
+    let (topics, data) = lifecycle_event(&t.env, "StreamCancelled").unwrap();
+    let event_stream_id: u64 = topics.get(1).unwrap().into_val(&t.env);
+    assert_eq!(event_stream_id, stream_id);
+    let payload: (Address, Address, Address, i128, i128) = data.into_val(&t.env);
+    assert_eq!(payload, (t.sender, t.recipient, t.token, 300, 700));
+}
+
+#[test]
+fn test_renew_emits_lifecycle_event_payload() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+    let stream_id = client.create_stream(&t.sender, &t.recipient, &t.token, &1_000, &start, &end, &true);
+    t.approve_renewals(&t.sender, 1_000);
+    t.set_time(end);
+    client.renew(&stream_id);
+
+    let (topics, data) = lifecycle_event(&t.env, "StreamRenewed").unwrap();
+    let event_stream_id: u64 = topics.get(1).unwrap().into_val(&t.env);
+    assert_eq!(event_stream_id, stream_id);
+    let payload: (Address, Address, Address, i128, i128, u64, u64) = data.into_val(&t.env);
+    assert_eq!(payload, (t.sender, t.recipient, t.token, 1_000, 1_000, end, end + 1_000));
 }
 
 #[test]

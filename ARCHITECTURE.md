@@ -114,11 +114,28 @@ graph TD
 
 | Contract | Role |
 |----------|------|
-| `stream` | Core payment streaming: create, withdraw, cancel, top-up, pause, fee collection, storage versioning, cleanup. |
+| `stream` | Core production-grade streaming: create, withdraw, cancel, top-up, pause, fee collection, storage versioning, cleanup. Includes role-based access control, governance hooks, and extensive features (pausing, recipient approval, escrow, partial cancellation, auto-renew, cliff times, cooldowns). ~8870 lines of Rust. |
+| `streaming` | Lightweight alternative streaming implementation for 2-of-2 multisig use cases. Supports core stream lifecycle (create, claim, cancel) plus reputation scoring and lightweight propose_stream/approve_proposal/discard_proposal multisig flow. No governance hooks. ~491 lines of Rust. **Use case:** Simple bilateral flows that require co-signer approval; reputation tracking for streaming participants. Not production-grade; proof-of-concept for simplified multisig creation patterns. |
 | `treasury` | Holds accumulated protocol fees. Supports `deposit`, `withdraw_treasury`, `withdraw_all`, `distribute`. |
 | `governance` | Time-locked admin actions; can call `unpause` on the stream contract. |
 | `multisig` | Multi-signature threshold for executing governance proposals. |
 | `proxy` | Transparent upgrade proxy; forwards calls to the current stream implementation. |
+
+---
+
+## Why Two Streaming Contracts?
+
+The `stream` contract (primary) and `streaming` contract (lightweight) serve fundamentally different use cases:
+
+| Aspect | `stream` | `streaming` |
+|--------|---------|-----------|
+| **Status** | Production-grade, heavily featured | Proof-of-concept, simplified |
+| **Target Use Case** | High-reliability, feature-rich payment streams | Simple bilateral streams requiring 2-of-2 multisig |
+| **Key Features** | Governance hooks, pausing, escrow, fee collection, advanced options | Core lifecycle, reputation scoring, multisig proposal flow |
+| **Complexity** | ~8870 LOC; intensive storage & event handling | ~491 LOC; minimal state |
+| **Deployment** | Recommended for production; via proxy contract | Experimental; direct deployment only |
+
+**TL;DR:** Use `stream` for production. The `streaming` contract exists as a simplified reference implementation and proof-of-concept for alternative multisig-centric workflows; it is not intended to replace `stream`.
 
 ---
 

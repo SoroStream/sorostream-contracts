@@ -1,8 +1,12 @@
 #![no_std]
+
 //! # SoroStream Treasury Contract
 //!
 //! Holds accumulated protocol fees and provides configurable distribution
 //! between a treasury wallet and an LP reward pool.
+
+#[cfg(test)]
+extern crate std;
 
 use soroban_sdk::{contract, contractimpl, contracterror, token, Address, Env, Symbol};
 
@@ -200,6 +204,10 @@ impl TreasuryContract {
             &destination,
             &amount,
         );
+        env.events().publish(
+            (Symbol::new(&env, "TreasuryWithdrawn"),),
+            (token, amount, destination),
+        );
         Ok(())
     }
 
@@ -218,6 +226,10 @@ impl TreasuryContract {
                 &destination,
                 &current,
             );
+            env.events().publish(
+                (Symbol::new(&env, "TreasuryWithdrawn"),),
+                (token, current, destination),
+            );
         }
         Ok(current)
     }
@@ -226,8 +238,8 @@ impl TreasuryContract {
     ///
     /// Rejects the zero/burn address and the treasury contract's own address
     /// (a self-referential split would route LP rewards back into the treasury).
-    pub fn set_lp_pool(env: Env, lp_pool: Address) {
-        check_admin(&env);
+    pub fn set_lp_pool(env: Env, lp_pool: Address) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
         if is_zero_address(&env, &lp_pool) {
             panic!("InvalidLpPoolAddress");
         }
@@ -237,7 +249,6 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, LP_POOL_KEY), &lp_pool);
-        Ok(())
     }
 
     /// Returns the LP reward pool address, if set.
@@ -262,6 +273,7 @@ impl TreasuryContract {
             (Symbol::new(&env, "TreasurySplitSet"),),
             treasury_bps,
         );
+        Ok(())
     }
 
     /// Returns the configured treasury split in basis points.
@@ -333,9 +345,9 @@ impl TreasuryContract {
 mod test {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _},
+        testutils::{Address as _, Events},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env,
+        Address, Env, IntoVal,
     };
 
     struct TreasuryTest {
@@ -365,6 +377,13 @@ mod test {
             admin,
             user,
         }
+    }
+
+    fn withdrawal_events(env: &Env) -> std::vec::Vec<(Symbol, soroban_sdk::Val)> {
+        env.events().all().iter().filter_map(|(_, topics, data)| {
+            let name: Symbol = topics.get(0)?.into_val(env);
+            (name == Symbol::new(env, "TreasuryWithdrawn")).then(|| (name, data.clone()))
+        }).collect()
     }
 
     #[test]
@@ -467,6 +486,11 @@ mod test {
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 3000, t.user.clone()));
+
         let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
         assert_eq!(user_balance, 3000);
         assert_eq!(c.get_balance(&t.token_id), 7000);
@@ -501,9 +525,24 @@ mod test {
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
 
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 10_000, t.user.clone()));
+
         let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
         assert_eq!(user_balance, 10_000);
         assert_eq!(c.get_balance(&t.token_id), 0);
+    }
+
+    #[test]
+    fn test_withdraw_all_zero_balance_emits_no_withdrawal_event() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        assert_eq!(c.withdraw_all(&t.token_id, &t.user), 0);
+        assert!(withdrawal_events(&t.env).is_empty());
     }
 
     #[test]
