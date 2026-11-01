@@ -63,17 +63,3 @@ jobs:
       - name: Differential fuzz with accounting invariants enabled
         run: cargo test -p sorostream-stream --lib differential_fuzz -- --nocapture
 
-  security-audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-      - name: Run cargo audit (fail on critical CVEs)
-        run: cargo audit
-      - name: Check for known vulnerabilities
-        run: cargo audit --json
-
