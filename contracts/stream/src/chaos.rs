@@ -474,7 +474,14 @@ impl ChaosConfig {
         ChaosConfig {
             seed,
             fault_rate_percent: 25,
-            enabled: FaultKind::ALL.to_vec(),
+            // SnapshotRollback swaps the host Env for a restored copy, which
+            // invalidates every Address/Val handle the harness is holding, so
+            // it is not drawn at random. Campaigns must keep their handles valid.
+            enabled: FaultKind::ALL
+                .iter()
+                .copied()
+                .filter(|k| *k != FaultKind::SnapshotRollback)
+                .collect(),
             strict: true,
         }
     }
@@ -732,10 +739,14 @@ impl ChaosEnv {
                 self.env.ledger().set_timestamp(now.saturating_sub(5_000));
             }
             FaultKind::SequenceSkew => {
+                // Soroban's default persistent-entry TTL floor is 4096
+                // ledgers (`min_persistent_entry_ttl`); jumping further than
+                // that archives every entry written earlier in the campaign
+                // under test, which is the test env simulating real-network
+                // archival, not the clock/sequence-skew behavior this fault
+                // is meant to probe. Stay comfortably under that floor.
                 let seq = self.env.ledger().sequence();
-                self.env
-                    .ledger()
-                    .set_sequence_number(seq.saturating_add(250_000));
+                self.env.ledger().set_sequence_number(seq.saturating_add(2_000));
             }
             FaultKind::StreamRecordLoss => {
                 let env = self.env.clone();

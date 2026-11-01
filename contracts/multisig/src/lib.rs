@@ -26,7 +26,9 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracterror, contracttype, Address, Bytes, Env, Symbol, Val, Vec,
+    contract, contractimpl, contracterror, contracttype,
+    xdr::FromXdr,
+    Address, Bytes, Env, Symbol, Val, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -87,6 +89,7 @@ pub enum MultiSigError {
     ThresholdExceedsOwners = 11,
     DuplicateOwner = 12,
     NotProposer = 13,
+    InvalidCalldata = 14,
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -206,8 +209,7 @@ fn decode_calldata(env: &Env, calldata: &Bytes) -> Result<Vec<Val>, MultiSigErro
     if calldata.len() == 0 {
         return Ok(Vec::new(env));
     }
-    env.from_xdr::<Vec<Val>>(calldata)
-        .map_err(|_| MultiSigError::InvalidCalldata)
+    Vec::<Val>::from_xdr(env, calldata).map_err(|_| MultiSigError::InvalidCalldata)
 }
 
 fn read_admin(env: &Env) -> Option<Address> {
@@ -294,12 +296,16 @@ impl MultiSigContract {
             proposer: proposer.clone(),
             target: target.clone(),
             function: function.clone(),
-            calldata,
+            calldata: calldata.clone(),
             status: IntentStatus::Pending,
             expiry,
             approval_count: 0,
         };
         save_intent(&env, &intent);
+
+        // Secondary indexes so intents can be listed by proposer or target.
+        append_intent_index(&env, proposer_intents_key(&env, &proposer), id);
+        append_intent_index(&env, target_intents_key(&env, &target), id);
 
         env.events().publish(
             (Symbol::new(&env, "IntentProposed"), id),
@@ -363,17 +369,9 @@ impl MultiSigContract {
 
         if intent.approval_count >= threshold {
             intent.status = IntentStatus::Executed;
-        save_intent(&env, &intent);
+            save_intent(&env, &intent);
 
-        // Secondary indexes so intents can be listed by proposer or target.
-        append_intent_index(
-            &env,
-            proposer_intents_key(&env, &proposer),
-            id,
-        );
-        append_intent_index(&env, target_intents_key(&env, &target), id);
-
-        env.events().publish(
+            env.events().publish(
                 (Symbol::new(&env, "ThresholdReached"), intent_id),
                 threshold,
             );
@@ -610,9 +608,10 @@ impl MultiSigContract {
 }
 
 #[cfg(test)]
-mod test {
+mod embedded_test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::{vec, Address, Bytes, Env};
 
     fn setup() -> (Env, Address, Vec<Address>) {
         let env = Env::default();
@@ -623,27 +622,28 @@ mod test {
         let owner3 = Address::generate(&env);
         let owners = vec![&env, owner1.clone(), owner2.clone(), owner3.clone()];
         let c = MultiSigContractClient::new(&env, &contract_id);
-        assert!(c.initialize(&owners, &2u32).is_ok());
-        (env, contract_id, vec![owner1, owner2, owner3])
+        c.initialize(&owners, &2u32);
+        let owner_list = vec![&env, owner1, owner2, owner3];
+        (env, contract_id, owner_list)
     }
 
     #[test]
     fn test_approve_after_expiry_rejected_with_prior_approvals() {
         let (env, contract_id, owners) = setup();
         let c = MultiSigContractClient::new(&env, &contract_id);
-        let owner1 = owners[0].clone();
-        let owner2 = owners[1].clone();
+        let owner1 = owners.get_unchecked(0);
+        let owner2 = owners.get_unchecked(1);
         let target = Address::generate(&env);
         let function = Symbol::new(&env, "dummy");
         let calldata = Bytes::new(&env);
 
         env.ledger().set_timestamp(1000);
-        let intent_id = c
-            .propose(&owner1, &target, &function, &calldata, &2000u64)
-            .unwrap();
+        let intent_id = c.propose(&owner1, &target, &function, &calldata, &2000u64);
 
-        // owner1 approves before the expiry
-        assert!(c.approve(&owner1, &intent_id).unwrap());
+        // owner1 approves before the expiry. `approve` returns whether this
+        // approval pushed the intent over the threshold (threshold is 2, and
+        // this is the first approval), so it is false, not yet executed.
+        assert!(!c.approve(&owner1, &intent_id));
 
         // advance time past the intent's expiry
         env.ledger().set_timestamp(3000);
@@ -654,7 +654,7 @@ mod test {
         assert_eq!(result, Err(Ok(MultiSigError::IntentExpired)));
 
         // the intent is still pending with only the single prior approval
-        let intent = c.get_intent(&intent_id).unwrap();
+        let intent = c.get_intent(&intent_id);
         assert_eq!(intent.status, IntentStatus::Pending);
         assert_eq!(intent.approval_count, 1);
     }

@@ -1,0 +1,9 @@
+{
+  "get_deployed_contracts_n0": { "read_entries": 2, "write_entries": 0, "registry_size": 0 },
+  "get_deployed_contracts_n10": { "read_entries": 12, "write_entries": 0, "registry_size": 10 },
+  "get_deployed_contracts_n50": { "read_entries": 22, "write_entries": 0, "registry_size": 50 },
+  "get_deployed_contracts_n100": { "read_entries": 22, "write_entries": 0, "registry_size": 100 },
+  "get_deployed_contracts_n250": { "read_entries": 22, "write_entries": 0, "registry_size": 250 },
+  "get_deployed_contracts_n500": { "read_entries": 22, "write_entries": 0, "registry_size": 500 },
+  "get_deployed_contracts_n1000": { "read_entries": 22, "write_entries": 0, "registry_size": 1000 }
+}

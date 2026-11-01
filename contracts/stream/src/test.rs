@@ -1857,8 +1857,7 @@ fn error_invalid_partial_cancel_exceeds_remainder() {
 
 // â”€â”€ Overflow / checked-arithmetic tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// `create_stream` with 
-ow + duration_seconds` overflowing u64 must return
+/// `create_stream` with `start_time + duration_seconds` overflowing u64 must return
 /// `StreamError::Overflow` instead of panicking.
 #[test]
 fn test_create_stream_end_time_overflow() {
@@ -1877,8 +1876,7 @@ fn test_create_stream_end_time_overflow() {
     assert!(result.is_err());
 }
 
-/// `create_stream` with 
-ow + cliff_seconds` overflowing u64 must return an error.
+/// `create_stream` with `start_time + cliff_seconds` overflowing u64 must return an error.
 #[test]
 fn test_create_stream_cliff_time_overflow() {
     let t = setup();

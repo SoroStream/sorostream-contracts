@@ -292,10 +292,12 @@ fn test_cancel_saturates_refund_when_claimed_and_claimable_exceed_deposit() {
         &false,
     );
 
-    let mut stream = storage::get_stream(&t.env, stream_id);
-    stream.claimed = 999;
-    stream.rate_per_second = 1_001;
-    storage::save_stream(&t.env, stream_id, &stream);
+    t.env.as_contract(&t.contract, || {
+        let mut stream = storage::get_stream(&t.env, stream_id);
+        stream.claimed = 999;
+        stream.rate_per_second = 1_001;
+        storage::save_stream(&t.env, stream_id, &stream);
+    });
     t.set_time(start + 1);
 
     client.cancel(&stream_id);
@@ -448,7 +450,14 @@ fn test_keeper_cannot_renew_without_sender_allowance() {
         &true,
     );
     let sender_balance = t.token_client().balance(&t.sender);
+    // Revoke the blanket allowance TestEnv::new() grants the contract, so
+    // this test genuinely has no sender allowance to renew against.
+    t.token_client()
+        .approve(&t.sender, &t.contract, &0, &(t.seq() + 1_000));
     t.set_time(end);
+    // Model a keeper transaction with no sender authorization and no
+    // pre-approved renewal allowance.
+    t.env.mock_auths(&[]);
 
     assert!(client.try_renew(&stream_id).is_err());
     assert_eq!(t.token_client().balance(&t.sender), sender_balance);

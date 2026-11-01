@@ -57,7 +57,9 @@ proptest! {
             min_withdrawal_amount: None,
             sponsor: None,
             requires_recipient_approval: false,
+            priority: None,
             tags: None,
+            metadata_uri: None,
         };
         let sender_before = token.balance(&sender);
         let stream_id = client.create_stream(

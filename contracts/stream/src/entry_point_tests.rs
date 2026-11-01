@@ -1,4 +1,5 @@
 #![cfg(test)]
+use crate::{SoroStreamContract, SoroStreamContractClient};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -249,6 +249,7 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, LP_POOL_KEY), &lp_pool);
+        Ok(())
     }
 
     /// Returns the LP reward pool address, if set.

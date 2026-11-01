@@ -53,6 +53,8 @@ pub enum ProposalStatus {
     Vetoed,
     /// Execution was attempted but the target invocation failed; retryable via `execute`.
     Failed,
+    /// Withdrawn by its proposer before voting ended.
+    Cancelled,
 }
 
 #[contracttype]
@@ -70,8 +72,8 @@ pub struct Proposal {
     pub timelock_period: u64,
     /// Guardian authorized to veto this proposal.
     pub guardian: Address,
-    /// XDR-encoded `Vec<Val>` arguments passed to the target; empty bytes means no arguments.
-    pub calldata: Bytes,
+    /// Typed arguments passed to the target; empty means no arguments.
+    pub calldata: Vec<Val>,
     pub status: ProposalStatus,
     /// Ledger timestamp when voting opened.
     pub vote_start: u64,
@@ -102,6 +104,9 @@ pub enum GovernanceError {
     InsufficientTokens = 11,
     InvalidParam = 12,
     InvokeFailed = 13,
+    NoVoteToWithdraw = 14,
+    NotProposer = 15,
+    ProposalNotActive = 16,
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -168,14 +173,6 @@ fn get_u64(env: &Env, key: &str, default: u64) -> u64 {
     env.storage().instance().get(&Symbol::new(env, key)).unwrap_or(default)
 }
 
-fn decode_calldata(env: &Env, calldata: &Bytes) -> Result<Vec<Val>, GovernanceError> {
-    if calldata.len() == 0 {
-        return Ok(Vec::new(env));
-    }
-    env.from_xdr::<Vec<Val>>(calldata)
-        .map_err(|_| GovernanceError::InvalidCalldata)
-}
-
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -237,7 +234,6 @@ impl GovernanceContract {
         calldata: Vec<Val>,
     ) -> Result<u64, GovernanceError> {
         proposer.require_auth();
-        decode_calldata(&env, &calldata)?;
 
         let token: Address = env.storage().instance()
             .get(&Symbol::new(&env, TOKEN_KEY))
@@ -406,13 +402,17 @@ impl GovernanceContract {
 
         let total_votes = proposal.votes_for.saturating_add(proposal.votes_against);
         if total_votes < proposal.quorum || proposal.votes_for <= proposal.votes_against {
+            // Soroban rolls back all storage writes made during an invocation
+            // that returns `Err`, so the Defeated status would never persist
+            // if we returned an error here. The call itself succeeds; the
+            // proposal's outcome is just negative.
             proposal.status = ProposalStatus::Defeated;
             save_proposal(&env, &proposal);
             env.events().publish(
                 (Symbol::new(&env, "ProposalDefeated"), proposal_id),
                 (proposal.votes_for, proposal.votes_against, total_votes),
             );
-            return Err(GovernanceError::QuorumNotReached);
+            return Ok(());
         }
 
         proposal.eta = now.saturating_add(proposal.timelock_period);
@@ -430,15 +430,15 @@ impl GovernanceContract {
     /// Executes a queued proposal after the timelock has elapsed.
     ///
     /// Callable by anyone. Invokes `proposal.function` on `proposal.target` with
-    /// `proposal.calldata` as a single raw `Bytes` argument, assuming the target
-    /// returns `()`. This is the generic "invoke a target with one raw `Bytes`
-    /// argument" execution convention shared with the multi-sig's `approve`.
+    /// `proposal.calldata` — the proposer's own distinct typed `Vec<Val>` arguments,
+    /// collected at `create_proposal` time — so a proposal can target a real entry
+    /// point's actual parameter list directly, unlike the multi-sig's `approve`,
+    /// which still forwards its intent's calldata as a single raw `Bytes` argument.
     ///
-    /// It is NOT the convention used by the main stream contract, whose entry
-    /// points take distinct typed parameters and return `Result<_, StreamError>`.
-    /// Consequently, a governance proposal (or multi-sig intent) cannot directly
-    /// invoke the stream contract's real entry points through this path; an
-    /// adapter accepting a single `Bytes` argument would be required.
+    /// The invocation still assumes the target returns `()`; a target returning
+    /// `Result<_, StreamError>` (as the main stream contract's entry points do)
+    /// fails the `T::Error` conversion and is treated as a failed execution
+    /// (`ProposalStatus::Failed`) rather than a successful one.
     pub fn execute(env: Env, proposal_id: u64) -> Result<(), GovernanceError> {
         let mut proposal = load_proposal(&env, proposal_id)
             .ok_or(GovernanceError::ProposalNotFound)?;
@@ -454,14 +454,14 @@ impl GovernanceContract {
             return Err(GovernanceError::TimelockNotExpired);
         }
 
-        let invoke_result = env.try_invoke_contract::<()>(
+        let invoke_result = env.try_invoke_contract::<(), soroban_sdk::Error>(
             &proposal.target,
             &proposal.function,
-            args,
+            proposal.calldata.clone(),
         );
 
         match invoke_result {
-            Ok(()) => {
+            Ok(Ok(())) => {
                 proposal.status = ProposalStatus::Executed;
                 save_proposal(&env, &proposal);
 
@@ -472,7 +472,7 @@ impl GovernanceContract {
 
                 Ok(())
             }
-            Err(_) => {
+            _ => {
                 proposal.status = ProposalStatus::Failed;
                 save_proposal(&env, &proposal);
 
@@ -655,10 +655,11 @@ impl GovernanceContract {
 }
 
 #[cfg(test)]
-mod test {
+mod embedded_test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
-    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::token::StellarAssetClient;
+    use soroban_sdk::{Address, Env, Vec};
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
@@ -671,17 +672,7 @@ mod test {
             .register_stellar_asset_contract_v2(token_admin.clone())
             .address();
         let c = GovernanceContractClient::new(&env, &contract_id);
-        assert!(c
-            .initialize(
-                &admin,
-                &guardian,
-                &token_id,
-                &100u64,
-                &10u64,
-                &0u64,
-                &0u64
-            )
-            .is_ok());
+        c.initialize(&admin, &guardian, &token_id, &100u64, &10u64, &0u64, &0u64);
         (env, contract_id, token_id)
     }
 
@@ -694,20 +685,21 @@ mod test {
 
         let target = Address::generate(&env);
         let function = Symbol::new(&env, "dummy");
-        let calldata = Bytes::new(&env);
+        let calldata: Vec<Val> = Vec::new(&env);
 
         env.ledger().set_timestamp(1000);
-        let proposal_id = c
-            .create_proposal(&proposer, &target, &function, &calldata)
-            .unwrap();
+        let proposal_id = c.create_proposal(&proposer, &target, &function, &calldata);
 
         // advance time past the end of the voting period
         env.ledger().set_timestamp(10_000_000);
 
-        // first queue: no votes cast, quorum not reached -> proposal defeated
+        // first queue: no votes cast, quorum not reached -> proposal defeated.
+        // The call itself succeeds (Ok); the proposal's resolved outcome is
+        // Defeated, which persists because Soroban rolls back storage writes
+        // on an Err return.
         let result = c.try_queue(&proposal_id);
-        assert_eq!(result, Err(Ok(GovernanceError::QuorumNotReached)));
-        let proposal = c.get_proposal(&proposal_id).unwrap();
+        assert_eq!(result, Ok(Ok(())));
+        let proposal = c.get_proposal(&proposal_id);
         assert_eq!(proposal.status, ProposalStatus::Defeated);
 
         // second queue on an already-defeated proposal -> VotingNotActive,

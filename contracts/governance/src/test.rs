@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger},
     Address, Env,
 };
 
@@ -26,15 +26,16 @@ fn test_set_guardian_single_step_still_works() {
     let guardian = Address::generate(&env);
     let token = default_token(&env);
 
-    c.initialize(&admin, &guardian, &token, 0, 0, 0, 0);
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
 
     let new_guardian = Address::generate(&env);
     c.set_guardian(&new_guardian);
 
-    let stored: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY));
+    let stored: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY))
+    });
     assert_eq!(stored, Some(new_guardian));
 }
 
@@ -48,47 +49,52 @@ fn test_guardian_two_step_transfer() {
     let guardian = Address::generate(&env);
     let token = default_token(&env);
 
-    c.initialize(&admin, &guardian, &token, 0, 0, 0, 0);
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
 
     let new_guardian = Address::generate(&env);
 
     // No pending guardian before proposal.
-    let pending: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY));
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY))
+    });
     assert!(pending.is_none());
 
     // Admin proposes the new guardian.
     c.propose_guardian(&new_guardian);
 
-    let pending: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY));
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY))
+    });
     assert_eq!(pending, Some(new_guardian.clone()));
 
     // Guardian is not yet switched.
-    let stored: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY));
+    let stored: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY))
+    });
     assert_eq!(stored, Some(guardian.clone()));
 
     // The pending guardian accepts, completing the two-step transfer.
     c.accept_guardian(&new_guardian);
 
-    let stored: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY));
+    let stored: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY))
+    });
     assert_eq!(stored, Some(new_guardian));
 
     // Pending is cleared after acceptance.
-    let pending: Option<Address> = env
-        .storage()
-        .instance()
-        .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY));
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY))
+    });
     assert!(pending.is_none());
 }
 
@@ -102,7 +108,7 @@ fn test_accept_guardian_without_proposal_fails() {
     let guardian = Address::generate(&env);
     let token = default_token(&env);
 
-    c.initialize(&admin, &guardian, &token, 0, 0, 0, 0);
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
 
     let new_guardian = Address::generate(&env);
     let result = c.try_accept_guardian(&new_guardian);
@@ -123,7 +129,7 @@ fn test_accept_guardian_wrong_caller_fails() {
     let guardian = Address::generate(&env);
     let token = default_token(&env);
 
-    c.initialize(&admin, &guardian, &token, 0, 0, 0, 0);
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
 
     let new_guardian = Address::generate(&env);
     let impostor = Address::generate(&env);
@@ -150,26 +156,49 @@ fn test_queue_quorum_boundary_evenly_split() {
 
     let admin = Address::generate(&env);
     let guardian = Address::generate(&env);
-    let token = default_token(&env);
-    let quorum = 4u32;  // Set quorum to 4 votes
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let quorum = 4u64; // Set quorum to 4 votes
 
-    c.initialize(&admin, &guardian, &token, quorum, 100, 0, 0);
+    c.initialize(&admin, &guardian, &token, &0u64, &quorum, &0u64, &0u64);
+    env.ledger().set_timestamp(1000);
+
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
 
     // Create a proposal: total_votes = 4 (exactly at quorum), split 2 for / 2 against
-    let prop_id = c.propose(&admin, b"test proposal".to_vec());
+    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
 
-    // Vote 2 for, 2 against (exactly equal, exactly at quorum)
+    // Vote 2 for, 2 against (exactly equal, exactly at quorum). Each voter's
+    // weight equals their token balance, so mint 1 token (1 unit of weight)
+    // to each before voting.
     let voter1 = Address::generate(&env);
     let voter2 = Address::generate(&env);
     let voter3 = Address::generate(&env);
     let voter4 = Address::generate(&env);
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    for voter in [&voter1, &voter2, &voter3, &voter4] {
+        stellar_asset.mint(voter, &1);
+    }
 
-    c.vote(&voter1, &prop_id, true);  // vote_for
-    c.vote(&voter2, &prop_id, true);  // vote_for
-    c.vote(&voter3, &prop_id, false); // vote_against
-    c.vote(&voter4, &prop_id, false); // vote_against
+    c.vote(&voter1, &prop_id, &true); // vote_for
+    c.vote(&voter2, &prop_id, &true); // vote_for
+    c.vote(&voter3, &prop_id, &false); // vote_against
+    c.vote(&voter4, &prop_id, &false); // vote_against
 
-    // Try to queue: should fail because votes_for (2) == votes_against (2), tie not >
-    let result = c.try_queue(&admin, &prop_id);
-    assert!(result.is_err(), "Tied proposal at quorum boundary should not queue");
+    // Advance past the voting period, then try to queue: the call succeeds
+    // (Ok), but the proposal resolves to Defeated, not Queued, because
+    // votes_for (2) == votes_against (2), tie not strictly >.
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+    let result = c.try_queue(&prop_id);
+    assert_eq!(result, Ok(Ok(())));
+    let proposal = c.get_proposal(&prop_id);
+    assert_eq!(
+        proposal.status,
+        ProposalStatus::Defeated,
+        "Tied proposal at quorum boundary should be Defeated, not Queued"
+    );
 }

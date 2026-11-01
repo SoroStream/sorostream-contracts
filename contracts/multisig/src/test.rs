@@ -33,7 +33,7 @@ fn test_get_owners_returns_all_owners() {
     let owner3 = Address::generate(&env);
     let owners = Vec::from_array(&env, [owner1.clone(), owner2.clone(), owner3.clone()]);
 
-    c.initialize(&owners, 2);
+    c.initialize(&owners, &2u32);
 
     assert_eq!(c.owner_count(), 3);
     assert_eq!(c.get_owners(), owners);
@@ -50,7 +50,7 @@ fn test_get_owners_reflects_removal() {
     let owner3 = Address::generate(&env);
     let owners = Vec::from_array(&env, [owner1.clone(), owner2.clone(), owner3.clone()]);
 
-    c.initialize(&owners, 1);
+    c.initialize(&owners, &1u32);
 
     // Remove owner2 via the multi-sig itself (current contract auth).
     c.remove_owner(&owner2);
@@ -73,12 +73,12 @@ fn test_get_intents_by_proposer_and_target() {
     let target_b = Address::generate(&env);
     let owners = Vec::from_array(&env, [proposer.clone(), other.clone()]);
 
-    c.initialize(&owners, 1);
+    c.initialize(&owners, &1u32);
 
     let calldata = soroban_sdk::Bytes::new(&env);
-    let id1 = c.propose(&proposer, &target_a, &soroban_sdk::symbol!("fn_a"), &calldata, 1000);
-    let id2 = c.propose(&proposer, &target_b, &soroban_sdk::symbol!("fn_b"), &calldata, 1000);
-    let id3 = c.propose(&other, &target_a, &soroban_sdk::symbol!("fn_a"), &calldata, 1000);
+    let id1 = c.propose(&proposer, &target_a, &soroban_sdk::symbol_short!("fn_a"), &calldata, &1000u64);
+    let id2 = c.propose(&proposer, &target_b, &soroban_sdk::symbol_short!("fn_b"), &calldata, &1000u64);
+    let id3 = c.propose(&other, &target_a, &soroban_sdk::symbol_short!("fn_a"), &calldata, &1000u64);
 
     // Proposer index.
     let by_proposer = c.get_intents_by_proposer(&proposer);
@@ -116,17 +116,17 @@ fn test_get_intent_returns_stored_fields() {
     let target = Address::generate(&env);
     let owners = Vec::from_array(&env, [proposer.clone()]);
 
-    c.initialize(&owners, 1);
+    c.initialize(&owners, &1u32);
 
     let intent_id = c.propose(
         &proposer,
         &target,
-        &soroban_sdk::symbol!("fn"),
+        &soroban_sdk::symbol_short!("fn"),
         &soroban_sdk::Bytes::new(&env),
-        1000,
+        &1000u64,
     );
 
-    let intent = c.get_intent(intent_id);
+    let intent = c.get_intent(&intent_id);
     assert_eq!(intent.id, intent_id);
     assert_eq!(intent.proposer, proposer);
     assert_eq!(intent.target, target);
