@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
-    Address, BytesN, Env, String, TryFromVal,
+    testutils::{Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
+    Address, BytesN, Env, IntoVal, String, TryFromVal,
 };
 
 // ---------------------------------------------------------------------------
@@ -381,4 +381,123 @@ fn test_deprecate_deployment_updates_info_and_active_listing() {
     let active = c.get_active_deployed_contracts(&0, &20);
     assert_eq!(active.len(), 1);
     assert_eq!(active.get(0).unwrap(), second);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #911 — propose_admin authorizes the *stored* admin
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_propose_admin_from_non_admin_caller_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    c.initialize(&admin);
+
+    // Only the attacker signs. propose_admin has no caller-address parameter;
+    // it reads the admin from storage and requires *that* address's auth, so
+    // the attacker's own signature can never satisfy the check.
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &factory_id,
+            fn_name: "propose_admin",
+            args: (attacker.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(c.try_propose_admin(&attacker).is_err());
+
+    // State is untouched: admin unchanged and no pending admin was recorded.
+    env.mock_all_auths();
+    assert_eq!(c.get_admin(), Some(admin));
+    match c.try_accept_admin(&attacker) {
+        Err(Ok(e)) => assert_eq!(e, FactoryError::NotInitialized),
+        _ => panic!("expected no pending admin"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #912 — deployment label length is bounded
+// ---------------------------------------------------------------------------
+
+fn label_of_len(env: &Env, len: usize) -> String {
+    let bytes = std::vec![b'a'; len];
+    String::from_bytes(env, &bytes)
+}
+
+#[test]
+fn test_deploy_rejects_label_longer_than_max() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let label = label_of_len(&env, MAX_LABEL_LEN as usize + 1);
+    let result = c.try_deploy_stream_contract(
+        &admin,
+        &BytesN::from_array(&env, &[0xAB_u8; 32]),
+        &fake_salt(&env, 1),
+        &Some(label),
+    );
+    match result {
+        Err(Ok(e)) => assert_eq!(e, FactoryError::LabelTooLong),
+        _ => panic!("expected LabelTooLong"),
+    }
+    assert_eq!(c.get_deployed_contract_count(), 0);
+}
+
+#[test]
+fn test_deploy_accepts_label_at_max_length() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    let label = label_of_len(&env, MAX_LABEL_LEN as usize);
+    let child = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 7), &Some(label.clone()));
+    assert_eq!(c.get_deployment_info(&child).unwrap().label, Some(label));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #913 — deprecate_deployment is idempotent
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_deprecate_deployment_twice_is_harmless_noop() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    let child = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 71), &None);
+
+    c.deprecate_deployment(&admin, &child);
+    let after_first = c.get_deployment_info(&child).unwrap();
+    assert_eq!(after_first.status, DeploymentStatus::Deprecated);
+
+    // Second call succeeds (no error) and re-publishes the event.
+    assert!(c.try_deprecate_deployment(&admin, &child).is_ok());
+    assert!(has_event(&env, "DeploymentDeprecated"));
+
+    // Stored metadata is identical after the repeated call.
+    let after_second = c.get_deployment_info(&child).unwrap();
+    assert_eq!(after_second, after_first);
+    assert_eq!(c.get_deployed_contract_count(), 1);
+    assert_eq!(c.get_active_deployed_contracts(&0, &20).len(), 0);
 }
