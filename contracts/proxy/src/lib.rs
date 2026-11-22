@@ -99,9 +99,16 @@ impl ProxyContract {
     }
 
     /// Transfers the admin role to a new address.
+    ///
+    /// Any outstanding `propose_admin` proposal is cleared, so a previously
+    /// proposed (but never accepted) address cannot later call `accept_admin`
+    /// and override the admin set here.
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), ProxyError> {
         check_admin(&env);
         env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
         Ok(())
     }
 
@@ -367,6 +374,30 @@ mod test {
         let new_admin = Address::generate(&env);
         c.set_admin(&new_admin);
         assert_eq!(c.get_admin(), new_admin);
+    }
+
+    #[test]
+    fn test_set_admin_clears_stale_pending_admin() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &0u32);
+
+        // Admin proposes X, but then changes the admin directly to Y instead.
+        let proposed = Address::generate(&env);
+        let direct = Address::generate(&env);
+        c.propose_admin(&proposed);
+        c.set_admin(&direct);
+        assert_eq!(c.get_admin(), direct);
+
+        // The stale proposal must be gone.
+        env.as_contract(&contract_id, || {
+            assert!(!env.storage().instance().has(&Symbol::new(&env, PENDING_ADMIN_KEY)));
+        });
+
+        // X can no longer hijack the role via accept_admin.
+        let result = c.try_accept_admin(&proposed);
+        assert_eq!(result, Err(Ok(ProxyError::NotInitialized)));
+        assert_eq!(c.get_admin(), direct);
     }
 
     #[test]

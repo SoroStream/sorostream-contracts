@@ -619,5 +619,30 @@ mod test {
         assert_eq!(c.get_balance(&t.token_id), 0);
         assert!(c.get_lp_pool().is_none());
     }
+
+    #[test]
+    fn test_get_treasury_split_defaults_to_10000_before_set_treasury_split() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // set_treasury_split has never been called: the documented default of
+        // 10_000 bps (100% to treasury, 0% to LP) must be returned.
+        assert_eq!(c.get_treasury_split(), 10_000u32);
+        assert!(c.get_lp_pool().is_none());
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &7_500);
+        c.deposit(&t.token_id, &7_500);
+
+        // With the default split, distribute sends everything to the treasury
+        // destination and does not require an LP pool to be configured.
+        let (treasury_amount, lp_amount) = c.distribute(&t.token_id, &t.user);
+        assert_eq!(treasury_amount, 7_500);
+        assert_eq!(lp_amount, 0);
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.user), 7_500);
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id), 0);
+        assert_eq!(c.get_balance(&t.token_id), 0);
+        assert_eq!(c.get_treasury_split(), 10_000u32);
+    }
 }
 
