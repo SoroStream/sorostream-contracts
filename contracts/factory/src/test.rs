@@ -382,3 +382,19 @@ fn test_deprecate_deployment_updates_info_and_active_listing() {
     assert_eq!(active.len(), 1);
     assert_eq!(active.get(0).unwrap(), second);
 }
+
+#[test]
+fn test_deprecate_deployment_unknown_address_returns_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let never_deployed = Address::generate(&env);
+    let result = c.try_deprecate_deployment(&admin, &never_deployed);
+    assert_eq!(result, Err(Ok(FactoryError::UnknownDeployment)));
+    assert!(c.get_deployment_info(&never_deployed).is_none());
+}
+
