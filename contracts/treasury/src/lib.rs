@@ -147,6 +147,10 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+        // Clear any pending admin to prevent old proposals from accidentally succeeding.
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
         Ok(())
     }
 
@@ -618,6 +622,30 @@ mod test {
         assert_eq!(lp_amount, 0);
         assert_eq!(c.get_balance(&t.token_id), 0);
         assert!(c.get_lp_pool().is_none());
+    }
+
+    #[test]
+    fn test_set_admin_clears_pending_admin() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let pending_admin = Address::generate(&t.env);
+        let new_admin = Address::generate(&t.env);
+
+        // Propose a pending admin
+        c.propose_admin(&pending_admin);
+        assert_eq!(c.get_admin(), Some(t.admin.clone()));
+
+        // Use set_admin to immediately transfer to a different admin
+        c.set_admin(&new_admin);
+
+        // Verify the new admin is set and pending admin is cleared
+        assert_eq!(c.get_admin(), Some(new_admin.clone()));
+
+        // Verify that the old pending admin can no longer accept
+        let result = c.try_accept_admin(&pending_admin);
+        assert_eq!(result, Err(Ok(TreasuryError::NoPendingAdmin)));
     }
 }
 
