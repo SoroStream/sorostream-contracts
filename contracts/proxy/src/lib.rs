@@ -438,4 +438,30 @@ mod test {
         let result = c.try_accept_admin(&new_admin);
         assert_eq!(result, Err(Ok(ProxyError::NotInitialized)));
     }
+
+    #[test]
+    fn test_accept_admin_second_call_by_current_admin_with_stale_reference_rejected() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &0u32);
+
+        let new_admin = Address::generate(&env);
+        c.propose_admin(&new_admin);
+        c.accept_admin(&new_admin);
+        assert_eq!(c.get_admin(), new_admin);
+
+        // Second call by the already-accepted admin with a stale acceptance reference fails
+        // and leaves the current admin unchanged.
+        let stale_retry = c.try_accept_admin(&new_admin);
+        assert_eq!(stale_retry, Err(Ok(ProxyError::NotInitialized)));
+        assert_eq!(c.get_admin(), new_admin);
+
+        // Even if a subsequent transfer is proposed to a third party, the current admin
+        // re-invoking accept_admin with their stale reference must be rejected as Unauthorized.
+        let third_admin = Address::generate(&env);
+        c.propose_admin(&third_admin);
+        let stale_during_new_pending = c.try_accept_admin(&new_admin);
+        assert_eq!(stale_during_new_pending, Err(Ok(ProxyError::Unauthorized)));
+        assert_eq!(c.get_admin(), new_admin);
+    }
 }
