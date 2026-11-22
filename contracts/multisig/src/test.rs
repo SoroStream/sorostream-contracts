@@ -133,3 +133,65 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+#[test]
+fn test_has_approved_never_approved_vs_approved_then_removed() {
+    // Issue #986: has_approved() reads the approval_key entry directly
+    // (unwrap_or(false)) and is independent of current owner status.
+    // remove_owner() never cleans up approval_key entries, so historical
+    // approval records persist after an owner is removed.
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let approver = Address::generate(&env);
+    let never_asked = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let owners = Vec::from_array(&env, [approver.clone(), never_asked.clone(), owner3.clone()]);
+
+    // Threshold 2 so a single approval leaves the intent pending.
+    c.initialize(&owners, &2u32);
+
+    let target = Address::generate(&env);
+    let intent_id = c.propose(
+        &owner3,
+        &target,
+        &Symbol::new(&env, "noop"),
+        &Bytes::new(&env),
+        &u64::MAX,
+    );
+
+    // Case 1: an owner who never called approve() on this intent.
+    assert!(!c.has_approved(&intent_id, &never_asked));
+    // Nor has anyone approved yet.
+    assert!(!c.has_approved(&intent_id, &approver));
+
+    // `approver` approves; threshold not yet reached.
+    assert!(!c.approve(&approver, &intent_id));
+    assert!(c.has_approved(&intent_id, &approver));
+    assert!(!c.has_approved(&intent_id, &never_asked));
+
+    // Case 2: the approving owner is removed (via current-contract auth).
+    c.remove_owner(&approver);
+    assert!(!c.is_owner(&approver));
+
+    // The approval record is not cleaned up on removal: has_approved still
+    // reports the historical approval even though the address is no longer
+    // an owner.
+    assert!(c.has_approved(&intent_id, &approver));
+    let raw: Option<bool> = env.as_contract(&id, || {
+        env.storage()
+            .persistent()
+            .get(&super::approval_key(&env, intent_id, &approver))
+    });
+    assert_eq!(raw, Some(true));
+
+    // The owner who was never asked to approve is still reported as false,
+    // which is distinct from the removed owner's persisted approval.
+    assert!(!c.has_approved(&intent_id, &never_asked));
+
+    // The intent keeps the approval that was counted before removal.
+    let intent = c.get_intent(&intent_id);
+    assert_eq!(intent.approval_count, 1);
+    assert_eq!(intent.status, IntentStatus::Pending);
+}

@@ -34,6 +34,10 @@ pub enum ProxyError {
     AlreadyInitialized = 2,
     NotAdmin = 3,
     StorageVersionMismatch = 4,
+    /// Currently unused: the proxy tracks no migration-applied state of its own
+    /// and never returns this variant. Idempotency is the implementation's
+    /// responsibility; a repeat migration it rejects surfaces as
+    /// `MigrationFailed`. Kept to preserve the error code numbering.
     MigrationAlreadyApplied = 5,
     MigrationFailed = 6,
 }
@@ -207,7 +211,11 @@ impl ProxyContract {
     /// Runs a one-time migration step on the implementation contract.
     ///
     /// Forwards a `migrate(from_version, to_version)` call to the implementation.
-    /// The implementation is responsible for idempotency guards.
+    /// The implementation is responsible for idempotency guards: the proxy keeps
+    /// no record of applied migrations, so calling this twice with identical
+    /// arguments forwards both calls. Any failure reported by the implementation
+    /// (including rejecting a repeat migration) is returned as
+    /// `ProxyError::MigrationFailed`.
     pub fn migrate(
         env: Env,
         impl_contract: Address,
@@ -215,7 +223,7 @@ impl ProxyContract {
         to_version: String,
     ) -> Result<(), ProxyError> {
         let _admin = check_admin(&env);
-        let migration_result = env.invoke_contract::<Result<(), soroban_sdk::Error>>(
+        let migration_result = env.try_invoke_contract::<(), soroban_sdk::Error>(
             &impl_contract,
             &Symbol::new(&env, "migrate"),
             soroban_sdk::vec![
@@ -224,7 +232,7 @@ impl ProxyContract {
                 soroban_sdk::IntoVal::into_val(&to_version, &env),
             ],
         );
-        if migration_result.is_err() {
+        if !matches!(migration_result, Ok(Ok(()))) {
             return Err(ProxyError::MigrationFailed);
         }
         env.events().publish(
@@ -254,6 +262,25 @@ mod test {
     impl MockMigrationContract {
         fn migrate(_env: Env, _from: String, _to: String) -> Result<(), MockMigrationError> {
             Err(MockMigrationError::Failed)
+        }
+    }
+
+    /// Mock implementation whose `migrate` succeeds once and rejects any
+    /// subsequent call, i.e. it carries its own idempotency guard.
+    #[contract]
+    struct OneShotMigrationContract;
+
+    const MIGRATED_KEY: &str = "migrated";
+
+    #[contractimpl]
+    impl OneShotMigrationContract {
+        pub fn migrate(env: Env, _from: String, _to: String) -> Result<(), MockMigrationError> {
+            let key = Symbol::new(&env, MIGRATED_KEY);
+            if env.storage().instance().has(&key) {
+                return Err(MockMigrationError::Failed);
+            }
+            env.storage().instance().set(&key, &true);
+            Ok(())
         }
     }
 
@@ -437,5 +464,38 @@ mod test {
         // because the pending-admin record is gone.
         let result = c.try_accept_admin(&new_admin);
         assert_eq!(result, Err(Ok(ProxyError::NotInitialized)));
+    }
+
+    /// Issue #984: the proxy applies no idempotency guard of its own. Calling
+    /// `migrate()` twice with identical arguments forwards both calls to the
+    /// implementation; when the implementation rejects the repeat, the proxy
+    /// surfaces it as `MigrationFailed` (never `MigrationAlreadyApplied`, which
+    /// the proxy does not use).
+    #[test]
+    fn test_double_migrate_same_args_relies_on_impl_idempotency_guard() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &1u32);
+
+        let impl_contract = env.register(OneShotMigrationContract, ());
+        let from = String::from_str(&env, "v1");
+        let to = String::from_str(&env, "v2");
+
+        // First migration is forwarded and accepted by the implementation.
+        assert_eq!(c.try_migrate(&impl_contract, &from, &to), Ok(Ok(())));
+        env.as_contract(&impl_contract, || {
+            assert!(env.storage().instance().has(&Symbol::new(&env, MIGRATED_KEY)));
+        });
+
+        // The proxy stores no migration-applied state of its own.
+        env.as_contract(&contract_id, || {
+            assert!(!env.storage().instance().has(&Symbol::new(&env, MIGRATED_KEY)));
+        });
+
+        // Identical second call: the proxy forwards it again and the
+        // implementation's own guard rejects it.
+        let result = c.try_migrate(&impl_contract, &from, &to);
+        assert_eq!(result, Err(Ok(ProxyError::MigrationFailed)));
+        assert_ne!(result, Err(Ok(ProxyError::MigrationAlreadyApplied)));
     }
 }
