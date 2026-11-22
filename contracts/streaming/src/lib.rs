@@ -327,6 +327,16 @@ impl StreamingContract {
     /// approve within `approval_window_ledgers` ledgers, anyone can call
     /// `discard_proposal` to return the deposit. Before expiry, only the sender
     /// can retract the proposal.
+    ///
+    /// # Approval Window
+    /// The `approval_window_ledgers` parameter specifies a ledger-sequence-based
+    /// timeout: the proposal expires after `env.ledger().sequence() + approval_window_ledgers`.
+    /// **There is no parallel wall-clock timeout.** Ledger production rate is not
+    /// perfectly constant (typically ~6 seconds on average in Soroban mainnet, but
+    /// can vary significantly). Integrators reasoning in wall-clock time should
+    /// convert the approval window accordingly. For example, to allow 1 hour:
+    /// - Assume typical ~6-second ledger time: 1 hour ÷ 6s/ledger ≈ 600 ledgers
+    /// - Use a safety margin; e.g., request 500–600 ledgers depending on risk tolerance
     pub fn propose_stream(
         env: Env,
         sender: Address,
@@ -384,6 +394,12 @@ impl StreamingContract {
     ///
     /// The stream's `start_time` is set to the current ledger timestamp at the
     /// moment of approval.
+    ///
+    /// # Note on Self-Cosigning
+    /// The contract does not enforce that `cosigner ≠ sender`. A sender can propose
+    /// a stream naming themselves as the cosigner, then approve their own proposal
+    /// unilaterally. If the 2-of-2 flow should strictly require two distinct parties,
+    /// integrators must validate `sender ≠ cosigner` on the client side.
     pub fn approve_proposal(env: Env, proposal_id: u64) -> u64 {
         let proposal = storage::get_proposal(&env, proposal_id);
         proposal.cosigner.require_auth();

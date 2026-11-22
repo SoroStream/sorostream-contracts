@@ -495,6 +495,60 @@ fn test_claimable_at_renewal_ledger_is_zero() {
     );
 }
 
+// ── Issue #3: Renewal fails atomically if sender allowance is insufficient ────
+
+/// When renewing, transfer_from must pull the new deposit from the sender's allowance.
+/// If that allowance is insufficient, the entire renew() call must fail atomically:
+/// the vested balance must NOT be flushed to the recipient while the deposit pull fails.
+#[test]
+fn test_renew_fails_atomically_on_insufficient_allowance() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 100;
+
+    let stream_id = client.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &true,
+    );
+
+    // Check recipient's initial balance (should be 0, nothing claimed yet).
+    let recipient_balance_before = t.token_client().balance(&t.recipient);
+
+    // Set sender's allowance to the contract to 500, which is LESS than the
+    // 1_000 token deposit required for renewal.
+    t.token_client()
+        .approve(&t.sender, &t.contract, &500, &(t.seq() + 1_000));
+
+    t.set_time(end);
+    t.env.mock_auths(&[]);
+
+    // Attempt to renew — must fail because allowance < deposit
+    let result = client.try_renew(&stream_id);
+    assert!(result.is_err(), "renew should fail due to insufficient allowance");
+
+    // Verify the renewal did NOT partially execute:
+    // - Recipient should still have balance_before (not received the vested 1_000)
+    // - Stream should still have its original start_time and end_time (not renewed)
+    let recipient_balance_after = t.token_client().balance(&t.recipient);
+    assert_eq!(
+        recipient_balance_after, recipient_balance_before,
+        "recipient should not have received vested tokens on failed renewal"
+    );
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(
+        stream.start_time, start,
+        "stream should not have been renewed"
+    );
+    assert_eq!(stream.end_time, end, "stream should not have been renewed");
+}
+
 /// After 10 seconds into the renewed cycle, the claimable balance must be
 /// exactly rate_per_second * 10.
 #[test]
@@ -953,6 +1007,48 @@ fn test_third_party_can_discard_expired_proposal() {
     assert_eq!(t.token_client().balance(&third_party), 0);
 }
 
+// ── Issue #4: Sender can propose themselves as cosigner ────────────────────────
+
+/// When a sender proposes a stream with themselves as the cosigner, the current
+/// contract accepts it. This test verifies that the sender can then call
+/// approve_proposal() themselves (as the cosigner), unilaterally activating
+/// their own proposal without requiring a second party.
+///
+/// **This documents the current (permissive) behavior. Future versions may add
+/// a check to enforce sender ≠ cosigner if desirable.**
+#[test]
+fn test_sender_can_self_cosign_own_proposal() {
+    let t = TestEnv::new();
+    let client = t.client();
+
+    // Sender proposes a stream, naming themselves as the cosigner.
+    let proposal_id = client.propose_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &1_000_u64,
+        &false,
+        &t.sender,  // cosigner == sender (self-cosign)
+        &100,
+    );
+
+    // Verify the proposal was created with sender as both sender and cosigner.
+    let proposal = client.get_proposal(&proposal_id);
+    assert_eq!(proposal.sender, t.sender);
+    assert_eq!(proposal.cosigner, t.sender);
+
+    // The sender can now approve their own proposal, acting in the cosigner role.
+    // This demonstrates that the contract does NOT enforce sender ≠ cosigner.
+    let stream_id = client.approve_proposal(&proposal_id);
+
+    // Verify the stream was activated.
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.sender, t.sender);
+    assert_eq!(stream.recipient, t.recipient);
+    assert_eq!(stream.deposit, 1_000);
+}
+
 #[test]
 fn test_stream_active_after_approval_has_correct_start_time() {
     let t = TestEnv::new();
@@ -966,4 +1062,24 @@ fn test_stream_active_after_approval_has_correct_start_time() {
     // start_time should be the approval timestamp, not proposal timestamp
     assert_eq!(stream.start_time, 5_500);
     assert_eq!(stream.end_time, 5_500 + 1_000);
+}
+
+// ── Issue #1: Proposal removed on approval, not returned as stale data ────────
+
+/// After approve_proposal() succeeds, get_proposal() must return ProposalNotFound,
+/// confirming that the proposal storage was actually removed and not cached by the client.
+#[test]
+fn test_get_proposal_returns_not_found_after_approval() {
+    let t = TestEnv::new();
+    let proposal_id = setup_proposal(&t, 100);
+
+    // Approve the proposal
+    t.client().approve_proposal(&proposal_id);
+
+    // Attempting to retrieve the proposal must return ProposalNotFound
+    let result = t.client().try_get_proposal(&proposal_id);
+    assert!(matches!(
+        result,
+        Err(Ok(StreamingError::ProposalNotFound)),
+    ));
 }
