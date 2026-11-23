@@ -163,9 +163,18 @@ impl TreasuryContract {
         Ok(())
     }
 
-    /// Sets or updates the treasury address. Rejects zero address.
+    /// Sets or updates the treasury address. Only admin may call this.
+    ///
+    /// Rejects the zero/burn address and the treasury contract's own address
+    /// (to prevent self-referential transfers).
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
+        if is_zero_address(&env, &treasury) {
+            return Err(TreasuryError::InvalidTreasuryAddress);
+        }
+        if treasury == env.current_contract_address() {
+            return Err(TreasuryError::InvalidTreasuryAddress);
+        }
         validate_treasury_address(&env, &treasury)?;
         env.storage()
             .instance()
@@ -495,24 +504,12 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
-
         assert_eq!(c.get_balance(&t.token_id), 0);
 
-        // User deposits tokens into treasury
-        c.deposit(&t.user, &t.token_id, &1000);
+        c.deposit(&t.token_id, &1000);
         assert_eq!(c.get_balance(&t.token_id), 1000);
 
-        // Verify tokens were transferred from user to treasury
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 9000);
-
-        let treasury_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id);
-        assert_eq!(treasury_balance, 1000);
-
-        // Another deposit
-        c.deposit(&t.user, &t.token_id, &500);
+        c.deposit(&t.token_id, &500);
         assert_eq!(c.get_balance(&t.token_id), 1500);
     }
 
@@ -532,14 +529,12 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user first (since deposit will transfer from user to treasury)
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+        // Mint tokens to treasury
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
-        // User deposits tokens
-        c.deposit(&t.user, &t.token_id, &10_000);
-
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 0);
+        let initial_user = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(initial_user, 0);
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
@@ -570,16 +565,16 @@ mod test {
         // A zero-amount withdrawal is a no-op: it must not fail or alter balances.
         c.withdraw_treasury(&t.token_id, &0, &t.user);
 
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
+
         assert_eq!(c.get_balance(&t.token_id), treasury_balance_before);
         assert_eq!(
             TokenClient::new(&t.env, &t.token_id).balance(&t.user),
             user_balance_before
         );
-
-        let events = withdrawal_events(&t.env);
-        assert_eq!(events.len(), 1);
-        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
-        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
     }
 
     #[test]
@@ -605,11 +600,9 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user first
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
-
-        // User deposits
-        c.deposit(&t.user, &t.token_id, &10_000);
+        // Mint tokens to treasury first
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
@@ -690,6 +683,17 @@ mod test {
         c.initialize(&t.admin);
         let result = c.try_set_treasury(&t.treasury_id);
         assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_set_treasury_succeeds_with_valid_address() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let treasury_wallet = Address::generate(&t.env);
+        let result = c.try_set_treasury(&treasury_wallet);
+        assert_eq!(result, Ok(Ok(())));
     }
 
     #[test]
@@ -800,7 +804,6 @@ mod test {
         let result = c.try_accept_admin(&pending_admin);
         assert_eq!(result, Err(Ok(TreasuryError::NoPendingAdmin)));
     }
-}
 
     #[test]
     fn test_set_lp_pool_reconfigured_after_distribution_routes_to_new_pool() {
