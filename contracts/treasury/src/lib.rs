@@ -265,6 +265,22 @@ impl TreasuryContract {
         Ok(())
     }
 
+    /// Clears the configured LP reward pool address, reverting to a treasury-only
+    /// configuration. Only admin may call this.
+    ///
+    /// Succeeds even when no LP pool is currently configured.
+    pub fn clear_lp_pool(env: Env) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, LP_POOL_KEY));
+        env.events().publish(
+            (Symbol::new(&env, "LpPoolCleared"),),
+            (),
+        );
+        Ok(())
+    }
+
     /// Returns the LP reward pool address, if set.
     pub fn get_lp_pool(env: Env) -> Result<Option<Address>, TreasuryError> {
         Ok(read_lp_pool(&env))
