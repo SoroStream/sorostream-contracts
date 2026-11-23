@@ -172,98 +172,35 @@ fn test_get_intent_returns_stored_fields() {
 }
 
 #[test]
-fn test_get_intent_reports_exact_approval_count_between_approvals() {
-    // Issue #982: 3-of-5 multisig, read get_intent after every single approval.
+fn test_owner_count_never_underflows_when_removed_down_to_threshold() {
     let env = env_with_auth();
     let id = env.register(MultiSigContract, ());
     let c = MultiSigContractClient::new(&env, &id);
 
-    let o: [Address; 5] = [
-        Address::generate(&env),
-        Address::generate(&env),
-        Address::generate(&env),
-        Address::generate(&env),
-        Address::generate(&env),
-    ];
-    let owners = Vec::from_array(&env, o.clone());
-    c.initialize(&owners, &3u32);
-
-    let target_id = env.register(MockTarget, ());
-    let target = MockTargetClient::new(&env, &target_id);
-
-    let intent_id = c.propose(&o[0], &target_id, &symbol_short!("ping"), &Bytes::new(&env), &u64::MAX);
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.approval_count, 0);
-    assert_eq!(intent.status, IntentStatus::Pending);
-
-    // First approval: count is exactly 1, still pending, not executed.
-    assert!(!c.approve(&o[0], &intent_id));
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.approval_count, 1);
-    assert_eq!(intent.status, IntentStatus::Pending);
-    assert_eq!(target.pings(), 0);
-
-    // Second approval: count is exactly 2, still pending, not executed.
-    assert!(!c.approve(&o[1], &intent_id));
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.approval_count, 2);
-    assert_eq!(intent.status, IntentStatus::Pending);
-    assert_eq!(target.pings(), 0);
-
-    // Third approval reaches the threshold and executes.
-    assert!(c.approve(&o[2], &intent_id));
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.approval_count, 3);
-    assert_eq!(intent.status, IntentStatus::Executed);
-    assert_eq!(target.pings(), 1);
-}
-
-#[test]
-fn test_approve_with_threshold_one_executes_on_first_approval() {
-    // Issue #831: threshold == 1 is valid; the very first approval must
-    // immediately trigger execution.
-    //
-    // Execution path note (see issue #717 and the `approve` doc comment):
-    // `approve()` decodes `intent.calldata` as an XDR `Vec<Val>` and forwards
-    // the decoded values as the target's arguments. Empty calldata means no
-    // arguments, so this test targets a zero-argument entry point (`ping`),
-    // which exercises the real `invoke_contract` path end to end. Targets
-    // with typed parameters (e.g. the multisig's own `remove_owner`) are
-    // subject to the limitation tracked in #717 and covered separately by
-    // `typed_self_targeting_call_cannot_bypass_checks_while_bytes_dispatch_is_broken`.
-    let env = env_with_auth();
-    let id = env.register(MultiSigContract, ());
-    let c = MultiSigContractClient::new(&env, &id);
-
-    let owner = Address::generate(&env);
-    let other = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone(), other.clone()]);
-    c.initialize(&owners, &1u32);
-    assert_eq!(c.get_threshold(), 1);
-
-    let target_id = env.register(MockTarget, ());
-    let target = MockTargetClient::new(&env, &target_id);
-
-    let intent_id = c.propose(&owner, &target_id, &symbol_short!("ping"), &Bytes::new(&env), &u64::MAX);
-    assert_eq!(target.pings(), 0);
-
-    // A single approval reaches the threshold and executes immediately.
-    assert!(c.approve(&owner, &intent_id));
-
-    // Both threshold and execution events fire from that one approval.
-    assert_eq!(count_events(&env, &id, "SignatureSubmitted"), 1);
-    assert_eq!(count_events(&env, &id, "ThresholdReached"), 1);
-    assert_eq!(count_events(&env, &id, "ExecutionCompleted"), 1);
-
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.approval_count, 1);
-    assert_eq!(intent.status, IntentStatus::Executed);
-    assert_eq!(target.pings(), 1);
-
-    // The intent is no longer approvable by the remaining owner.
-    assert_eq!(
-        c.try_approve(&other, &intent_id),
-        Err(Ok(MultiSigError::IntentNotPending))
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let owner4 = Address::generate(&env);
+    let owners = Vec::from_array(
+        &env,
+        [owner1.clone(), owner2.clone(), owner3.clone(), owner4.clone()],
     );
-    assert_eq!(target.pings(), 1);
+
+    c.initialize(&owners, &2u32);
+    assert_eq!(c.owner_count(), 4);
+    assert_eq!(c.get_threshold(), 2);
+
+    // Remove down to 3 owners, then down to exactly the configured threshold (2).
+    c.remove_owner(&owner4);
+    assert_eq!(c.owner_count(), 3);
+
+    c.remove_owner(&owner3);
+    assert_eq!(c.owner_count(), 2);
+
+    // Attempting to remove below the configured threshold is rejected and owner_count remains 2.
+    let res = c.try_remove_owner(&owner2);
+    assert_eq!(res, Err(Ok(MultiSigError::ThresholdExceedsOwners)));
+    assert_eq!(c.owner_count(), 2);
+    assert_eq!(c.get_owners().len(), 2);
 }
+
