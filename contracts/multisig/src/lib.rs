@@ -42,6 +42,10 @@ const PENDING_ADMIN_KEY: &str = "pending_admin";
 const PROPOSER_INTENTS_KEY: &str = "pi";
 const TARGET_INTENTS_KEY: &str = "ti";
 
+/// Maximum number of intent ids returned by a single paginated index query.
+/// Mirrors the factory contract's `MAX_DEPLOYMENT_PAGE_SIZE`.
+const MAX_INTENT_PAGE_SIZE: u32 = 50;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -156,6 +160,29 @@ fn append_intent_index(env: &Env, key: (Symbol, Address), id: u64) {
     let mut list: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
     list.push_back(id);
     env.storage().persistent().set(&key, &list);
+}
+
+/// Returns a bounded page of the intent index stored under `key`.
+///
+/// `limit` is clamped to [`MAX_INTENT_PAGE_SIZE`]. An `offset` at or beyond the
+/// stored length yields an empty vector, so callers never load the full,
+/// unbounded index in a single call.
+fn get_intent_index_page(env: &Env, key: (Symbol, Address), offset: u32, limit: u32) -> Vec<u64> {
+    let mut page = Vec::new(env);
+    let stored: Vec<u64> = match env.storage().persistent().get(&key) {
+        Some(list) => list,
+        None => return page,
+    };
+    let len = stored.len();
+    if offset >= len {
+        return page;
+    }
+    let capped = if limit > MAX_INTENT_PAGE_SIZE { MAX_INTENT_PAGE_SIZE } else { limit };
+    let end = offset.saturating_add(capped).min(len);
+    for i in offset..end {
+        page.push_back(stored.get_unchecked(i));
+    }
+    page
 }
 
 fn get_threshold(env: &Env) -> u32 {
@@ -518,26 +545,34 @@ impl MultiSigContract {
         load_intent(&env, intent_id).ok_or(MultiSigError::IntentNotFound)
     }
 
-    /// Returns the ids of all intents proposed by `proposer` (any status).
+    /// Returns a page of intent ids proposed by `proposer` (any status).
     ///
-    /// Use [`get_intent`] to inspect each intent's status and filter for
-    /// `IntentStatus::Pending` if only live intents are needed.
-    pub fn get_intents_by_proposer(env: Env, proposer: Address) -> Vec<u64> {
-        env.storage()
-            .persistent()
-            .get(&proposer_intents_key(&env, &proposer))
-            .unwrap_or(Vec::new(&env))
+    /// `offset` is the index of the first id to return; `limit` is clamped to
+    /// [`MAX_INTENT_PAGE_SIZE`]. An `offset` beyond the stored length returns an
+    /// empty vector. Use [`get_intent`] to inspect each intent's status and
+    /// filter for `IntentStatus::Pending` if only live intents are needed.
+    pub fn get_intents_by_proposer(
+        env: Env,
+        proposer: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        get_intent_index_page(&env, proposer_intents_key(&env, &proposer), offset, limit)
     }
 
-    /// Returns the ids of all intents targeting `target` (any status).
+    /// Returns a page of intent ids targeting `target` (any status).
     ///
-    /// Use [`get_intent`] to inspect each intent's status and filter for
-    /// `IntentStatus::Pending` if only live intents are needed.
-    pub fn get_intents_by_target(env: Env, target: Address) -> Vec<u64> {
-        env.storage()
-            .persistent()
-            .get(&target_intents_key(&env, &target))
-            .unwrap_or(Vec::new(&env))
+    /// `offset` is the index of the first id to return; `limit` is clamped to
+    /// [`MAX_INTENT_PAGE_SIZE`]. An `offset` beyond the stored length returns an
+    /// empty vector. Use [`get_intent`] to inspect each intent's status and
+    /// filter for `IntentStatus::Pending` if only live intents are needed.
+    pub fn get_intents_by_target(
+        env: Env,
+        target: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        get_intent_index_page(&env, target_intents_key(&env, &target), offset, limit)
     }
 
     /// Returns whether an owner has already approved a given intent.

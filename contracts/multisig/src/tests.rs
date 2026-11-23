@@ -69,3 +69,38 @@ fn typed_self_targeting_call_cannot_bypass_checks_while_bytes_dispatch_is_broken
     assert_eq!(client.owner_count(), 2);
     assert_eq!(client.get_intent(&id).approval_count, 1);
 }
+
+#[test]
+fn intent_index_getters_are_paginated() {
+    let (env, contract_id, owner, _) = setup();
+    let client = MultiSigContractClient::new(&env, &contract_id);
+    let target = Address::generate(&env);
+
+    let mut ids = vec![&env];
+    for _ in 0..5 {
+        ids.push_back(client.propose(
+            &owner,
+            &target,
+            &Symbol::new(&env, "noop"),
+            &Bytes::new(&env),
+            &u64::MAX,
+        ));
+    }
+
+    let by_proposer = client.get_intents_by_proposer(&owner, &0, &2);
+    assert_eq!(by_proposer.len(), 2);
+    assert_eq!(by_proposer.get(0).unwrap(), ids.get(0).unwrap());
+    assert_eq!(by_proposer.get(1).unwrap(), ids.get(1).unwrap());
+
+    let by_target = client.get_intents_by_target(&target, &2, &2);
+    assert_eq!(by_target.len(), 2);
+    assert_eq!(by_target.get(0).unwrap(), ids.get(2).unwrap());
+    assert_eq!(by_target.get(1).unwrap(), ids.get(3).unwrap());
+
+    let tail = client.get_intents_by_proposer(&owner, &4, &10);
+    assert_eq!(tail.len(), 1);
+    assert_eq!(tail.get(0).unwrap(), ids.get(4).unwrap());
+
+    assert_eq!(client.get_intents_by_proposer(&owner, &10, &2).len(), 0);
+    assert_eq!(client.get_intents_by_target(&target, &0, &0).len(), 0);
+}
