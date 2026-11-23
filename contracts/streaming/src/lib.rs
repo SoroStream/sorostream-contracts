@@ -463,6 +463,25 @@ impl StreamingContract {
         storage::remove_proposal(&env, proposal_id);
     }
 
+    /// Allows the cosigner to explicitly decline a pending proposal before expiry,
+    /// immediately refunding the escrowed deposit to the sender (#945).
+    pub fn reject_proposal(env: Env, proposal_id: u64, cosigner: Address) {
+        cosigner.require_auth();
+        let proposal = storage::get_proposal(&env, proposal_id);
+        assert!(
+            cosigner == proposal.cosigner,
+            "Error::Unauthorized: only the designated cosigner can reject this proposal"
+        );
+
+        token::Client::new(&env, &proposal.token).transfer(
+            &env.current_contract_address(),
+            &proposal.sender,
+            &proposal.deposit,
+        );
+
+        storage::remove_proposal(&env, proposal_id);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Read-only queries
     // ─────────────────────────────────────────────────────────────────────────

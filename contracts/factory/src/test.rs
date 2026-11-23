@@ -382,3 +382,18 @@ fn test_deprecate_deployment_updates_info_and_active_listing() {
     assert_eq!(active.len(), 1);
     assert_eq!(active.get(0).unwrap(), second);
 }
+
+#[test]
+fn test_deploy_stream_contract_called_by_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    let result = c.try_deploy_stream_contract(&non_admin, &wasm_hash, &fake_salt(&env, 7), &None);
+    assert_eq!(result, Err(Ok(FactoryError::Unauthorized)));
+}

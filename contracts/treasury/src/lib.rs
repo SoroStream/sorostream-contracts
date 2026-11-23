@@ -619,5 +619,36 @@ mod test {
         assert_eq!(c.get_balance(&t.token_id), 0);
         assert!(c.get_lp_pool().is_none());
     }
+
+    #[test]
+    fn test_distribute_called_twice_returns_zero() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        c.set_treasury_split(&10_000u32);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+
+        let (t1, lp1) = c.distribute(&t.token_id, &t.admin);
+        assert_eq!(t1, 10_000);
+        assert_eq!(lp1, 0);
+
+        // Calling distribute again immediately on empty balance returns (0, 0)
+        let (t2, lp2) = c.distribute(&t.token_id, &t.admin);
+        assert_eq!(t2, 0);
+        assert_eq!(lp2, 0);
+    }
+
+    #[test]
+    fn test_propose_and_accept_same_admin_clears_pending() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        c.propose_admin(&t.admin);
+        c.accept_admin(&t.admin);
+        assert_eq!(c.get_admin(), t.admin);
+    }
 }
 
