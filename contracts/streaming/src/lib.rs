@@ -80,13 +80,13 @@ impl StreamingContract {
         // non-sequential and an attacker cannot enumerate all streams.
         // The monotonic nonce prevents collisions for same-block creations.
         let nonce = storage::next_nonce(&env);
-        let mut stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, nonce);
-        // Extremely unlikely, but handle hash collisions by incrementing nonce.
-        let mut retry = nonce + 1;
-        while storage::stream_id_exists(&env, stream_id) {
-            stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, retry);
-            retry += 1;
-        }
+        let stream_id = storage::derive_stream_id_with_collision_handling(
+            &env,
+            &sender,
+            &recipient,
+            start_time,
+            nonce,
+        );
 
         storage::save_stream(
             &env,
@@ -153,12 +153,13 @@ impl StreamingContract {
         );
 
         let nonce = storage::next_nonce(&env);
-        let mut stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, nonce);
-        let mut retry = nonce + 1;
-        while storage::stream_id_exists(&env, stream_id) {
-            stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, retry);
-            retry += 1;
-        }
+        let stream_id = storage::derive_stream_id_with_collision_handling(
+            &env,
+            &sender,
+            &recipient,
+            start_time,
+            nonce,
+        );
 
         storage::save_stream(
             &env,
@@ -208,6 +209,7 @@ impl StreamingContract {
 
     /// Cancel a stream. Vested tokens go to recipient; remainder goes back to sender.
     /// Emits `StreamCancelled` with sender, recipient, token, vested amount, and refund.
+    /// Cancelled streams decrement the sender's reputation score.
     pub fn cancel(env: Env, stream_id: u64) {
         let mut stream = storage::get_stream(&env, stream_id);
         stream.sender.require_auth();
@@ -238,7 +240,8 @@ impl StreamingContract {
             (Symbol::new(&env, "StreamCancelled"), stream_id),
             (stream.sender, stream.recipient, stream.token, claimable, refund),
         );
-        // Cancelled streams do NOT increment reputation.
+        // Decrement reputation for stream cancellation to penalize bad-faith stream churn.
+        storage::decrement_reputation(&env, &stream.sender);
     }
 
     /// Pull-based auto-renewal (issue #8 fix, with keeper authorization in #821).
@@ -412,26 +415,16 @@ impl StreamingContract {
         let start_time = env.ledger().timestamp();
         let end_time = start_time + proposal.duration;
 
-        // Same non-enumerable ID derivation as create_stream/propose_stream.
+        // Same non-enumerable ID derivation as create_stream/sponsor_stream.
         let nonce = storage::next_nonce(&env);
-        let mut stream_id = storage::derive_stream_id(
+        let stream_id = storage::derive_stream_id_with_collision_handling(
             &env,
             &proposal.sender,
             &proposal.recipient,
             start_time,
             nonce,
         );
-        let mut retry = nonce + 1;
-        while storage::stream_id_exists(&env, stream_id) {
-            stream_id = storage::derive_stream_id(
-                &env,
-                &proposal.sender,
-                &proposal.recipient,
-                start_time,
-                retry,
-            );
-            retry += 1;
-        }
+
         storage::save_stream(
             &env,
             stream_id,
