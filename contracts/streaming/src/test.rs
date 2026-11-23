@@ -664,6 +664,71 @@ fn test_multiple_renewals_chain_correctly() {
     }
 }
 
+/// Issue #985: `cancel()` performs no check against `stream.auto_renew`.
+/// A stream created with `auto_renew: true` can be cancelled directly, without
+/// first disabling auto-renewal, and settles exactly like a non-renewing
+/// stream: the recipient receives the vested amount and the sender is refunded
+/// the remainder. Auto-renewal grants no extra protection against cancellation.
+#[test]
+fn test_cancel_auto_renew_stream_is_permitted() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+
+    let stream_id = client.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &true,
+    );
+    assert!(client.get_stream(&stream_id).auto_renew);
+
+    t.set_time(start + 300);
+    client.cancel(&stream_id);
+
+    // Same settlement as a non-renewing stream (see test_cancel_splits_vested_and_remainder).
+    assert_eq!(t.token_client().balance(&t.recipient), 300);
+    assert_eq!(t.token_client().balance(&t.sender), 9_999_700);
+    assert_eq!(t.token_client().balance(&t.contract), 0);
+
+    let stream = client.get_stream(&stream_id);
+    assert!(stream.cancelled);
+    // The auto_renew flag itself is left untouched by cancel().
+    assert!(stream.auto_renew);
+}
+
+/// Issue #985: once an auto-renewing stream is cancelled, `renew()` refuses to
+/// revive it even after `end_time`, so cancellation is final.
+#[test]
+#[should_panic(expected = "stream is cancelled")]
+fn test_renew_after_cancel_of_auto_renew_stream_panics() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+
+    let stream_id = client.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &true,
+    );
+
+    t.set_time(start + 300);
+    client.cancel(&stream_id);
+
+    t.approve_renewals(&t.sender, 1_000);
+    t.set_time(end + 1);
+    client.renew(&stream_id);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  3. Reputation scoring
 // ─────────────────────────────────────────────────────────────────────────────

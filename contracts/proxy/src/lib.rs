@@ -34,6 +34,10 @@ pub enum ProxyError {
     AlreadyInitialized = 2,
     NotAdmin = 3,
     StorageVersionMismatch = 4,
+    /// Currently unused: the proxy tracks no migration-applied state of its own
+    /// and never returns this variant. Idempotency is the implementation's
+    /// responsibility; a repeat migration it rejects surfaces as
+    /// `MigrationFailed`. Kept to preserve the error code numbering.
     MigrationAlreadyApplied = 5,
     MigrationFailed = 6,
 }
@@ -262,7 +266,7 @@ impl ProxyContract {
                 soroban_sdk::IntoVal::into_val(&to_version, &env),
             ],
         );
-        if migration_result.is_err() {
+        if !matches!(migration_result, Ok(Ok(()))) {
             return Err(ProxyError::MigrationFailed);
         }
         env.events().publish(
@@ -292,6 +296,25 @@ mod test {
     impl MockMigrationContract {
         fn migrate(_env: Env, _from: String, _to: String) -> Result<(), MockMigrationError> {
             Err(MockMigrationError::Failed)
+        }
+    }
+
+    /// Mock implementation whose `migrate` succeeds once and rejects any
+    /// subsequent call, i.e. it carries its own idempotency guard.
+    #[contract]
+    struct OneShotMigrationContract;
+
+    const MIGRATED_KEY: &str = "migrated";
+
+    #[contractimpl]
+    impl OneShotMigrationContract {
+        pub fn migrate(env: Env, _from: String, _to: String) -> Result<(), MockMigrationError> {
+            let key = Symbol::new(&env, MIGRATED_KEY);
+            if env.storage().instance().has(&key) {
+                return Err(MockMigrationError::Failed);
+            }
+            env.storage().instance().set(&key, &true);
+            Ok(())
         }
     }
 
