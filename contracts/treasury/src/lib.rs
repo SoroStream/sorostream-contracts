@@ -29,6 +29,8 @@ pub enum TreasuryError {
     NotPendingAdmin = 8,
     InvalidAmount = 9,
     Overflow = 10,
+    InvalidLpPoolAddress = 11,
+    LpPoolIsTreasuryContract = 12,
 }
 
 fn read_admin(env: &Env) -> Option<Address> {
@@ -78,6 +80,9 @@ fn validate_treasury_address(env: &Env, address: &Address) -> Result<(), Treasur
     if is_zero_address(env, address) {
         return Err(TreasuryError::InvalidTreasuryAddress);
     }
+    if address == &env.current_contract_address() {
+        return Err(TreasuryError::InvalidTreasuryAddress);
+    }
     Ok(())
 }
 
@@ -92,6 +97,10 @@ impl TreasuryContract {
         if read_admin(&env).is_some() {
             return Err(TreasuryError::AlreadyInitialized);
         }
+        
+        // Validate that admin is not a burn address
+        validate_treasury_address(&env, &admin).expect("invalid admin address");
+        
         env.storage()
             .instance()
             .set(&Symbol::new(&env, ADMIN_KEY), &admin);
@@ -147,6 +156,10 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+        // Clear any pending admin to prevent old proposals from accidentally succeeding.
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
         Ok(())
     }
 
@@ -241,10 +254,10 @@ impl TreasuryContract {
     pub fn set_lp_pool(env: Env, lp_pool: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
         if is_zero_address(&env, &lp_pool) {
-            panic!("InvalidLpPoolAddress");
+            return Err(TreasuryError::InvalidLpPoolAddress);
         }
         if lp_pool == env.current_contract_address() {
-            panic!("LpPoolIsTreasuryContract");
+            return Err(TreasuryError::LpPoolIsTreasuryContract);
         }
         env.storage()
             .instance()
@@ -442,9 +455,22 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        let _new_admin = Address::generate(&t.env);
-        // The main flow is tested in test_propose_and_accept_admin
-        // This test name serves as documentation for the behavior
+        // Only authorize the non-admin caller, so the admin's `require_auth`
+        // inside `check_admin` cannot be satisfied.
+        let non_admin = Address::generate(&t.env);
+        let new_admin = Address::generate(&t.env);
+        t.env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &non_admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &t.treasury_id,
+                fn_name: "propose_admin",
+                args: (new_admin.clone(),).into_val(&t.env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = c.try_propose_admin(&new_admin);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -453,12 +479,24 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
+        // Mint tokens to user
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+
         assert_eq!(c.get_balance(&t.token_id), 0);
 
-        c.deposit(&t.token_id, &1000);
+        // User deposits tokens into treasury
+        c.deposit(&t.user, &t.token_id, &1000);
         assert_eq!(c.get_balance(&t.token_id), 1000);
 
-        c.deposit(&t.token_id, &500);
+        // Verify tokens were transferred from user to treasury
+        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(user_balance, 9000);
+
+        let treasury_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id);
+        assert_eq!(treasury_balance, 1000);
+
+        // Another deposit
+        c.deposit(&t.user, &t.token_id, &500);
         assert_eq!(c.get_balance(&t.token_id), 1500);
     }
 
@@ -478,12 +516,14 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to treasury
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
-        c.deposit(&t.token_id, &10_000);
+        // Mint tokens to user first (since deposit will transfer from user to treasury)
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
 
-        let initial_user = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(initial_user, 0);
+        // User deposits tokens
+        c.deposit(&t.user, &t.token_id, &10_000);
+
+        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(user_balance, 0);
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
@@ -495,6 +535,35 @@ mod test {
         let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
         assert_eq!(user_balance, 3000);
         assert_eq!(c.get_balance(&t.token_id), 7000);
+    }
+
+    #[test]
+    fn test_withdraw_treasury_zero_amount() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+
+        let treasury_balance_before = c.get_balance(&t.token_id);
+        let user_balance_before = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(treasury_balance_before, 10_000);
+        assert_eq!(user_balance_before, 0);
+
+        // A zero-amount withdrawal is a no-op: it must not fail or alter balances.
+        c.withdraw_treasury(&t.token_id, &0, &t.user);
+
+        assert_eq!(c.get_balance(&t.token_id), treasury_balance_before);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.user),
+            user_balance_before
+        );
+
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
     }
 
     #[test]
@@ -520,8 +589,11 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
-        c.deposit(&t.token_id, &10_000);
+        // Mint tokens to user first
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+
+        // User deposits
+        c.deposit(&t.user, &t.token_id, &10_000);
 
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
@@ -568,6 +640,43 @@ mod test {
     }
 
     #[test]
+    fn test_initialize_self_address_rejected() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let treasury_id = env.register(TreasuryContract, ());
+        let c = TreasuryContractClient::new(&env, &treasury_id);
+        let result = c.try_initialize(&treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_propose_admin_self_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let result = c.try_propose_admin(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_accept_admin_self_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let result = c.try_accept_admin(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_set_treasury_self_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let result = c.try_set_treasury(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
     fn test_withdraw_treasury_returns_typed_insufficient_balance_error() {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
@@ -601,6 +710,38 @@ mod test {
     }
 
     #[test]
+    fn test_set_lp_pool_zero_address_returns_typed_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&t.env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+
+        let result = c.try_set_lp_pool(&zero_addr);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidLpPoolAddress)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_self_reference_returns_typed_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let result = c.try_set_lp_pool(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::LpPoolIsTreasuryContract)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_succeeds_with_valid_address() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let lp_pool = Address::generate(&t.env);
+        c.set_lp_pool(&lp_pool);
+        assert_eq!(c.get_lp_pool(), Some(lp_pool));
+    }
+
+    #[test]
     fn test_distribute_succeeds_without_lp_pool_when_treasury_bps_is_10000() {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
@@ -618,6 +759,30 @@ mod test {
         assert_eq!(lp_amount, 0);
         assert_eq!(c.get_balance(&t.token_id), 0);
         assert!(c.get_lp_pool().is_none());
+    }
+
+    #[test]
+    fn test_set_admin_clears_pending_admin() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let pending_admin = Address::generate(&t.env);
+        let new_admin = Address::generate(&t.env);
+
+        // Propose a pending admin
+        c.propose_admin(&pending_admin);
+        assert_eq!(c.get_admin(), Some(t.admin.clone()));
+
+        // Use set_admin to immediately transfer to a different admin
+        c.set_admin(&new_admin);
+
+        // Verify the new admin is set and pending admin is cleared
+        assert_eq!(c.get_admin(), Some(new_admin.clone()));
+
+        // Verify that the old pending admin can no longer accept
+        let result = c.try_accept_admin(&pending_admin);
+        assert_eq!(result, Err(Ok(TreasuryError::NoPendingAdmin)));
     }
 }
 
