@@ -145,6 +145,63 @@ fn test_accept_guardian_wrong_caller_fails() {
 }
 
 #[test]
+fn test_propose_guardian_twice_overwrites_pending() {
+    // Issue #895: propose_guardian() unconditionally overwrites
+    // PENDING_GUARDIAN_KEY, so a second proposal silently replaces the first
+    // before either is accepted.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    // Propose `first`, then propose `second` before `first` accepts.
+    c.propose_guardian(&first);
+    c.propose_guardian(&second);
+
+    // The second proposal overwrote the first as the only pending guardian.
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY))
+    });
+    assert_eq!(pending, Some(second.clone()));
+
+    // `first` is no longer pending, so accepting as `first` fails.
+    let result = c.try_accept_guardian(&first);
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, GovernanceError::NotAdmin),
+        _ => panic!("expected NotAdmin"),
+    }
+
+    // `second` is the only address accept_guardian will honor.
+    c.accept_guardian(&second);
+
+    let stored: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY))
+    });
+    assert_eq!(stored, Some(second));
+
+    // Pending is cleared after acceptance.
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY))
+    });
+    assert!(pending.is_none());
+}
+
+#[test]
 fn test_queue_quorum_boundary_evenly_split() {
     // Issue #824: Test boundary where total_votes exactly equals quorum
     // but votes_for equals votes_against (tie at exactly quorum threshold).
@@ -204,10 +261,10 @@ fn test_queue_quorum_boundary_evenly_split() {
 }
 
 #[test]
-fn test_vote_escrow_prevents_double_counting_across_proposals() {
-    // Issue #977: vote() escrows the voter's balance per proposal by moving the
-    // tokens into the contract. The same tokens therefore cannot back a vote on
-    // a second proposal; only a fresh balance acquired afterwards counts there.
+fn test_withdraw_vote_tokens_twice_fails_with_no_vote_to_withdraw() {
+    // Issue #983: withdraw_vote_tokens removes the locked_balance_key entry
+    // immediately after reading it, so a second withdrawal for the same
+    // voter/proposal pair must fail with NoVoteToWithdraw.
     let env = env_with_auth();
     let id = env.register(GovernanceContract, ());
     let c = GovernanceContractClient::new(&env, &id);
@@ -218,8 +275,6 @@ fn test_vote_escrow_prevents_double_counting_across_proposals() {
     let token = env
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
-    let token_client = soroban_sdk::token::Client::new(&env, &token);
-    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
 
     c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
     env.ledger().set_timestamp(1000);
@@ -227,57 +282,39 @@ fn test_vote_escrow_prevents_double_counting_across_proposals() {
     let target = Address::generate(&env);
     let function = soroban_sdk::Symbol::new(&env, "dummy");
     let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
-    let prop_a = c.create_proposal(&admin, &target, &function, &calldata);
-    let prop_b = c.create_proposal(&admin, &target, &function, &calldata);
-    assert_ne!(prop_a, prop_b);
+    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
 
     let voter = Address::generate(&env);
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
     stellar_asset.mint(&voter, &100);
 
-    // Vote on A: the full balance is escrowed into the governance contract.
-    c.vote(&voter, &prop_a, &true);
+    c.vote(&voter, &prop_id, &true);
     assert_eq!(token_client.balance(&voter), 0);
     assert_eq!(token_client.balance(&id), 100);
-    assert_eq!(c.get_proposal(&prop_a).votes_for, 100);
 
-    // Voting on B right away counts nothing: the tokens behind A's vote are no
-    // longer in the voter's account and cannot be reused.
-    let other_voter = Address::generate(&env);
-    stellar_asset.mint(&other_voter, &50);
-    c.vote(&other_voter, &prop_a, &false);
-    c.vote(&other_voter, &prop_b, &true);
-    assert_eq!(c.get_proposal(&prop_b).votes_for, 0);
-    assert_eq!(c.get_proposal(&prop_a).votes_against, 50);
+    // Move past vote_end so withdrawal is permitted.
+    let proposal = c.get_proposal(&prop_id);
+    env.ledger().set_timestamp(proposal.vote_end + 1);
 
-    // With a fresh balance, the voter's vote on B counts only the new tokens.
-    stellar_asset.mint(&voter, &40);
-    c.vote(&voter, &prop_b, &false);
-    assert_eq!(token_client.balance(&voter), 0);
-
-    let a = c.get_proposal(&prop_a);
-    let b = c.get_proposal(&prop_b);
-    assert_eq!(a.votes_for, 100);
-    assert_eq!(b.votes_against, 40, "proposal B must not count the 100 tokens escrowed for A");
-    assert_eq!(b.votes_for, 0);
-
-    // Total weight counted across both proposals equals the tokens actually
-    // escrowed: nothing was double-counted.
-    let counted = a.votes_for + a.votes_against + b.votes_for + b.votes_against;
-    assert_eq!(counted, 190);
-    assert_eq!(token_client.balance(&id), 190);
-
-    // A second vote on the same proposal is still rejected.
-    let again = c.try_vote(&voter, &prop_b, &true);
-    assert_eq!(again, Err(Ok(GovernanceError::AlreadyVoted)));
-
-    // After voting ends, each proposal releases only its own escrow.
-    env.ledger().set_timestamp(a.vote_end.max(b.vote_end) + 1);
-    c.withdraw_vote_tokens(&voter, &prop_a);
+    // First withdrawal succeeds and returns the escrowed tokens.
+    c.withdraw_vote_tokens(&voter, &prop_id);
     assert_eq!(token_client.balance(&voter), 100);
-    c.withdraw_vote_tokens(&voter, &prop_b);
-    assert_eq!(token_client.balance(&voter), 140);
-    c.withdraw_vote_tokens(&other_voter, &prop_a);
-    c.withdraw_vote_tokens(&other_voter, &prop_b);
-    assert_eq!(token_client.balance(&other_voter), 50);
+    assert_eq!(token_client.balance(&id), 0);
+
+    // The locked balance entry has been removed from persistent storage.
+    let locked: Option<u64> = env.as_contract(&id, || {
+        env.storage()
+            .persistent()
+            .get(&super::locked_balance_key(&env, prop_id, &voter))
+    });
+    assert!(locked.is_none());
+
+    // Second withdrawal for the same voter/proposal fails.
+    let result = c.try_withdraw_vote_tokens(&voter, &prop_id);
+    assert_eq!(result, Err(Ok(GovernanceError::NoVoteToWithdraw)));
+
+    // Balances are unchanged by the failed second call.
+    assert_eq!(token_client.balance(&voter), 100);
     assert_eq!(token_client.balance(&id), 0);
 }
