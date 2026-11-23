@@ -382,3 +382,48 @@ fn test_deprecate_deployment_updates_info_and_active_listing() {
     assert_eq!(active.len(), 1);
     assert_eq!(active.get(0).unwrap(), second);
 }
+
+#[test]
+fn test_get_active_deployed_contracts_empty_when_start_equals_count() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None);
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 2), &None);
+
+    let count = c.get_deployed_contract_count();
+    assert_eq!(count, 2);
+
+    // Boundary test: when start equals count exactly, returns an empty Vec rather than panicking
+    let active = c.get_active_deployed_contracts(&count, &20);
+    assert_eq!(active.len(), 0);
+}
+
+#[test]
+fn test_get_deployed_contracts_clamps_large_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    for i in 0..25 {
+        c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, i), &None);
+    }
+
+    assert_eq!(c.get_deployed_contract_count(), 25);
+
+    // Limit of 1000 is silently clamped to MAX_DEPLOYMENT_PAGE_SIZE (20)
+    let page = c.get_deployed_contracts(&0, &1000);
+    assert_eq!(page.len(), 20);
+}
+

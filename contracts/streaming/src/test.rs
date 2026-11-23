@@ -967,3 +967,45 @@ fn test_stream_active_after_approval_has_correct_start_time() {
     assert_eq!(stream.start_time, 5_500);
     assert_eq!(stream.end_time, 5_500 + 1_000);
 }
+
+#[test]
+fn test_discard_proposal_at_exact_expiry_ledger_by_sender() {
+    let t = TestEnv::new();
+    let bal_before = t.token_client().balance(&t.sender);
+    let proposal_id = setup_proposal(&t, 10);
+    let proposal = t.client().get_proposal(&proposal_id);
+
+    // Advance to exactly expiry_ledger
+    t.set_seq(proposal.expiry_ledger);
+
+    // Sender can discard at exact expiry ledger (pre-expiry path requiring auth)
+    t.client().discard_proposal(&proposal_id, &t.sender);
+    assert_eq!(t.token_client().balance(&t.sender), bal_before);
+}
+
+#[test]
+#[should_panic(expected = "Error::Unauthorized")]
+fn test_discard_proposal_at_exact_expiry_ledger_rejects_non_sender() {
+    let t = TestEnv::new();
+    let proposal_id = setup_proposal(&t, 10);
+    let proposal = t.client().get_proposal(&proposal_id);
+
+    // Advance to exactly expiry_ledger
+    t.set_seq(proposal.expiry_ledger);
+
+    let third_party = Address::generate(&t.env);
+    // At sequence == expiry_ledger, proposal is not yet expired, so non-sender is rejected
+    t.client().discard_proposal(&proposal_id, &third_party);
+}
+
+#[test]
+#[should_panic]
+fn test_approve_proposal_rejects_non_cosigner() {
+    let t = TestEnv::new();
+    let proposal_id = setup_proposal(&t, 100);
+
+    // Invoking without cosigner authorization must fail
+    t.env.mock_auths(&[]);
+    t.client().approve_proposal(&proposal_id);
+}
+
