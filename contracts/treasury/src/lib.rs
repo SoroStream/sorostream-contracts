@@ -444,9 +444,22 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        let _new_admin = Address::generate(&t.env);
-        // The main flow is tested in test_propose_and_accept_admin
-        // This test name serves as documentation for the behavior
+        // Only authorize the non-admin caller, so the admin's `require_auth`
+        // inside `check_admin` cannot be satisfied.
+        let non_admin = Address::generate(&t.env);
+        let new_admin = Address::generate(&t.env);
+        t.env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &non_admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &t.treasury_id,
+                fn_name: "propose_admin",
+                args: (new_admin.clone(),).into_val(&t.env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = c.try_propose_admin(&new_admin);
+        assert!(result.is_err());
     }
 
     #[test]
