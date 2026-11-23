@@ -29,6 +29,8 @@ pub enum TreasuryError {
     NotPendingAdmin = 8,
     InvalidAmount = 9,
     Overflow = 10,
+    InvalidLpPoolAddress = 11,
+    LpPoolIsTreasuryContract = 12,
 }
 
 fn read_admin(env: &Env) -> Option<Address> {
@@ -245,10 +247,10 @@ impl TreasuryContract {
     pub fn set_lp_pool(env: Env, lp_pool: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
         if is_zero_address(&env, &lp_pool) {
-            panic!("InvalidLpPoolAddress");
+            return Err(TreasuryError::InvalidLpPoolAddress);
         }
         if lp_pool == env.current_contract_address() {
-            panic!("LpPoolIsTreasuryContract");
+            return Err(TreasuryError::LpPoolIsTreasuryContract);
         }
         env.storage()
             .instance()
@@ -446,9 +448,22 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        let _new_admin = Address::generate(&t.env);
-        // The main flow is tested in test_propose_and_accept_admin
-        // This test name serves as documentation for the behavior
+        // Only authorize the non-admin caller, so the admin's `require_auth`
+        // inside `check_admin` cannot be satisfied.
+        let non_admin = Address::generate(&t.env);
+        let new_admin = Address::generate(&t.env);
+        t.env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &non_admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &t.treasury_id,
+                fn_name: "propose_admin",
+                args: (new_admin.clone(),).into_val(&t.env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = c.try_propose_admin(&new_admin);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -602,6 +617,38 @@ mod test {
 
         let result = c.try_set_treasury_split(&10_001);
         assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasurySplit)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_zero_address_returns_typed_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&t.env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+
+        let result = c.try_set_lp_pool(&zero_addr);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidLpPoolAddress)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_self_reference_returns_typed_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let result = c.try_set_lp_pool(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::LpPoolIsTreasuryContract)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_succeeds_with_valid_address() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let lp_pool = Address::generate(&t.env);
+        c.set_lp_pool(&lp_pool);
+        assert_eq!(c.get_lp_pool(), Some(lp_pool));
     }
 
     #[test]
