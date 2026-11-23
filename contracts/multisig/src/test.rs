@@ -133,3 +133,20 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+#[test]
+fn test_accept_transfer_admin_fails_when_no_pending_transfer() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner1.clone(), owner2.clone()]);
+
+    c.initialize(&owners, &2u32);
+
+    // No admin transfer has been proposed, so accepting one must fail.
+    let result = c.try_accept_transfer_admin();
+    assert_eq!(result, Err(Ok(MultiSigError::NoPendingAdminTransfer)));
+}
