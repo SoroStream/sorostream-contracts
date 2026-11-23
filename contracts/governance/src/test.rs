@@ -202,3 +202,129 @@ fn test_queue_quorum_boundary_evenly_split() {
         "Tied proposal at quorum boundary should be Defeated, not Queued"
     );
 }
+
+#[test]
+fn test_set_voting_period_rejects_below_minimum() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    // 1 second is below the minimum voting period.
+    let result = c.try_set_voting_period(&1u64);
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, GovernanceError::InvalidParam),
+        _ => panic!("expected InvalidParam"),
+    }
+
+    // Just below the minimum is also rejected.
+    let result = c.try_set_voting_period(&(MIN_VOTING_PERIOD - 1));
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, GovernanceError::InvalidParam),
+        _ => panic!("expected InvalidParam"),
+    }
+}
+
+#[test]
+fn test_set_voting_period_accepts_at_and_above_minimum() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    // Exactly at the minimum is accepted and stored.
+    c.set_voting_period(&MIN_VOTING_PERIOD);
+    let stored: u64 = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::VOTING_PERIOD_KEY))
+            .unwrap()
+    });
+    assert_eq!(stored, MIN_VOTING_PERIOD);
+
+    // Above the minimum is accepted and stored.
+    let above = MIN_VOTING_PERIOD + 1_000;
+    c.set_voting_period(&above);
+    let stored: u64 = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::VOTING_PERIOD_KEY))
+            .unwrap()
+    });
+    assert_eq!(stored, above);
+}
+
+#[test]
+fn test_set_timelock_period_rejects_below_minimum() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    // 1 second is below the minimum timelock period.
+    let result = c.try_set_timelock_period(&1u64);
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, GovernanceError::InvalidParam),
+        _ => panic!("expected InvalidParam"),
+    }
+
+    // Just below the minimum is also rejected.
+    let result = c.try_set_timelock_period(&(MIN_TIMELOCK_PERIOD - 1));
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, GovernanceError::InvalidParam),
+        _ => panic!("expected InvalidParam"),
+    }
+}
+
+#[test]
+fn test_set_timelock_period_accepts_at_and_above_minimum() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    // Exactly at the minimum is accepted and stored.
+    c.set_timelock_period(&MIN_TIMELOCK_PERIOD);
+    let stored: u64 = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::TIMELOCK_PERIOD_KEY))
+            .unwrap()
+    });
+    assert_eq!(stored, MIN_TIMELOCK_PERIOD);
+
+    // Above the minimum is accepted and stored.
+    let above = MIN_TIMELOCK_PERIOD + 1_000;
+    c.set_timelock_period(&above);
+    let stored: u64 = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::TIMELOCK_PERIOD_KEY))
+            .unwrap()
+    });
+    assert_eq!(stored, above);
+}
