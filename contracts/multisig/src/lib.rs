@@ -768,7 +768,7 @@ impl MultiSigContract {
     pub fn accept_transfer_admin(env: Env) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
         let pending = read_pending_admin(&env)
-            .ok_or(MultiSigError::OwnerNotFound)?;
+            .ok_or(MultiSigError::NoPendingAdminTransfer)?;
         env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &pending);
         env.storage().instance().remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
         env.events().publish(
