@@ -79,6 +79,11 @@ const CONTRACTS_KEY: &str = "contracts";
 const CONTRACTS_COUNT_KEY: &str = "contracts_count";
 const INFO_PREFIX: &str = "info";
 const MAX_DEPLOYMENT_PAGE_SIZE: u32 = 20;
+/// Maximum length (in bytes) of the optional deployment `label`.
+///
+/// Bounds per-deployment persistent storage so a label cannot be used to
+/// bloat the registry (Issue #912).
+pub const MAX_LABEL_LEN: u32 = 64;
 const CONTRACT_PREFIX: &str = "contract";
 
 fn admin_key(env: &Env) -> Symbol {
@@ -129,6 +134,8 @@ pub enum FactoryError {
     NewAdminSameAsCurrent = 4,
     /// Address was not deployed through this factory.
     UnknownDeployment = 5,
+    /// Supplied deployment label exceeds `MAX_LABEL_LEN` bytes.
+    LabelTooLong = 6,
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +207,13 @@ impl StreamFactory {
             return Err(FactoryError::Unauthorized);
         }
 
+        // Bound the optional label so it cannot bloat persistent storage.
+        if let Some(ref l) = label {
+            if l.len() > MAX_LABEL_LEN {
+                return Err(FactoryError::LabelTooLong);
+            }
+        }
+
         // Deploy child contract at deterministic address.
         let child_address = env
             .deployer()
@@ -268,8 +282,23 @@ impl StreamFactory {
 
     /// Returns the number of deployed child contracts without loading the registry.
     ///
-    /// For factories created before this count was persisted, falls back to the
-    /// registry length until the next deployment records the count.
+    /// ## Legacy fallback (Issue #910)
+    ///
+    /// Every current write path (`initialize` and `deploy_stream_contract`)
+    /// always writes `contracts_count_key`, so for any factory initialised with
+    /// the current code the fallback below is unreachable.
+    ///
+    /// It is retained **solely as a migration path** for factory instances
+    /// deployed under the older storage layout, which kept every child address
+    /// in a single `Symbol("contracts") -> Vec<Address>` entry and never wrote
+    /// a count. Such an instance can be upgraded in place to this WASM; until
+    /// its next `deploy_stream_contract` call persists `contracts_count_key`,
+    /// the count must be derived from the legacy vector.
+    ///
+    /// The fallback is safe to remove only once it is confirmed that no live
+    /// factory instance still relies on the legacy `contracts` key (i.e. every
+    /// deployed factory either started on the current layout or has performed
+    /// at least one deployment since upgrading).
     pub fn get_deployed_contract_count(env: Env) -> u32 {
         if let Some(count) = env
             .storage()
@@ -296,6 +325,13 @@ impl StreamFactory {
     }
 
     /// Marks a deployment deprecated. Only the current factory admin may do this.
+    ///
+    /// Idempotent by design (Issue #913): calling this on a deployment that is
+    /// already `Deprecated` succeeds as a harmless no-op that re-writes the same
+    /// status and re-publishes `DeploymentDeprecated`, rather than erroring.
+    /// Deprecation is a one-way, admin-only flag, so a repeated call cannot
+    /// cause any state transition and treating it as an error would only make
+    /// retries of admin tooling fail spuriously.
     pub fn deprecate_deployment(
         env: Env,
         admin: Address,
@@ -317,6 +353,34 @@ impl StreamFactory {
             .set(&info_key(&env, &contract_address), &info);
         env.events().publish(
             (Symbol::new(&env, "DeploymentDeprecated"),),
+            contract_address,
+        );
+        Ok(())
+    }
+
+    /// Marks a deployment as active again. Only the current factory admin may do this.
+    /// This allows an admin to undo a deprecation if the reasons for deprecating no longer apply.
+    pub fn undeprecate_deployment(
+        env: Env,
+        admin: Address,
+        contract_address: Address,
+    ) -> Result<(), FactoryError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(FactoryError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(FactoryError::Unauthorized);
+        }
+        let mut info: DeploymentInfo = env
+            .storage()
+            .persistent()
+            .get(&info_key(&env, &contract_address))
+            .ok_or(FactoryError::UnknownDeployment)?;
+        info.status = DeploymentStatus::Active;
+        env.storage()
+            .persistent()
+            .set(&info_key(&env, &contract_address), &info);
+        env.events().publish(
+            (Symbol::new(&env, "DeploymentUndeprecated"),),
             contract_address,
         );
         Ok(())
@@ -354,6 +418,11 @@ impl StreamFactory {
     }
 
     /// Proposes a new admin. Only the current admin may call this.
+    ///
+    /// Auth-safe by construction (Issue #911): the admin whose authorization is
+    /// required is read from storage, never taken from a caller-supplied
+    /// parameter, so a non-admin cannot satisfy the check by passing a
+    /// different address. Prefer this pattern for other admin-only entrypoints.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), FactoryError> {
         let admin: Address = env
             .storage()
