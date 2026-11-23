@@ -382,3 +382,25 @@ fn test_deprecate_deployment_updates_info_and_active_listing() {
     assert_eq!(active.len(), 1);
     assert_eq!(active.get(0).unwrap(), second);
 }
+
+#[test]
+#[should_panic]
+fn test_deploy_stream_contract_reused_salt_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    let salt = fake_salt(&env, 99);
+
+    // First deploy with salt succeeds
+    let _first = c.deploy_stream_contract(&admin, &wasm_hash, &salt, &None);
+
+    // Second deploy reusing the same salt must fail/panic due to address collision
+    c.deploy_stream_contract(&admin, &wasm_hash, &salt, &None);
+}
+

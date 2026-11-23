@@ -202,3 +202,31 @@ fn test_queue_quorum_boundary_evenly_split() {
         "Tied proposal at quorum boundary should be Defeated, not Queued"
     );
 }
+
+#[test]
+fn test_propose_admin_retains_current_admin_privileges() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+
+    c.initialize(&admin, &guardian, &token, &100u64, &10u64, &0u64, &0u64);
+
+    let pending_admin = Address::generate(&env);
+    c.propose_admin(&pending_admin);
+
+    // Proposing an admin transfer does not reduce current admin's privileges:
+    // the current admin can still set configuration such as proposal threshold.
+    c.set_proposal_threshold(&200u64);
+
+    let stored: Option<u64> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PROPOSAL_THRESHOLD_KEY))
+    });
+    assert_eq!(stored, Some(200u64));
+}
+

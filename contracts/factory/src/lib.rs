@@ -354,6 +354,13 @@ impl StreamFactory {
     }
 
     /// Proposes a new admin. Only the current admin may call this.
+    ///
+    /// Note on address validation:
+    /// Unlike treasury's `validate_treasury_address`, factory's `propose_admin` does not
+    /// maintain a dedicated zero/burn-address validation check. This is intentional as
+    /// completion of the two-step admin transfer requires `accepted_by.require_auth()` in
+    /// `accept_admin`, which cannot be produced by an inert zero or unbacked burn address.
+    /// Proposing an inactive address simply leaves the pending admin un-claimable until replaced.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), FactoryError> {
         let admin: Address = env
             .storage()
