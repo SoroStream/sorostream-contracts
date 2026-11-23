@@ -2,14 +2,100 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Vec,
+    contract, contractimpl, symbol_short,
+    testutils::{Address as _, Events},
+    Address, Bytes, Env, TryFromVal, Vec,
 };
+
+/// Minimal execution target: a zero-argument entry point that records that it
+/// was invoked, so tests can observe that `approve()` actually executed.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn ping(env: Env) {
+        let count: u32 = env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0);
+        env.storage().instance().set(&symbol_short!("pings"), &(count + 1));
+    }
+
+    pub fn pings(env: Env) -> u32 {
+        env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0)
+    }
+}
+
+/// Counts events emitted by `contract` whose first topic is `name`.
+fn count_events(env: &Env, contract: &Address, name: &str) -> u32 {
+    let wanted = Symbol::new(env, name);
+    let mut n = 0;
+    for (addr, topics, _) in env.events().all().iter() {
+        if &addr != contract {
+            continue;
+        }
+        if let Some(first) = topics.get(0) {
+            if let Ok(sym) = Symbol::try_from_val(env, &first) {
+                if sym == wanted {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
 
 fn env_with_auth() -> Env {
     let env = Env::default();
     env.mock_all_auths();
     env
+}
+
+/// Target contract used to exercise the success/failure paths of `approve()`
+/// and `retry()`. The `should_fail` flag is stored in instance storage so a
+/// test can flip it between invocations.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn set_should_fail(env: Env, should_fail: bool) {
+        env.storage().instance().set(&"fail", &should_fail);
+    }
+
+    pub fn run(env: Env) -> u32 {
+        let should_fail: bool = env
+            .storage()
+            .instance()
+            .get(&"fail")
+            .unwrap_or(false);
+        if should_fail {
+            panic!("mock target failure");
+        }
+        42u32
+    }
+}
+
+fn has_event(env: &Env, contract: &Address, topic: Symbol) -> bool {
+    env.events().all().iter().any(|(addr, topics, _)| {
+        if &addr != contract {
+            return false;
+        }
+        let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+        topics == expected
+    })
+}
+
+fn count_event(env: &Env, contract: &Address, topic: Symbol) -> usize {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(addr, topics, _)| {
+            if &addr != contract {
+                return false;
+            }
+            let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+            topics == expected
+        })
+        .count()
 }
 
 #[test]
@@ -62,6 +148,70 @@ fn test_get_owners_reflects_removal() {
 }
 
 #[test]
+fn test_get_owners_after_multiple_add_remove_cycles() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    // Start with five owners. Threshold of 1 so removals are always allowed.
+    let mut expected: Vec<Address> = Vec::new(&env);
+    for _ in 0..5 {
+        expected.push_back(Address::generate(&env));
+    }
+    c.initialize(&expected, &1u32);
+    assert_eq!(c.owner_count(), 5);
+
+    // Perform several cycles: remove an owner from the middle of the current
+    // list (exercising swap-and-pop compaction), then add a fresh owner.
+    for _ in 0..4 {
+        let current = c.get_owners();
+        assert!(current.len() >= 3);
+
+        // Pick an owner from the middle of the current list.
+        let victim = current.get(current.len() / 2).unwrap();
+        c.remove_owner(&victim);
+
+        // Update the expected set: drop the victim.
+        let mut new_expected: Vec<Address> = Vec::new(&env);
+        for i in 0..expected.len() {
+            let addr = expected.get(i).unwrap();
+            if addr != victim {
+                new_expected.push_back(addr);
+            }
+        }
+        expected = new_expected;
+
+        // Add a fresh owner.
+        let fresh = Address::generate(&env);
+        c.add_owner(&fresh);
+        expected.push_back(fresh);
+
+        // (a) Length matches owner_count().
+        let owners = c.get_owners();
+        assert_eq!(owners.len(), c.owner_count());
+        assert_eq!(owners.len(), expected.len());
+
+        // (b) The returned set exactly matches the expected set.
+        for i in 0..expected.len() {
+            let addr = expected.get(i).unwrap();
+            assert!(owners.contains(&addr));
+        }
+        for i in 0..owners.len() {
+            let addr = owners.get(i).unwrap();
+            assert!(expected.contains(&addr));
+        }
+
+        // (c) No duplicates in the returned Vec.
+        for i in 0..owners.len() {
+            let addr = owners.get(i).unwrap();
+            for j in (i + 1)..owners.len() {
+                assert_ne!(addr, owners.get(j).unwrap());
+            }
+        }
+    }
+}
+
+#[test]
 fn test_get_intents_by_proposer_and_target() {
     let env = env_with_auth();
     let id = env.register(MultiSigContract, ());
@@ -81,29 +231,213 @@ fn test_get_intents_by_proposer_and_target() {
     let id3 = c.propose(&other, &target_a, &soroban_sdk::symbol_short!("fn_a"), &calldata, &1000u64);
 
     // Proposer index.
-    let by_proposer = c.get_intents_by_proposer(&proposer);
+    let by_proposer = c.get_intents_by_proposer(&proposer, &0u32, &10u32);
     assert_eq!(by_proposer.len(), 2);
     assert!(by_proposer.contains(&id1));
     assert!(by_proposer.contains(&id2));
 
-    let by_other = c.get_intents_by_proposer(&other);
+    let by_other = c.get_intents_by_proposer(&other, &0u32, &10u32);
     assert_eq!(by_other.len(), 1);
     assert!(by_other.contains(&id3));
 
     // Target index.
-    let by_target_a = c.get_intents_by_target(&target_a);
+    let by_target_a = c.get_intents_by_target(&target_a, &0u32, &10u32);
     assert_eq!(by_target_a.len(), 2);
     assert!(by_target_a.contains(&id1));
     assert!(by_target_a.contains(&id3));
 
-    let by_target_b = c.get_intents_by_target(&target_b);
+    let by_target_b = c.get_intents_by_target(&target_b, &0u32, &10u32);
     assert_eq!(by_target_b.len(), 1);
     assert!(by_target_b.contains(&id2));
 
     // Unknown address yields an empty list.
     let unknown = Address::generate(&env);
-    assert_eq!(c.get_intents_by_proposer(&unknown).len(), 0);
-    assert_eq!(c.get_intents_by_target(&unknown).len(), 0);
+    assert_eq!(c.get_intents_by_proposer(&unknown, &0u32, &10u32).len(), 0);
+    assert_eq!(c.get_intents_by_target(&unknown, &0u32, &10u32).len(), 0);
+}
+
+#[test]
+fn test_get_intents_by_proposer_pagination() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let proposer = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [proposer.clone()]);
+
+    c.initialize(&owners, &1u32);
+
+    let calldata = soroban_sdk::Bytes::new(&env);
+    let mut ids = Vec::new(&env);
+    for _ in 0..5 {
+        ids.push_back(c.propose(
+            &proposer,
+            &target,
+            &soroban_sdk::symbol_short!("fn"),
+            &calldata,
+            &1000u64,
+        ));
+    }
+
+    // Full page.
+    let all = c.get_intents_by_proposer(&proposer, &0u32, &10u32);
+    assert_eq!(all.len(), 5);
+    for i in 0..5u32 {
+        assert_eq!(all.get(i).unwrap(), ids.get(i).unwrap());
+    }
+
+    // Offset slice.
+    let page = c.get_intents_by_proposer(&proposer, &1u32, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), ids.get(1).unwrap());
+    assert_eq!(page.get(1).unwrap(), ids.get(2).unwrap());
+
+    // Tail slice.
+    let tail = c.get_intents_by_proposer(&proposer, &3u32, &10u32);
+    assert_eq!(tail.len(), 2);
+    assert_eq!(tail.get(0).unwrap(), ids.get(3).unwrap());
+    assert_eq!(tail.get(1).unwrap(), ids.get(4).unwrap());
+}
+
+#[test]
+fn test_get_intents_by_target_pagination() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let proposer = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [proposer.clone()]);
+
+    c.initialize(&owners, &1u32);
+
+    let calldata = soroban_sdk::Bytes::new(&env);
+    let mut ids = Vec::new(&env);
+    for _ in 0..4 {
+        ids.push_back(c.propose(
+            &proposer,
+            &target,
+            &soroban_sdk::symbol_short!("fn"),
+            &calldata,
+            &1000u64,
+        ));
+    }
+
+    let page = c.get_intents_by_target(&target, &1u32, &2u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), ids.get(1).unwrap());
+    assert_eq!(page.get(1).unwrap(), ids.get(2).unwrap());
+}
+
+#[test]
+fn test_get_intents_by_proposer_limit_clamped() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let proposer = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [proposer.clone()]);
+
+    c.initialize(&owners, &1u32);
+
+    let calldata = soroban_sdk::Bytes::new(&env);
+    let total = MAX_INTENT_PAGE_SIZE + 5;
+    for _ in 0..total {
+        c.propose(
+            &proposer,
+            &target,
+            &soroban_sdk::symbol_short!("fn"),
+            &calldata,
+            &1000u64,
+        );
+    }
+
+    // A limit larger than the cap is clamped to MAX_INTENT_PAGE_SIZE.
+    let page = c.get_intents_by_proposer(&proposer, &0u32, &u32::MAX);
+    assert_eq!(page.len(), MAX_INTENT_PAGE_SIZE);
+
+    // The next page continues where the previous one left off.
+    let next = c.get_intents_by_proposer(&proposer, &MAX_INTENT_PAGE_SIZE, &u32::MAX);
+    assert_eq!(next.len(), 5);
+}
+
+#[test]
+fn test_get_intents_by_target_limit_clamped() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let proposer = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [proposer.clone()]);
+
+    c.initialize(&owners, &1u32);
+
+    let calldata = soroban_sdk::Bytes::new(&env);
+    let total = MAX_INTENT_PAGE_SIZE + 3;
+    for _ in 0..total {
+        c.propose(
+            &proposer,
+            &target,
+            &soroban_sdk::symbol_short!("fn"),
+            &calldata,
+            &1000u64,
+        );
+    }
+
+    let page = c.get_intents_by_target(&target, &0u32, &u32::MAX);
+    assert_eq!(page.len(), MAX_INTENT_PAGE_SIZE);
+
+    let next = c.get_intents_by_target(&target, &MAX_INTENT_PAGE_SIZE, &u32::MAX);
+    assert_eq!(next.len(), 3);
+}
+
+#[test]
+fn test_get_intents_pagination_out_of_range_offset() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let proposer = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [proposer.clone()]);
+
+    c.initialize(&owners, &1u32);
+
+    let calldata = soroban_sdk::Bytes::new(&env);
+    c.propose(
+        &proposer,
+        &target,
+        &soroban_sdk::symbol_short!("fn"),
+        &calldata,
+        &1000u64,
+    );
+
+    // Offset past the end returns an empty Vec.
+    assert_eq!(c.get_intents_by_proposer(&proposer, &5u32, &10u32).len(), 0);
+    assert_eq!(c.get_intents_by_target(&target, &5u32, &10u32).len(), 0);
+
+    // Zero limit returns an empty Vec.
+    assert_eq!(c.get_intents_by_proposer(&proposer, &0u32, &0u32).len(), 0);
+    assert_eq!(c.get_intents_by_target(&target, &0u32, &0u32).len(), 0);
+}
+
+#[test]
+fn test_get_intents_pagination_unknown_address() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let proposer = Address::generate(&env);
+    let owners = Vec::from_array(&env, [proposer.clone()]);
+
+    c.initialize(&owners, &1u32);
+
+    let unknown = Address::generate(&env);
+    assert_eq!(c.get_intents_by_proposer(&unknown, &0u32, &10u32).len(), 0);
+    assert_eq!(c.get_intents_by_target(&unknown, &0u32, &10u32).len(), 0);
 }
 
 #[test]
@@ -133,3 +467,37 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+#[test]
+fn test_owner_count_never_underflows_when_removed_down_to_threshold() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let owner4 = Address::generate(&env);
+    let owners = Vec::from_array(
+        &env,
+        [owner1.clone(), owner2.clone(), owner3.clone(), owner4.clone()],
+    );
+
+    c.initialize(&owners, &2u32);
+    assert_eq!(c.owner_count(), 4);
+    assert_eq!(c.get_threshold(), 2);
+
+    // Remove down to 3 owners, then down to exactly the configured threshold (2).
+    c.remove_owner(&owner4);
+    assert_eq!(c.owner_count(), 3);
+
+    c.remove_owner(&owner3);
+    assert_eq!(c.owner_count(), 2);
+
+    // Attempting to remove below the configured threshold is rejected and owner_count remains 2.
+    let res = c.try_remove_owner(&owner2);
+    assert_eq!(res, Err(Ok(MultiSigError::ThresholdExceedsOwners)));
+    assert_eq!(c.owner_count(), 2);
+    assert_eq!(c.get_owners().len(), 2);
+}
+

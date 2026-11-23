@@ -204,10 +204,10 @@ fn test_queue_quorum_boundary_evenly_split() {
 }
 
 #[test]
-fn test_vote_with_zero_balance() {
-    // Issue #890: An address with a zero token balance can still cast a
-    // (zero-weight) vote and is marked as having voted, consuming their one
-    // vote on this proposal for free.
+fn test_withdraw_vote_tokens_twice_fails_with_no_vote_to_withdraw() {
+    // Issue #983: withdraw_vote_tokens removes the locked_balance_key entry
+    // immediately after reading it, so a second withdrawal for the same
+    // voter/proposal pair must fail with NoVoteToWithdraw.
     let env = env_with_auth();
     let id = env.register(GovernanceContract, ());
     let c = GovernanceContractClient::new(&env, &id);
@@ -222,35 +222,42 @@ fn test_vote_with_zero_balance() {
     c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
     env.ledger().set_timestamp(1000);
 
-    let proposer = Address::generate(&env);
     let target = Address::generate(&env);
     let function = soroban_sdk::Symbol::new(&env, "dummy");
     let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
 
-    let prop_id = c.create_proposal(&proposer, &target, &function, &calldata);
-
-    // Voter is never minted any tokens, so their balance is zero.
     let voter = Address::generate(&env);
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    stellar_asset.mint(&voter, &100);
 
-    // The zero-balance vote succeeds.
-    let result = c.try_vote(&voter, &prop_id, &true);
-    assert_eq!(result, Ok(Ok(())));
+    c.vote(&voter, &prop_id, &true);
+    assert_eq!(token_client.balance(&voter), 0);
+    assert_eq!(token_client.balance(&id), 100);
 
-    // Zero weight: no votes were recorded for or against.
+    // Move past vote_end so withdrawal is permitted.
     let proposal = c.get_proposal(&prop_id);
-    assert_eq!(proposal.votes_for, 0);
-    assert_eq!(proposal.votes_against, 0);
+    env.ledger().set_timestamp(proposal.vote_end + 1);
 
-    // The voter is marked as having voted, consuming their one vote.
-    let second = c.try_vote(&voter, &prop_id, &true);
-    assert_eq!(second, Err(Ok(GovernanceError::AlreadyVoted)));
+    // First withdrawal succeeds and returns the escrowed tokens.
+    c.withdraw_vote_tokens(&voter, &prop_id);
+    assert_eq!(token_client.balance(&voter), 100);
+    assert_eq!(token_client.balance(&id), 0);
 
-    // No tokens were locked for the voter.
-    let locked: u64 = env.as_contract(&id, || {
+    // The locked balance entry has been removed from persistent storage.
+    let locked: Option<u64> = env.as_contract(&id, || {
         env.storage()
             .persistent()
-            .get(&DataKey::LockedBalance(voter.clone()))
-            .unwrap_or(0)
+            .get(&super::locked_balance_key(&env, prop_id, &voter))
     });
-    assert_eq!(locked, 0);
+    assert!(locked.is_none());
+
+    // Second withdrawal for the same voter/proposal fails.
+    let result = c.try_withdraw_vote_tokens(&voter, &prop_id);
+    assert_eq!(result, Err(Ok(GovernanceError::NoVoteToWithdraw)));
+
+    // Balances are unchanged by the failed second call.
+    assert_eq!(token_client.balance(&voter), 100);
+    assert_eq!(token_client.balance(&id), 0);
 }
