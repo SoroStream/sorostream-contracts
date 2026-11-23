@@ -1127,6 +1127,29 @@ pub fn stream_rate_updated(
     );
 }
 
+/// Emitted when the sender modifies the flow rate of an active stream via
+/// `modify_flow_rate` (issue #78).
+///
+/// * `settled` — gross amount accrued at `old_rate` up to `timestamp` and paid
+///   out to the recipient (before protocol fees) as part of the modification.
+/// * `new_end_time` — end time recalculated from the remaining balance and
+///   `new_rate`.
+pub fn flow_rate_modified(
+    env: &Env,
+    stream_id: u64,
+    old_rate: i128,
+    new_rate: i128,
+    settled: i128,
+    new_end_time: u64,
+    timestamp: u64,
+) {
+    let nonce = crate::storage::next_stream_event_nonce(env, stream_id);
+    env.events().publish(
+        (Symbol::new(env, "FlowRateModified"), stream_id),
+        (old_rate, new_rate, settled, new_end_time, timestamp, nonce),
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Split Stream Events
 // ─────────────────────────────────────────────────────────────────────────────
