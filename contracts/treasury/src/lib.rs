@@ -619,5 +619,46 @@ mod test {
         assert_eq!(c.get_balance(&t.token_id), 0);
         assert!(c.get_lp_pool().is_none());
     }
-}
 
+    #[test]
+    fn test_set_lp_pool_reconfigured_after_distribution_routes_to_new_pool() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        let token = TokenClient::new(&t.env, &t.token_id);
+        let minter = StellarAssetClient::new(&t.env, &t.token_id);
+        c.initialize(&t.admin);
+        c.set_treasury_split(&5000u32);
+
+        // First distribution goes to the original LP pool.
+        let old_pool = Address::generate(&t.env);
+        c.set_lp_pool(&old_pool);
+        assert_eq!(c.get_lp_pool(), Some(old_pool.clone()));
+
+        minter.mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+        let (treasury_amount, lp_amount) = c.distribute(&t.token_id, &t.user);
+        assert_eq!((treasury_amount, lp_amount), (5_000, 5_000));
+        assert_eq!(token.balance(&old_pool), 5_000);
+        assert_eq!(token.balance(&t.user), 5_000);
+        assert_eq!(c.get_balance(&t.token_id), 0);
+
+        // Reconfigure the LP pool after fees were already distributed.
+        let new_pool = Address::generate(&t.env);
+        c.set_lp_pool(&new_pool);
+        assert_eq!(c.get_lp_pool(), Some(new_pool.clone()));
+
+        // Second distribution must route the LP share to the new pool only.
+        minter.mint(&t.treasury_id, &4_000);
+        c.deposit(&t.token_id, &4_000);
+        let (treasury_amount, lp_amount) = c.distribute(&t.token_id, &t.user);
+        assert_eq!((treasury_amount, lp_amount), (2_000, 2_000));
+        assert_eq!(token.balance(&new_pool), 2_000);
+        assert_eq!(token.balance(&t.user), 7_000);
+
+        // The old pool received nothing further; no residual routing to it remains.
+        assert_eq!(token.balance(&old_pool), 5_000);
+        assert_ne!(c.get_lp_pool(), Some(old_pool));
+        assert_eq!(c.get_balance(&t.token_id), 0);
+        assert_eq!(token.balance(&t.treasury_id), 0);
+    }
+}
