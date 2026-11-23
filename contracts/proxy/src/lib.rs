@@ -238,7 +238,11 @@ impl ProxyContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{contracterror, contractimpl, contract, testutils::Address as _, Address, BytesN, Env, IntoVal};
+    use soroban_sdk::{
+        contracterror, contractimpl, contract,
+        testutils::{Address as _, Events},
+        Address, BytesN, Env, IntoVal,
+    };
 
     #[contracterror]
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -254,6 +258,18 @@ mod test {
     impl MockMigrationContract {
         fn migrate(_env: Env, _from: String, _to: String) -> Result<(), MockMigrationError> {
             Err(MockMigrationError::Failed)
+        }
+    }
+
+    /// Mock implementation whose `migrate` always succeeds, used to exercise
+    /// the success branch of `ProxyContract::migrate`.
+    #[contract]
+    struct MockSuccessfulMigrationContract;
+
+    #[contractimpl]
+    impl MockSuccessfulMigrationContract {
+        pub fn migrate(_env: Env, _from: String, _to: String) -> Result<(), MockMigrationError> {
+            Ok(())
         }
     }
 
@@ -437,5 +453,46 @@ mod test {
         // because the pending-admin record is gone.
         let result = c.try_accept_admin(&new_admin);
         assert_eq!(result, Err(Ok(ProxyError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_migrate_success_emits_proxy_migrated() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &1u32);
+
+        let impl_contract = env.register(MockSuccessfulMigrationContract, ());
+        let from_version = String::from_str(&env, "v1");
+        let to_version = String::from_str(&env, "v2");
+
+        let result = c.try_migrate(&impl_contract, &from_version, &to_version);
+        assert_eq!(result, Ok(Ok(())));
+
+        // The success branch publishes exactly one ProxyMigrated event from the proxy.
+        let migrated_sym = Symbol::new(&env, "ProxyMigrated");
+        let mut migrated_count = 0u32;
+        let mut migrated_data: Option<soroban_sdk::Val> = None;
+        for (addr, topics, data) in env.events().all().iter() {
+            if addr != contract_id {
+                continue;
+            }
+            let Some(first) = topics.get(0) else { continue };
+            let sym: Symbol = first.into_val(&env);
+            if sym == migrated_sym {
+                assert_eq!(topics.len(), 1);
+                migrated_count += 1;
+                migrated_data = Some(data);
+            }
+        }
+        assert_eq!(migrated_count, 1);
+
+        let (ev_from, ev_to): (String, String) = migrated_data.unwrap().into_val(&env);
+        assert_eq!(ev_from, from_version);
+        assert_eq!(ev_to, to_version);
+
+        // Proxy state is untouched by a migration.
+        assert_eq!(c.get_admin(), admin);
+        assert_eq!(c.get_impl_hash(), impl_hash);
+        assert_eq!(c.get_storage_version(), 1u32);
     }
 }
