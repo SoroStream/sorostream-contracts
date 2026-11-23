@@ -133,3 +133,41 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+// Issue #978: propose() does not validate that the supplied expiry is in the
+// future, so a proposal can be created already expired and is dead on arrival.
+#[test]
+fn test_propose_with_past_expiry_creates_dead_intent() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+
+    c.initialize(&owners, &1u32);
+
+    env.ledger().set_timestamp(1000);
+
+    // Expiry strictly in the past relative to the current ledger timestamp.
+    let intent_id = c.propose(
+        &owner,
+        &target,
+        &soroban_sdk::symbol_short!("fn"),
+        &soroban_sdk::Bytes::new(&env),
+        &999u64,
+    );
+
+    // The intent is stored as-is with the expired expiry and Pending status.
+    let intent = c.get_intent(&intent_id);
+    assert_eq!(intent.id, intent_id);
+    assert_eq!(intent.expiry, 999u64);
+    assert_eq!(intent.status, super::IntentStatus::Pending);
+
+    // Any approval attempt fails immediately because the intent is expired.
+    let result = c.try_approve(&owner, &intent_id);
+    assert_eq!(result, Err(Ok(MultiSigError::IntentExpired)));
+}
