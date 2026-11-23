@@ -601,6 +601,30 @@ mod test {
     }
 
     #[test]
+    fn test_distribute_with_zero_treasury_bps_routes_all_to_lp_pool() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        c.set_treasury_split(&0u32);
+
+        let lp_pool = Address::generate(&t.env);
+        c.set_lp_pool(&lp_pool);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+
+        // treasury_bps == 0 means treasury_amount is always 0 and `destination` is unused.
+        let (treasury_amount, lp_amount) = c.distribute(&t.token_id, &t.user);
+        assert_eq!(treasury_amount, 0);
+        assert_eq!(lp_amount, 10_000);
+
+        let token_client = TokenClient::new(&t.env, &t.token_id);
+        assert_eq!(token_client.balance(&lp_pool), 10_000);
+        assert_eq!(token_client.balance(&t.user), 0);
+        assert_eq!(c.get_balance(&t.token_id), 0);
+    }
+
+    #[test]
     fn test_distribute_succeeds_without_lp_pool_when_treasury_bps_is_10000() {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
