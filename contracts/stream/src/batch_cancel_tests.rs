@@ -1,6 +1,6 @@
 extern crate std;
 
-use crate::{SoroStreamContract, SoroStreamContractClient};
+use crate::{SoroStreamContract, SoroStreamContractClient, StreamError};
 use crate::types::StreamStatus;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -19,7 +19,7 @@ struct TestEnv {
 
 fn setup() -> TestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -668,11 +668,64 @@ fn test_batch_cancel_with_invalid_stream_ids() {
     let invalid_stream_id = 99999u64;
     let stream_ids = Vec::from_array(&t.env, [stream_id1, invalid_stream_id]);
 
-    // Batch cancel with one valid and one invalid stream
-    let results = c.batch_cancel_stream(&stream_ids, &t.sender);
+    // Batch cancel with one valid and one invalid stream must fail atomically.
+    let result = c.try_batch_cancel_stream(&stream_ids, &t.sender);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotFound)));
 
-    // First should succeed, second should fail
-    assert_eq!(results.len(), 2);
+    // Neither stream should remain in the affected set after the invalid batch is rejected.
+    assert!(c.try_get_stream(&stream_id1).is_ok());
+}
+
+#[test]
+fn test_batch_cancel_is_atomic_on_invalid_member() {
+    let t = setup();
+    let c = client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let stream_id1 = c.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_000,
+        &1000,
+        &0,
+        &0u64,
+        &false,
+        &None::<u32>,
+        &0u64,
+        &false,
+        &0i128,
+        &None::<u32>,
+        &None::<i128>,
+        &None::<u32>,
+    );
+
+    let stream_id2 = c.create_stream(
+        &t.sender,
+        &Address::generate(&t.env),
+        &t.token,
+        &2_000_000,
+        &2000,
+        &0,
+        &0u64,
+        &false,
+        &None::<u32>,
+        &0u64,
+        &false,
+        &0i128,
+        &None::<u32>,
+        &None::<i128>,
+        &None::<u32>,
+    );
+
+    let invalid_stream_id = 99999u64;
+    let stream_ids = Vec::from_array(&t.env, [stream_id1, invalid_stream_id, stream_id2]);
+
+    let result = c.try_batch_cancel_stream(&stream_ids, &t.sender);
+    assert!(result.is_err(), "invalid member must fail the whole batch");
+
+    assert!(c.try_get_stream(&stream_id1).is_ok(), "stream 1 should remain active after atomic batch rejection");
+    assert!(c.try_get_stream(&stream_id2).is_ok(), "stream 2 should remain active after atomic batch rejection");
 }
 
 /// Test batch cancel performance with large batch
@@ -737,7 +790,7 @@ fn test_batch_cancel_paused_streams() {
     );
 
     // Pause stream
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     let stream_ids = Vec::from_array(&t.env, [stream_id]);
 

@@ -69,7 +69,7 @@ This document records the number of ledger storage entries each contract instruc
 
 ### `get_stream` / `get_claimable` (2 reads, 0 writes)
 
-Read-only queries. Read the instance storage (for contract metadata) plus one persistent stream entry.
+Read-only queries. Read the instance storage (for contract metadata) plus one persistent stream entry. Active sender queries use the persistent `("asc", sender)` counter and `("as", sender, idx)` slots rather than scanning terminal streams.
 
 ## CI Regression Check
 

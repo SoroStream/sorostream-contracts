@@ -95,6 +95,45 @@ at sdk version `22.0.0`:
 | `top_up`           | 244,638     |
 | `cancel_stream`    | 437,249     |
 
+## Sender and Recipient Stream Queries
+
+`get_streams_by_sender` and `get_streams_by_recipient` accept a zero-based
+`start` offset and a `limit`; each response is capped at 20 stream records.
+That response cap does **not** bound the index scan. The implementation reads
+the account's counter and walks every indexed ID slot before loading the
+requested page, so read work and memory grow with the account's total indexed
+streams, not with the page size or offset. A late page still pays for the full
+index scan.
+
+There is no general-purpose safe maximum account size for these lookups. The
+per-sender creation limit defaults to 1,000 and can be changed by an admin, but
+it is not a query-cost guarantee. Recipient accounts have no equivalent
+per-recipient creation cap. In particular, the old claim that a 20-item page
+from a 500-stream index stays within the 40-ledger-entry transaction limit is
+not valid for the current counter-and-slot index. Keep indexed histories small
+for on-chain queries, and use off-chain indexing for large histories.
+
+## TimeDecay Loop Scaling
+
+`compute_cumulative_decay` applies one fixed-point update for each completed
+1,000-second window. Its loop count is therefore the elapsed time, clamped to
+the stream end, divided by 1,000. The contract-wide hard duration cap is 100
+years, which permits up to 3,153,600 iterations for a single evaluation; the
+generic duration cap is not a demonstrated safe limit for TimeDecay streams.
+
+Run the isolated native helper scaling benchmark with:
+
+```text
+cargo test --package sorostream-stream -- bench_time_decay_loop_duration_scaling -- --nocapture
+```
+
+It reports completed windows and average native elapsed time for each duration.
+This is a relative scaling signal only: the pure Rust helper has no Soroban
+`Env`, so the native test harness cannot attribute Soroban CPU-instruction
+budget to its loop. Set or change a TimeDecay-specific maximum only after
+measuring the built WASM through Soroban simulation; native timing and
+`env.cost_estimate()` around a native call are not substitutes for that figure.
+
 ---
 
 ## CI Integration

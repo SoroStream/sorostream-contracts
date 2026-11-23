@@ -19,7 +19,7 @@ struct TestEnv {
 
 fn setup() -> TestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -339,7 +339,7 @@ fn test_acl_persists_across_pause_resume() {
     );
 
     // Pause stream
-    c.pause_stream(&stream_id, &t.sender);
+    c.pause_stream(&stream_id, &t.sender, &None);
 
     // ACL should persist
     let stream = c.get_stream(&stream_id);

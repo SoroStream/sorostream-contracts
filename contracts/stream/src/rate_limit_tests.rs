@@ -32,7 +32,7 @@ struct RlTestEnv {
 
 fn rl_setup() -> RlTestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -63,13 +63,19 @@ fn rl_params(nonce: u64) -> CreateStreamParams {
         cliff_seconds: 0,
         nonce,
         renew_count: None,
+        recurrence: None,
         lock_until: 0,
         allow_recipient_termination: false,
         non_transferable: false,
         holdback_amount: 0,
         withdrawal_steps: None,
         min_withdrawal_amount: None,
+        sponsor: None,
         requires_recipient_approval: false,
+
+        priority: None,
+        tags: None,
+        metadata_uri: None,
     }
 }
 

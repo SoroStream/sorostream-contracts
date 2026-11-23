@@ -18,13 +18,15 @@ pub trait IPriceOracle {
     ///
     /// # Returns
     /// A positive `i128` representing the token price.
-    /// The caller treats any value ≤ 0 as an oracle fault.
+    /// Zero and negative values are both treated as oracle faults and produce
+    /// `StreamError::InvalidSlippage`; the caller does not distinguish them.
     fn get_price(env: Env, token: Address) -> i128;
 }
 
 /// Fetches the current price from the oracle contract.
 ///
-/// Returns `StreamError::InvalidSlippage` if the call fails or the returned price is ≤ 0.
+/// Returns `StreamError::InvalidSlippage` if the call fails or the returned price is zero
+/// or negative. Both nonpositive values produce the same error before deviation is checked.
 pub fn fetch_price(env: &Env, oracle: &Address, token: &Address) -> Result<i128, StreamError> {
     let client = PriceOracleClient::new(env, oracle);
     let price = client.try_get_price(token).map_err(|_| StreamError::InvalidSlippage)?;
@@ -40,14 +42,15 @@ pub fn fetch_price(env: &Env, oracle: &Address, token: &Address) -> Result<i128,
 /// Deviation is computed as:
 ///   `deviation_bps = abs(current - creation) * 10_000 / creation`
 ///
-/// Returns `StreamError::InvalidSlippage` when the threshold is breached.
-/// Returns `StreamError::InvalidSlippage` if `creation_price` is 0 (division guard).
+/// Returns `StreamError::InvalidSlippage` when the threshold is breached or either price is
+/// nonpositive. In `check_oracle`, `fetch_price` rejects a zero or negative current price
+/// before this deviation check, using the same error for both.
 pub fn assert_price_within_bounds(
     creation_price: i128,
     current_price: i128,
     max_deviation_bps: u32,
 ) -> Result<u32, StreamError> {
-    if creation_price <= 0 {
+    if creation_price <= 0 || current_price <= 0 {
         return Err(StreamError::InvalidSlippage);
     }
     let diff = (current_price - creation_price).abs();
@@ -78,4 +81,21 @@ pub fn check_oracle(
     let current_price = fetch_price(env, oracle, token)?;
     let deviation_bps = assert_price_within_bounds(creation_price, current_price, max_deviation_bps)?;
     Ok((current_price, deviation_bps))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonpositive_prices_are_rejected_with_the_same_error() {
+        assert_eq!(
+            assert_price_within_bounds(100, 0, 10_000),
+            Err(StreamError::InvalidSlippage)
+        );
+        assert_eq!(
+            assert_price_within_bounds(100, -1, 10_000),
+            Err(StreamError::InvalidSlippage)
+        );
+    }
 }

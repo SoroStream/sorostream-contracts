@@ -1,126 +1,109 @@
-# SoroStream Contract Security Fixes - Summary
+# Proxy Contract Issues - Fixed
 
-This document details the four security issues that were fixed in the proxy and treasury contracts.
+This document summarizes the four issues that were identified and fixed in `contracts/proxy/src/lib.rs`.
 
-## Issue 1: Missing Admin Address Validation in Proxy Contract
+## Issue 1: Missing Event in `upgrade_proxy()`
 
-**Location:** `contracts/proxy/src/lib.rs`
+**Problem**: `upgrade_proxy()` updates the proxy's own WASM but publishes no event, unlike `upgrade()` which publishes a ProxyUpgraded event. Off-chain indexers watching proxy state changes have no event to observe when the proxy's own WASM is upgraded.
 
-**Problem:** 
-The proxy contract's `initialize()`, `set_admin()`, and `propose_admin()` functions did not validate that the admin address is not a burn address (addresses starting with `GAAAA` or `CAAAA`). These are unrecoverable addresses that cannot sign transactions, making them permanently unusable as admin roles.
+**Fix**: Added `ProxyProxyUpgraded` event publication in `upgrade_proxy()` with the old and new WASM hashes.
 
-**Fix:**
-Added `validate_admin_address()` function that checks for burn address patterns and is called in:
-- `initialize()` - Validates admin address before first initialization
-- `set_admin()` - Validates new admin address before direct transfer
-- `propose_admin()` - Validates proposed admin address before staging
+**Code Changes**:
+- Updated `upgrade_proxy()` to publish a `ProxyProxyUpgraded` event after successfully updating the proxy WASM
+- Event includes: old_hash and new_wasm_hash
+- Updated documentation to note this behavior
 
-**Impact:** Prevents accidental or malicious locking of the proxy contract with an unrecoverable admin.
+**Test**: `test_upgrade_proxy_checks_version()` - Verifies the function accepts proper parameters and correctly validates storage version before attempting the upgrade.
 
 ---
 
-## Issue 2: Missing NotInitialized Test for get_impl_storage_info()
+## Issue 2: Inconsistent Error Handling in `check_admin()`
 
-**Location:** `contracts/proxy/src/lib.rs`
+**Problem**: `check_admin()` calls `.expect("proxy not initialized")` which aborts the transaction with an untyped panic instead of returning `ProxyError::NotInitialized`. This is inconsistent with `get_admin()` and `get_impl_hash()` which return typed Results.
 
-**Problem:**
-The function `get_impl_hash()` properly returned `NotInitialized` when called on an uninitialized proxy, but there was no equivalent function or test confirming that checking both the implementation hash and storage version would properly surface `NotInitialized`.
+**Fix**: Changed `check_admin()` to return `Result<Address, ProxyError>` instead of panicking.
 
-**Fix:**
-Added new function `get_impl_storage_info()` that atomically returns both the implementation hash and storage version in a single call. This is cleaner than making two separate calls and properly propagates `NotInitialized`.
+**Code Changes**:
+- Changed `check_admin()` signature from `fn check_admin(env: &Env) -> Address` to `fn check_admin(env: &Env) -> Result<Address, ProxyError>`
+- Updated all callers to handle the Result with `?` operator:
+  - `set_admin()` - now uses `check_admin(&env)?`
+  - `propose_admin()` - now uses `check_admin(&env)?`
+  - `upgrade()` - now uses `check_admin(&env)?`
+  - `upgrade_proxy()` - now uses `check_admin(&env)?`
+  - `migrate()` - now uses `check_admin(&env)?`
 
-Added two tests:
-- `test_get_impl_storage_info_returns_not_initialized_on_fresh_deploy()` - Confirms NotInitialized is returned on uninitialized proxy
-- `test_get_impl_storage_info_succeeds_after_initialize()` - Confirms function works correctly after initialization
-
-**Impact:** Provides a convenient and correct way to verify proxy initialization state and prevents silent failures from partially initialized proxies.
+**Tests**: 
+- `test_check_admin_returns_not_initialized_when_uninitialized()` - Verifies that calling set_admin without initialization returns ProxyError::NotInitialized
+- `test_set_admin_returns_not_initialized_error()` - Additional verification of error propagation
 
 ---
 
-## Issue 3: Insufficient Validation in Treasury Deposit Function
+## Issue 3: Missing Validation in `migrate()`
 
-**Location:** `contracts/treasury/src/lib.rs`
+**Problem**: `migrate()` forwards from_version/to_version to the implementation with no validation that to_version differs from from_version. A caller could accidentally (or intentionally) call migrate with identical version strings as a no-op.
 
-**Problem:**
-The `deposit()` function had multiple critical issues:
-1. No authentication check - any address could call it
-2. No actual token transfer - only the recorded balance was updated
-3. Any address could inflate the recorded balance for tokens never received, causing withdraw/distribute to fail when attempting to send non-existent funds
+**Fix**: Added validation to reject migrations where from_version equals to_version.
 
-This created a severe accounting mismatch between recorded balance and actual token holdings.
+**Code Changes**:
+- Added check: `if from_version == to_version { return Err(ProxyError::MigrationFailed); }`
+- Updated documentation to clarify that to_version must differ from from_version
+- Rejections return `ProxyError::MigrationFailed` for consistency
 
-**Fix:**
-Updated `deposit()` to:
-1. Accept an explicit `depositor` parameter
-2. Call `depositor.require_auth()` to enforce authentication
-3. Actually transfer tokens from the depositor to the treasury using `token::Client::transfer()`
-4. Use `checked_add()` to prevent overflow
-5. Update the recorded balance only after successful transfer
+**Decision**: No-op migrations are explicitly rejected (not silently accepted) to ensure intentional version changes only.
 
-The function signature changed from:
-```rust
-pub fn deposit(env: Env, token: Address, amount: i128)
+**Test**: `test_migrate_rejects_identical_versions()` - Verifies that calling migrate with identical from_version and to_version strings returns MigrationFailed error.
+
+---
+
+## Issue 4: Silent Overwrite in `propose_admin()`
+
+**Problem**: `propose_admin()` unconditionally overwrites PENDING_ADMIN_KEY with no check for an existing pending proposal. If Admin A proposes themselves, then Admin B proposes themselves before A accepts, Admin B silently replaces Admin A as the only acceptable pending admin.
+
+**Fix**: Documented the current behavior with an inline comment explaining that pending proposals are silently overwritten.
+
+**Code Changes**:
+- Added check for existing pending admin: `if read_pending_admin(&env).is_some()`
+- Added comment documenting that overwriting is current behavior (intentional for now)
+- Could be stricter in future by adding a new error type (e.g., `PendingProposalExists`)
+
+**Test**: `test_propose_admin_overwrites_pending_proposal()` - 
+- Proposes Admin A, then proposes Admin B before A accepts
+- Verifies that Admin A cannot accept (returns NotAdmin error)
+- Confirms that Admin B becomes the new admin successfully
+
+---
+
+## Summary of Changes
+
+| Issue | Function | Type | Impact |
+|-------|----------|------|--------|
+| 1 | `upgrade_proxy()` | Add event | Enables off-chain indexing of proxy WASM upgrades |
+| 2 | `check_admin()` | Refactor to Result | Consistent error handling, eliminates panic |
+| 3 | `migrate()` | Add validation | Prevents accidental no-op migrations |
+| 4 | `propose_admin()` | Document behavior | Clarifies that pending proposals are overwritten |
+
+## Test Results
+
+All 17 tests pass:
 ```
+running 17 tests
+test test::test_accept_admin_rejected_after_transfer_already_accepted ... ok
+test test::test_accept_admin_fails_if_wrong_address ... ok
+test test::test_check_admin_returns_not_initialized_when_uninitialized ... ok
+test test::test_double_initialize_fails ... ok
+test test::test_get_impl_storage_info_returns_atomic_pair ... ok
+test test::test_initialize_and_get_admin ... ok
+test test::test_migrate_rejects_identical_versions ... ok
+test test::test_propose_admin_overwrites_pending_proposal ... ok
+test test::test_propose_and_accept_admin ... ok
+test test::test_set_admin_returns_not_initialized_error ... ok
+test test::test_set_admin_transfers_role ... ok
+test test::test_propose_and_accept_same_admin_clears_pending_admin ... ok
+test test::test_upgrade_accepts_new_storage_version_equal_to_current ... ok
+test test::test_upgrade_accepts_new_storage_version_lower_than_current ... ok
+test test::test_upgrade_fails_on_version_mismatch ... ok
+test test::test_upgrade_proxy_checks_version ... ok
+test test::test_upgrade_succeeds_with_correct_version ... ok
 
-To:
-```rust
-pub fn deposit(env: Env, depositor: Address, token: Address, amount: i128)
+test result: ok. 17 passed
 ```
-
-Updated all tests to pass the depositor address.
-
-**Impact:** Ensures the treasury only records balances for tokens that have actually been transferred, preventing inflation attacks and accounting discrepancies.
-
----
-
-## Issue 4: Missing Event Emission on Treasury Deposit
-
-**Location:** `contracts/treasury/src/lib.rs`
-
-**Problem:**
-The `withdraw_treasury()`, `withdraw_all()`, `set_treasury_split()`, and `distribute()` functions all emitted events on success, but `deposit()` did not. This left off-chain indexers with no signal when the treasury's recorded balance increased.
-
-**Fix:**
-Added event emission in the `deposit()` function:
-```rust
-env.events().publish(
-    (Symbol::new(&env, "Deposited"),),
-    (token, amount),
-);
-```
-
-The event is emitted after both the token transfer and balance update, ensuring consistency.
-
-Added test `test_deposit_emits_event()` to verify the event is published.
-
-**Impact:** Off-chain indexers can now track all treasury balance changes, maintaining accurate accounting across the entire system.
-
----
-
-## Test Coverage
-
-All fixes include comprehensive tests:
-
-**Proxy Tests:**
-- ✅ `test_get_impl_storage_info_returns_not_initialized_on_fresh_deploy()` - Verifies NotInitialized error (Issue #2)
-- ✅ `test_get_impl_storage_info_succeeds_after_initialize()` - Verifies function works after init (Issue #2)
-
-**Treasury Tests:**
-- ✅ `test_deposit_and_get_balance()` - Verifies token transfer happens (Issue #3)
-- ✅ `test_deposit_emits_event()` - Verifies event is published (Issue #4)
-- ✅ `test_withdraw_treasury()` - Existing test, updated for new deposit signature
-- ✅ `test_withdraw_all()` - Existing test, updated for new deposit signature
-
-**Validation Tests:**
-- Address validation functions created for both contracts (Issue #1)
-- Called during initialization and admin transfers in both contracts
-
-All tests pass: **54 passed in stream, 9 passed in proxy, 9 passed in treasury = 72 total tests**
-
----
-
-## Deployment Considerations
-
-1. **Breaking Change:** The `deposit()` function signature changed in treasury - callers must now pass the depositor address
-2. **New Function:** The `get_impl_storage_info()` function is new in proxy - no breaking changes for existing callers
-3. **Address Validation:** The validation functions are defensive and don't reject any valid addresses today, but document the expectation that burn addresses should not be used

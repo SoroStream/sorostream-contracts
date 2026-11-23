@@ -76,6 +76,18 @@ pub fn save_stream(env: &Env, stream: &Stream) {
 // Value: Stream struct (~180 bytes serialized)
 ```
 
+Each stream also has a persistent circular buffer of up to 10 `StreamTransition`
+records. The head and length use `(Symbol, u64)` keys, and the ten slots use
+`(Symbol, u64, u32)` keys with the `"st"` prefix. Transition history is retained
+when the stream record is removed after completion so it remains available to
+lightweight auditors.
+
+The transition head and length keys use the `"st_head"` and `"st_len"` prefixes.
+
+Stream context metadata is stored separately in temporary storage at
+`("md", stream_id)`. Each write refreshes its TTL to 17,280 ledgers
+(approximately 24 hours) and accepts at most 256 bytes.
+
 The stream ID is derived deterministically via SHA-256 hash:
 
 ```rust
@@ -93,6 +105,12 @@ pub fn derive_stream_id(env: &Env, sender: &Address, recipient: &Address, start_
 ```
 
 ### Persistent storage — per-address indexes
+
+The active sender index uses the same counter-plus-slot layout with separate
+namespaces: `("asc", sender)` stores the count and `("as", sender, idx)` stores
+active stream IDs. It is updated when streams are created, activated, approved,
+paused, resumed, or removed, allowing active-stream queries and batch cancellation
+without scanning terminal sender history.
 
 Sender and recipient indexes use the **counter + slot** pattern. Each address has:
 

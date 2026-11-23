@@ -490,6 +490,24 @@ recipient: Address,                         // Must be stream recipient (must au
 ```rust
 client.withdraw(&stream_id, &recipient)?;
 ```
+### get_stream_earnings_estimate
+
+Returns the projected gross token earnings through the stream's scheduled end, including prior withdrawals and remaining vesting. Ongoing pauses use the pause timestamp as the effective current time; resumed pauses are reflected in the stream's adjusted timestamps. The estimate is before protocol fees.
+
+```rust
+let projected_total = client.get_stream_earnings_estimate(&stream_id)?;
+```
+
+### get_withdrawal_proof
+
+Returns a withdrawal record and its Merkle sibling hashes, leaf count, and history root. The proof can be checked against the current root with `verify_withdrawal_proof`; withdrawal records remain available after stream completion.
+
+```rust
+let proof = client.get_withdrawal_proof(&stream_id, &0)?;
+let root = client.get_withdrawal_history_root(&stream_id)?;
+assert_eq!(proof.root, root);
+assert!(client.verify_withdrawal_proof(&proof));
+```
 
 ### batch_withdraw
 
@@ -1055,13 +1073,14 @@ admin: Address,                             // Must auth
 
 ### Pause & Resume
 
-**pause_stream** - Temporarily halt a stream (sender only).
+**pause_stream** - Temporarily halt a stream (sender only). The optional reason is limited to 256 bytes and is available as `stream.options.pause_reason` after pausing.
 
 ```rust
-client.pause_stream(&stream_id, &sender)?;
+client.pause_stream(&stream_id, &sender, &Some(String::from_str(&env, "maintenance")))?;
 
 let stream = client.get_stream(&stream_id)?;
 assert_eq!(stream.status, StreamStatus::Paused);
+assert_eq!(stream.options.pause_reason, Some(String::from_str(&env, "maintenance")));
 ```
 
 **resume_stream** - Resume paused stream, extending end time by pause duration.
@@ -1141,7 +1160,7 @@ Sender can delegate stream management to another address.
 client.set_delegate(&sender, &stream_id, &manager)?;
 
 // Manager can now pause/resume (replaces sender auth)
-client.pause_stream(&stream_id, &manager)?;
+client.pause_stream(&stream_id, &manager, &None)?;
 
 // Revoke delegation
 client.revoke_delegate(&sender, &stream_id)?;

@@ -22,6 +22,16 @@ pub enum VestingCurve {
     ///
     /// A `decay_factor` of `0` degenerates to linear behaviour.
     /// Practical values: 50–500 bps (0.5 %–5 % per 1 ks window).
+    ///
+    /// # Resource / gas cost
+    ///
+    /// `TimeDecay` is more expensive than [`VestingCurve::Linear`] on-chain:
+    /// each claimable computation iterates once per 1 000-second window,
+    /// performing a fixed-point multiply and division per window
+    /// ([`crate::vesting_math::compute_cumulative_decay`]). Cost grows linearly
+    /// with stream duration — roughly 31 500 iterations for a one-year stream
+    /// versus a single multiplication for Linear. Prefer `Linear` for
+    /// long-duration streams unless front-weighted release is required.
     TimeDecay(u32),
 }
 
@@ -103,9 +113,12 @@ pub struct StreamOptions {
     pub allow_recipient_termination: bool,
     /// Ledger timestamp of when the stream was last paused (0 if never paused).
     pub last_pause_time: u64,
+    /// Optional reason supplied by the sender for the most recent pause.
+    pub pause_reason: Option<String>,
     /// Total amount withdrawn from this stream so far.
     pub total_withdrawn: i128,
-    /// Optional metadata blob associated with the stream.
+    /// Legacy inline metadata slot retained for persisted-schema compatibility.
+    /// Current metadata blobs are stored separately and read via `get_metadata`.
     pub metadata: Bytes,
     /// Optional URI pointing to off-chain metadata (IPFS or HTTPS, max 128 bytes).
     pub metadata_uri: Option<String>,
@@ -115,6 +128,9 @@ pub struct StreamOptions {
     /// When true, milestones unlock automatically at their unlock_time (no sender approval needed).
     /// When false, milestones require sender approval via release_milestone().
     pub milestone_release_mode: bool,
+    /// Address authorized to approve milestones for approval-gated streams.
+    /// `None` means the stream uses timestamp gates or sender approvals.
+    pub milestone_approver: Option<Address>,
     /// Reentrancy guard: true if currently processing a withdrawal to prevent re-entrance.
     pub locked: bool,
 
@@ -200,6 +216,18 @@ pub struct StreamOptions {
     /// pending window.
     pub approval_timestamp: u64,
 
+    /// Whether the sender has approved release from escrow hold.
+    ///
+    /// When a stream is created with `escrow_hold = true`, both parties must
+    /// mark approval before the stream transitions to `Active` and begins
+    /// vesting.  The sender may still call `activate_stream` as a convenience,
+    /// which effectively marks sender approval and completes activation if the
+    /// recipient has already approved.
+    pub escrow_sender_approved: bool,
+
+    /// Whether the recipient has approved release from escrow hold.
+    pub escrow_recipient_approved: bool,
+
     // ── Sender-initiated irrevocable lock ─────────────────────────────────────
 
     /// Whether the sender has voluntarily renounced their right to cancel.
@@ -240,6 +268,23 @@ pub struct StreamOptions {
 
     /// Whether this stream is a dual-token stream (two token contract addresses).
     pub is_dual_stream: bool,
+
+    // ── Collateral vault mode (issue #472) ───────────────────────────────────
+    //
+    // Flattened into scalar fields rather than a nested `Option<CollateralVaultConfig>`
+    // struct: soroban-sdk's #[contracttype] derive generates a fallible
+    // TryFrom<ScVal> conversion for custom structs, but Option<T>'s only route
+    // to ScVal is a blanket From impl requiring an infallible T: Into<ScVal> —
+    // a combination nested custom structs inside Option can never satisfy. This
+    // breaks any client codegen path gated behind the testutils feature
+    // (i.e. `cargo test`), even though the contract itself builds fine.
+
+    /// On-chain yield vault contract address, if collateral vault routing is enabled.
+    pub collateral_vault_address: Option<Address>,
+    /// Basis points of accrued yield assigned to sender (e.g. 5000 = 50%).
+    pub collateral_vault_sender_bps: Option<u32>,
+    /// Basis points of accrued yield assigned to recipient (e.g. 5000 = 50%).
+    pub collateral_vault_recipient_bps: Option<u32>,
 }
 
 /// Represents a single payment stream.
@@ -248,8 +293,11 @@ pub struct StreamOptions {
 pub struct Stream {
     /// Unique stream identifier.
     pub id: u64,
-    /// Address of the stream creator / payer.
+    /// Address that controls the stream lifecycle (cancel/pause/lock rights).
     pub sender: Address,
+    /// Optional address that funded the initial stream deposit.
+    /// When `Some`, the sponsor receives any sender-initiated refund of unstreamed funds.
+    pub sponsor: Option<Address>,
     /// Address of the stream beneficiary.
     pub recipient: Address,
     /// SAC-compatible token contract address (e.g. USDC).
@@ -277,6 +325,20 @@ pub struct Stream {
     pub options: StreamOptions,
 }
 
+/// A persisted lifecycle status transition for a stream.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamTransition {
+    /// Status before the transition. For creation, this equals `to_status`.
+    pub from_status: StreamStatus,
+    /// Status after the transition.
+    pub to_status: StreamStatus,
+    /// Whether this entry identifies stream creation rather than a status change.
+    pub is_creation: bool,
+    /// Ledger timestamp when the transition was persisted.
+    pub timestamp: u64,
+}
+
 /// Creation-time options for `create_stream`.
 ///
 /// Bundles the optional per-stream configuration that would otherwise push
@@ -287,7 +349,13 @@ pub struct CreateStreamOptions {
     /// Optional limit on the number of auto-renewals. When set, the stream will
     /// automatically renew up to this many times. `None` means unlimited
     /// auto-renewals (default behaviour when `auto_renew` is true).
+    ///
+    /// Legacy alias retained for compatibility. When both `renew_count` and
+    /// `recurrence` are supplied, `recurrence` takes precedence.
     pub renew_count: Option<u32>,
+    /// Optional recurrence cap for payroll-style streams. Alias for
+    /// `renew_count` and preferred for new code.
+    pub recurrence: Option<u32>,
     /// Whether the recipient is allowed to terminate the stream early.
     pub allow_recipient_termination: bool,
     /// Whether the stream's recipient rights are locked to the original recipient.
@@ -306,6 +374,41 @@ pub struct CreateStreamOptions {
     pub requires_recipient_approval: bool,
     /// Optional human-readable payment reference (UTF-8, at most 256 bytes).
     pub comment: Option<String>,
+    // See the comment on StreamOptions' equivalent fields for why this is
+    // flattened rather than a nested Option<CollateralVaultConfig>.
+    /// On-chain yield vault contract address, if collateral vault routing is enabled.
+    pub collateral_vault_address: Option<Address>,
+    /// Basis points of accrued yield assigned to sender (e.g. 5000 = 50%).
+    pub collateral_vault_sender_bps: Option<u32>,
+    /// Basis points of accrued yield assigned to recipient (e.g. 5000 = 50%).
+    pub collateral_vault_recipient_bps: Option<u32>,
+}
+
+/// Shared renewal-cap behavior for stream creation inputs.
+pub trait RenewalLimit {
+    fn renew_count(&self) -> Option<u32>;
+    fn recurrence(&self) -> Option<u32>;
+
+    /// Returns the preferred recurrence cap, falling back to the legacy alias.
+    fn effective_renew_count(&self) -> Option<u32> {
+        effective_renew_count(self.recurrence(), self.renew_count())
+    }
+}
+
+fn effective_renew_count(recurrence: Option<u32>, renew_count: Option<u32>) -> Option<u32> {
+    recurrence.or(renew_count)
+}
+
+impl RenewalLimit for CreateStreamOptions {
+    fn renew_count(&self) -> Option<u32> { self.renew_count }
+    fn recurrence(&self) -> Option<u32> { self.recurrence }
+}
+
+impl CreateStreamOptions {
+    /// Returns recurrence when set, otherwise the legacy renewal limit.
+    pub fn effective_renew_count(&self) -> Option<u32> {
+        RenewalLimit::effective_renew_count(self)
+    }
 }
 
 
@@ -528,31 +631,22 @@ pub struct StreamQueryFilter {
     pub recipient: Option<Address>,
 }
 
-/// Less-frequently-varied options for `create_stream`, bundled into a single
-/// struct so the entry point stays within Soroban's 10-parameter contract
-/// function limit.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct StreamCreateOptions {
-    /// Optional limit on the number of auto-renewals (see `Stream::renew_count`).
-    pub renew_count: Option<u32>,
-    /// Whether the recipient is allowed to terminate the stream early.
-    pub allow_recipient_termination: bool,
-    /// Whether the stream's recipient rights are locked to the original recipient.
-    pub non_transferable: bool,
-}
-
 /// All creation-time parameters for `create_stream`, bundled into one struct
 /// so the public entry point stays within Soroban's 10-argument function limit.
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CreateStreamParams {
     /// Number of seconds after start_time before any tokens are claimable.
     pub cliff_seconds: u64,
     /// Sender-supplied unique nonce used to derive the stream ID deterministically.
     pub nonce: u64,
     /// Optional limit on the number of auto-renewals.
+    ///
+    /// Legacy alias retained for compatibility. Prefer `recurrence` for new
+    /// payroll-style stream creation; when both are set, `recurrence` wins.
     pub renew_count: Option<u32>,
+    /// Optional recurrence cap for payroll-style streams.
+    pub recurrence: Option<u32>,
     /// Ledger timestamp before which withdrawals are not permitted (0 = no lock).
     pub lock_until: u64,
     /// Whether the recipient is allowed to terminate the stream early.
@@ -565,6 +659,54 @@ pub struct CreateStreamParams {
     pub withdrawal_steps: Option<u32>,
     /// Optional minimum claimable amount required before a withdrawal is accepted.
     pub min_withdrawal_amount: Option<i128>,
+    /// Optional address that funds the initial deposit. If omitted, the sender pays.
+    pub sponsor: Option<Address>,
     /// Whether this stream requires explicit recipient approval before tokens accrue.
     pub requires_recipient_approval: bool,
+    /// Optional priority level (0-255). Higher values are processed first in
+    /// batch withdrawal operations. `None` is treated as priority 0 (lowest).
+    pub priority: Option<u32>,
+    /// Optional list of categorisation tags (max 3 entries, each at most 32 bytes).
+    /// Tags are used for off-chain filtering (e.g. "payroll", "vesting", "subscription").
+    pub tags: Option<Vec<Bytes>>,
+    /// Optional off-chain metadata URI or short string (IPFS or HTTPS, max 128
+    /// bytes) to associate with the stream at creation — e.g. an invoice
+    /// reference or payment description (issue #402). Stored as
+    /// `StreamOptions::metadata_uri` and can also be set later via
+    /// `update_metadata_uri`.
+    pub metadata_uri: Option<String>,
+}
+
+impl RenewalLimit for CreateStreamParams {
+    fn renew_count(&self) -> Option<u32> { self.renew_count }
+    fn recurrence(&self) -> Option<u32> { self.recurrence }
+}
+
+impl CreateStreamParams {
+    /// Returns recurrence when set, otherwise the legacy renewal limit.
+    pub fn effective_renew_count(&self) -> Option<u32> {
+        RenewalLimit::effective_renew_count(self)
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalRecord {
+    pub stream_id: u64,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub index: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawalProof {
+    pub stream_id: u64,
+    pub withdrawal_index: u32,
+    pub amount: i128,
+    pub timestamp: u64,
+    pub leaf_hash: BytesN<32>,
+    pub siblings: Vec<BytesN<32>>,
+    pub leaf_count: u32,
+    pub root: BytesN<32>,
 }

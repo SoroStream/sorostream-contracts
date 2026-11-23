@@ -43,7 +43,7 @@ mod event_field_tests {
 
     fn setup() -> EventEnv {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let contract = env.register(SoroStreamContract, ());
         let token_admin = Address::generate(&env);
@@ -201,14 +201,23 @@ mod event_field_tests {
         let topic_sid: u64 = topics.get(1).unwrap().into_val(&e.env);
         assert_eq!(topic_sid, stream_id, "StreamWithdrawn topics[1] must be stream_id");
 
-        // 2f. data = (recipient, amount, timestamp).
-        let (ev_recipient, ev_amount, ev_timestamp): (Address, i128, u64) =
-            data.clone().into_val(&e.env);
+        // 2f. data = (schema_version, recipient, amount, timestamp, total_withdrawn, event_nonce).
+        let (
+            ev_schema_version,
+            ev_recipient,
+            ev_amount,
+            ev_timestamp,
+            ev_total_withdrawn,
+            ev_nonce,
+        ): (u32, Address, i128, u64, i128, u64) = data.clone().into_val(&e.env);
 
-        assert_eq!(ev_recipient, e.recipient, "StreamWithdrawn data[0] (recipient) mismatch");
+        assert_eq!(ev_schema_version, 2u32, "StreamWithdrawn schema version must be 2");
+        assert_eq!(ev_recipient, e.recipient, "StreamWithdrawn data[1] (recipient) mismatch");
         // flow_rate=1000, elapsed=400 → claimable = 400_000
-        assert_eq!(ev_amount, 400_000i128, "StreamWithdrawn data[1] (amount) must be 400_000");
-        assert_eq!(ev_timestamp, 400u64, "StreamWithdrawn data[2] (timestamp) must be 400");
+        assert_eq!(ev_amount, 400_000i128, "StreamWithdrawn data[2] (amount) must be 400_000");
+        assert_eq!(ev_timestamp, 400u64, "StreamWithdrawn data[3] (timestamp) must be 400");
+        assert_eq!(ev_total_withdrawn, 400_000i128, "StreamWithdrawn data[4] (total_withdrawn) must equal 400_000");
+        assert_eq!(ev_nonce, 1u64, "first StreamWithdrawn event nonce must be 1");
 
         // 2g. Regression guard: amount must be a non-negative i128 (field-type check).
         assert!(ev_amount >= 0, "StreamWithdrawn amount must not be negative");

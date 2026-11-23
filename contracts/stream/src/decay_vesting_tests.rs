@@ -8,8 +8,8 @@
 //!   5. simulate_claimable returns correct amounts at multiple time points.
 
 use crate::vesting_math::{
-    compute_claimable, compute_claimable_decay, compute_cumulative_decay, simulate_claimable,
-    DECAY_WINDOW_SECS,
+    compute_claimable, compute_claimable_decay, compute_claimable_from_milestones,
+    compute_cumulative_decay, compute_refund, simulate_claimable, DECAY_WINDOW_SECS,
 };
 
 // Also test the contract-level entrypoints.
@@ -56,6 +56,39 @@ fn test_decay_factor_zero_equals_linear() {
             decay_result, linear_result,
             "decay_factor=0 should equal linear at elapsed={elapsed}"
         );
+    }
+}
+
+#[test]
+fn test_decay_boundary_df0_equals_df1_continuous() {
+    // As decay_factor approaches 0 from the iterative side (df=1, 2, 5), the
+    // fixed-point path must produce results continuous with the linear fallback
+    // (df=0).  df=1 bps per 1 ks window = 0.01% per window, so over a 10 ks
+    // stream the drift vs linear is tiny — results should match within a few
+    // stroops, confirming no discontinuity at the df==0 early-return boundary.
+
+    let deposit = 1_000_000i128;
+    let start = 0u64;
+    let end = 10_000u64;
+    let duration = (end - start) as i128;
+
+    for elapsed in [1000u64, 2500, 5000, 7500, 9999, 10_000] {
+        let query = start + elapsed;
+
+        // Linear fallback path (df == 0).
+        let linear = compute_cumulative_decay(deposit, start, end, query, 0).unwrap();
+
+        // Iterative fixed-point path with tiny decay factors (df >= 1).
+        for &df in &[1u32, 2, 5] {
+            let iterative = compute_cumulative_decay(deposit, start, end, query, df).unwrap();
+            let diff = (iterative - linear).abs();
+            // tolerance scales with elapsed fraction; df=1 bps/window is ~0.01%
+            // decay per window, so drift vs linear is well under 1 stroop here.
+            assert!(
+                diff <= 2,
+                "df={df} not continuous with df=0 at elapsed={elapsed}: linear={linear}, iterative={iterative}, diff={diff}"
+            );
+        }
     }
 }
 
@@ -152,6 +185,70 @@ fn test_decay_starts_at_zero() {
         "nothing should be vested before start_time"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Mutation-testing guards for saturating arithmetic in vesting_math.rs
+// ---------------------------------------------------------------------------
+//
+// Each test below is designed to *fail* (panic) if the corresponding
+// `saturating_*` operation is replaced with a plain `+` / `-`. They exercise
+// timing/amount boundaries where a plain operator would underflow or overflow.
+
+/// `compute_refund` clamps at 0 via `deposit.saturating_sub(total_streamed)`.
+///
+/// With a flow_rate large enough that `total_streamed > deposit`, a plain `-`
+/// would underflow and panic (overflow-checks are on in test/release builds).
+#[test]
+fn test_compute_refund_saturating_sub_clamps_at_zero() {
+    let deposit = 1_000i128;
+    let flow_rate = 1_000_000i128; // streamed total far exceeds the deposit
+    let start_time = 0u64;
+    let end_time = 10_000u64;
+    let now = end_time; // boundary: fully streamed
+
+    let refund = compute_refund(deposit, flow_rate, now, end_time, start_time).unwrap();
+    assert_eq!(
+        refund, 0,
+        "refund must saturate at 0 when streamed exceeds deposit"
+    );
+}
+
+/// `compute_claimable_from_milestones` accumulates with `saturating_add`.
+///
+/// A released milestone at `i128::MAX` plus any further amount must saturate
+/// rather than overflow/panic under a plain `+`.
+#[test]
+fn test_compute_claimable_from_milestones_saturating_add_clamps_at_max() {
+    let milestones = [(i128::MAX, true), (1i128, true)];
+
+    let total = compute_claimable_from_milestones(&milestones);
+    assert_eq!(
+        total, i128::MAX,
+        "claimable from milestones must saturate at i128::MAX"
+    );
+}
+
+/// `compute_claimable_decay` subtracts the last cumulative value with
+/// `saturating_sub`. When `last_withdraw_time` is after `now`, the earlier
+/// cumulative value is larger and a plain `-` would underflow.
+#[test]
+fn test_compute_claimable_decay_saturating_sub_clamps_at_zero() {
+    let deposit = 1_000_000i128;
+    let start = 0u64;
+    let end = 10_000u64;
+    let cliff = 0u64;
+    let df = 500u32;
+
+    let claimable = compute_claimable_decay(
+        deposit, start, end, 1000 /* now */, cliff, 5000 /* last_withdraw_time */, df,
+    )
+    .unwrap();
+    assert_eq!(claimable, 0, "claimable must saturate at 0 when withdrawn ahead of now");
+}
+
+// ---------------------------------------------------------------------------
+// Contract-level integration tests
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_decay_precomputed_values() {
@@ -254,6 +351,54 @@ fn test_compute_claimable_decay_cliff_enforced() {
 }
 
 #[test]
+fn test_compute_claimable_decay_continuity_at_end_time() {
+    // The special-cased convergence branch (effective_now >= end_time) must match
+    // the general-case branch exactly at end_time - 1 plus one second of accrual.
+    let deposit = 1_000_000i128;
+    let start = 0u64;
+    let end = 10_000u64;
+    let cliff = 0u64;
+    let last_withdraw = 0u64;
+
+    for &df in &[0u32, 50, 100, 500, 1000] {
+        // General-case branch: one second before end_time.
+        let just_before = compute_claimable_decay(
+            deposit, start, end, end - 1, cliff, last_withdraw, df,
+        )
+        .unwrap();
+
+        // Special-cased branch: exactly at end_time (full deposit minus withdrawn).
+        let at_end = compute_claimable_decay(
+            deposit, start, end, end, cliff, last_withdraw, df,
+        )
+        .unwrap();
+
+        // Claiming at end_time should equal the claimable one second before plus
+        // the final second's worth of accrual (full deposit when nothing withdrawn).
+        assert_eq!(
+            at_end, deposit,
+            "decay_factor={df}: claimable at end_time must equal full deposit"
+        );
+        assert!(
+            at_end - just_before >= 0,
+            "decay_factor={df}: claimable must not decrease as time approaches end_time"
+        );
+
+        // Verify the delta from end-1 to end equals one second's accrual under
+        // the general-case computation applied at end-1 vs end.
+        // (Both go through compute_cumulative_decay internally; the boundary
+        // branch clamps effective_now to end_time.)
+        let cum_end_minus_1 = compute_cumulative_decay(deposit, start, end, end - 1, df).unwrap();
+        let cum_end = compute_cumulative_decay(deposit, start, end, end, df).unwrap();
+        let expected_delta = cum_end.saturating_sub(cum_end_minus_1);
+        assert_eq!(
+            at_end - just_before, expected_delta,
+            "decay_factor={df}: end_time - (end_time-1) must equal final-second accrual"
+        );
+    }
+}
+
+#[test]
 fn test_simulate_claimable_sequence() {
     // simulate_claimable returns the cumulative vested amount from stream start,
     // not the incremental. Verify a sequence of time points.
@@ -339,7 +484,7 @@ struct DecayTestEnv {
 
 fn setup_decay() -> DecayTestEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -387,6 +532,23 @@ fn test_contract_linear_curve_stored_and_claimable() {
     let claimable = c.get_claimable(&stream_id);
     // Linear: flow_rate × elapsed = (100_000/10_000) × 5_000 = 50_000
     assert_eq!(claimable, 50_000, "linear curve: half the deposit after half duration");
+}
+
+#[test]
+fn test_contract_rejects_out_of_range_decay_factor() {
+    let t = setup_decay();
+    let c = decay_client(&t);
+    t.env.ledger().set_timestamp(0);
+
+    let result = c.try_create_stream_with_curve(
+        &t.sender, &t.recipient, &t.token_id,
+        &100_000, &10_000, &0,
+        &0, &false, &None, &0, &false,
+        &VestingCurve::TimeDecay(10_000),
+        &None, &None, &false,
+    );
+
+    assert!(matches!(result, Err(Ok(StreamError::InvalidParameter))));
 }
 
 #[test]

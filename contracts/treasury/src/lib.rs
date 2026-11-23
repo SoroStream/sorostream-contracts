@@ -1,15 +1,37 @@
 #![no_std]
+
 //! # SoroStream Treasury Contract
 //!
 //! Holds accumulated protocol fees and provides configurable distribution
 //! between a treasury wallet and an LP reward pool.
 
-use soroban_sdk::{contract, contractimpl, token, Address, Env, Symbol};
+#[cfg(test)]
+extern crate std;
+
+use soroban_sdk::{contract, contractimpl, contracterror, token, Address, Env, Symbol};
 
 const ADMIN_KEY: &str = "admin";
 const PENDING_ADMIN_KEY: &str = "pending_admin";
 const LP_POOL_KEY: &str = "lp_pool";
 const TREASURY_SPLIT_BPS_KEY: &str = "t_split";
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum TreasuryError {
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    InvalidTreasuryAddress = 3,
+    InsufficientBalance = 4,
+    LpPoolNotConfigured = 5,
+    InvalidTreasurySplit = 6,
+    NoPendingAdmin = 7,
+    NotPendingAdmin = 8,
+    InvalidAmount = 9,
+    Overflow = 10,
+    InvalidLpPoolAddress = 11,
+    LpPoolIsTreasuryContract = 12,
+}
 
 fn read_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&Symbol::new(env, ADMIN_KEY))
@@ -32,32 +54,32 @@ fn read_treasury_split_bps(env: &Env) -> u32 {
         .unwrap_or(10_000u32) // default: 100% to treasury, 0% to LP
 }
 
-fn check_admin(env: &Env) {
-    read_admin(env)
-        .expect("treasury not initialized")
-        .require_auth();
+fn check_admin(env: &Env) -> Result<(), TreasuryError> {
+    let admin = read_admin(env).ok_or(TreasuryError::NotInitialized)?;
+    admin.require_auth();
+    Ok(())
 }
 
 fn balance_key(env: &Env, token: &Address) -> (Symbol, Address) {
     (Symbol::new(env, "balance"), token.clone())
 }
 
-/// Validates that an address is not a burn address (GAAAA... or CAAAA...).
-/// Burn addresses are unrecoverable and should not be used for contract admins.
-fn validate_treasury_address(_env: &Env, _address: &Address) -> Result<(), &'static str> {
-    // In Soroban, we validate by checking the bytes of the address.
-    // Burn addresses on Stellar start with GAAAA or CAAAA (representing 0 public keys).
-    // The address bytes start with version identifiers: 0x00 for account, 0x05 for contract.
-    // For burn accounts, the public key is all zeros.
-    // We check the string representation to identify burn patterns.
-    
-    // Note: In Soroban, Address::to_string() returns a Soroban String, not a Rust string.
-    // For now, we rely on the caller to not pass burn addresses, as Soroban doesn't expose
-    // easy string pattern matching at no_std. A more robust check would be:
-    // - Parse the address bytes and verify they're not all zeros
-    // - Or validate through the token contract itself
-    
-    // For security, we document that burn addresses should not be used.
+fn is_zero_address(env: &Env, address: &Address) -> bool {
+    let zero_account = Address::from_string(&soroban_sdk::String::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+    if address == &zero_account {
+        return true;
+    }
+    let zero_contract = Address::from_string(&soroban_sdk::String::from_str(env, "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"));
+    if address == &zero_contract {
+        return true;
+    }
+    false
+}
+
+fn validate_treasury_address(env: &Env, address: &Address) -> Result<(), TreasuryError> {
+    if is_zero_address(env, address) {
+        return Err(TreasuryError::InvalidTreasuryAddress);
+    }
     Ok(())
 }
 
@@ -66,9 +88,11 @@ pub struct TreasuryContract;
 
 #[contractimpl]
 impl TreasuryContract {
-    pub fn initialize(env: Env, admin: Address) {
+    /// Initialises the treasury with its admin. May only be called once.
+    pub fn initialize(env: Env, admin: Address) -> Result<(), TreasuryError> {
+        validate_treasury_address(&env, &admin)?;
         if read_admin(&env).is_some() {
-            panic!("treasury already initialized");
+            return Err(TreasuryError::AlreadyInitialized);
         }
         
         // Validate that admin is not a burn address
@@ -77,18 +101,20 @@ impl TreasuryContract {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, ADMIN_KEY), &admin);
+        Ok(())
     }
 
-    pub fn get_admin(env: Env) -> Option<Address> {
-        read_admin(&env)
+    /// Returns the current admin address, or `None` before initialisation.
+    pub fn get_admin(env: Env) -> Result<Option<Address>, TreasuryError> {
+        Ok(read_admin(&env))
     }
 
-    pub fn propose_admin(env: Env, new_admin: Address) {
-        check_admin(&env);
-        
-        // Validate that new admin is not a burn address
-        validate_treasury_address(&env, &new_admin).expect("invalid admin address");
-        
+    /// Records `new_admin` as the pending admin. Only the current admin may call this.
+    ///
+    /// The transfer only takes effect once `new_admin` calls `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
+        validate_treasury_address(&env, &new_admin)?;
         env.storage()
             .instance()
             .set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
@@ -96,14 +122,16 @@ impl TreasuryContract {
             (Symbol::new(&env, "AdminTransferProposed"),),
             new_admin,
         );
+        Ok(())
     }
 
-    pub fn accept_admin(env: Env, accepted_by: Address) {
+    /// Accepts the pending admin role. Must be called by the pending admin itself.
+    pub fn accept_admin(env: Env, accepted_by: Address) -> Result<(), TreasuryError> {
         accepted_by.require_auth();
-        let pending = read_pending_admin(&env)
-            .expect("no pending admin transfer");
+        validate_treasury_address(&env, &accepted_by)?;
+        let pending = read_pending_admin(&env).ok_or(TreasuryError::NoPendingAdmin)?;
         if accepted_by != pending {
-            panic!("caller is not the pending admin");
+            return Err(TreasuryError::NotPendingAdmin);
         }
         env.storage()
             .instance()
@@ -115,60 +143,68 @@ impl TreasuryContract {
             (Symbol::new(&env, "AdminTransferAccepted"),),
             accepted_by,
         );
+        Ok(())
     }
 
-    pub fn set_admin(env: Env, new_admin: Address) {
-        check_admin(&env);
-        
-        // Validate that new admin is not a burn address
-        validate_treasury_address(&env, &new_admin).expect("invalid admin address");
-        
+    /// Immediately transfers the admin role. Only the current admin may call this.
+    pub fn set_admin(env: Env, new_admin: Address) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
+        validate_treasury_address(&env, &new_admin)?;
         env.storage()
             .instance()
             .set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+        // Clear any pending admin to prevent old proposals from accidentally succeeding.
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
+        Ok(())
     }
 
-    pub fn deposit(env: Env, depositor: Address, token: Address, amount: i128) {
-        // Validate amount is non-negative
+    /// Sets or updates the treasury address. Rejects zero address.
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
+        validate_treasury_address(&env, &treasury)?;
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "treasury"), &treasury);
+        Ok(())
+    }
+
+    /// Credits `amount` of `token` to the treasury's internal accounting balance.
+    ///
+    /// This only updates the recorded balance; the tokens must already be held by the
+    /// contract for [`Self::withdraw_treasury`] to move them out.
+    pub fn deposit(env: Env, token: Address, amount: i128) -> Result<(), TreasuryError> {
         if amount < 0 {
-            panic!("deposit amount cannot be negative");
+            return Err(TreasuryError::InvalidAmount);
         }
-        
-        // Caller must authorize the deposit
-        depositor.require_auth();
-        
-        // Transfer tokens from depositor to the treasury
-        token::Client::new(&env, &token).transfer(
-            &depositor,
-            &env.current_contract_address(),
-            &amount,
-        );
-        
-        // Update the recorded balance
         let key = balance_key(&env, &token);
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let updated = current.checked_add(amount).ok_or(TreasuryError::Overflow)?;
         env.storage()
             .persistent()
-            .set(&key, &(current.checked_add(amount).expect("balance overflow")));
-        
-        // Emit deposit event
-        env.events().publish(
-            (Symbol::new(&env, "Deposited"),),
-            (token, amount),
-        );
+            .set(&key, &updated);
+        Ok(())
     }
 
-    pub fn get_balance(env: Env, token: Address) -> i128 {
+    /// Returns the recorded balance of `token` held by the treasury.
+    pub fn get_balance(env: Env, token: Address) -> Result<i128, TreasuryError> {
         let key = balance_key(&env, &token);
-        env.storage().persistent().get(&key).unwrap_or(0)
+        Ok(env.storage().persistent().get(&key).unwrap_or(0))
     }
 
-    pub fn withdraw_treasury(env: Env, token: Address, amount: i128, destination: Address) {
-        check_admin(&env);
+    /// Transfers `amount` of `token` from the treasury to `destination`.
+    ///
+    /// Only the admin may call this. Returns an error when `amount` exceeds the recorded balance.
+    pub fn withdraw_treasury(env: Env, token: Address, amount: i128, destination: Address) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
+        if amount < 0 {
+            return Err(TreasuryError::InvalidAmount);
+        }
         let key = balance_key(&env, &token);
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         if amount > current {
-            panic!("insufficient treasury balance");
+            return Err(TreasuryError::InsufficientBalance);
         }
         env.storage()
             .persistent()
@@ -178,10 +214,19 @@ impl TreasuryContract {
             &destination,
             &amount,
         );
+        env.events().publish(
+            (Symbol::new(&env, "TreasuryWithdrawn"),),
+            (token, amount, destination),
+        );
+        Ok(())
     }
 
-    pub fn withdraw_all(env: Env, token: Address, destination: Address) -> i128 {
-        check_admin(&env);
+    /// Withdraws the entire recorded balance of `token` to `destination`.
+    ///
+    /// Only the admin may call this. Returns the amount withdrawn (`0` if the treasury
+    /// held nothing), in which case no transfer is performed.
+    pub fn withdraw_all(env: Env, token: Address, destination: Address) -> Result<i128, TreasuryError> {
+        check_admin(&env)?;
         let key = balance_key(&env, &token);
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         if current > 0 {
@@ -191,21 +236,35 @@ impl TreasuryContract {
                 &destination,
                 &current,
             );
+            env.events().publish(
+                (Symbol::new(&env, "TreasuryWithdrawn"),),
+                (token, current, destination),
+            );
         }
-        current
+        Ok(current)
     }
 
     /// Sets the LP reward pool address. Only admin may call this.
-    pub fn set_lp_pool(env: Env, lp_pool: Address) {
-        check_admin(&env);
+    ///
+    /// Rejects the zero/burn address and the treasury contract's own address
+    /// (a self-referential split would route LP rewards back into the treasury).
+    pub fn set_lp_pool(env: Env, lp_pool: Address) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
+        if is_zero_address(&env, &lp_pool) {
+            return Err(TreasuryError::InvalidLpPoolAddress);
+        }
+        if lp_pool == env.current_contract_address() {
+            return Err(TreasuryError::LpPoolIsTreasuryContract);
+        }
         env.storage()
             .instance()
             .set(&Symbol::new(&env, LP_POOL_KEY), &lp_pool);
+        Ok(())
     }
 
     /// Returns the LP reward pool address, if set.
-    pub fn get_lp_pool(env: Env) -> Option<Address> {
-        read_lp_pool(&env)
+    pub fn get_lp_pool(env: Env) -> Result<Option<Address>, TreasuryError> {
+        Ok(read_lp_pool(&env))
     }
 
     /// Sets the treasury-to-LP split in basis points.
@@ -213,19 +272,24 @@ impl TreasuryContract {
     /// `treasury_bps` is the fraction (in bps, 0–10_000) that goes to the treasury.
     /// The remaining `10_000 - treasury_bps` goes to the LP reward pool.
     /// Only admin may call this.
-    pub fn set_treasury_split(env: Env, treasury_bps: u32) {
-        check_admin(&env);
+    pub fn set_treasury_split(env: Env, treasury_bps: u32) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
         if treasury_bps > 10_000 {
-            panic!("treasury_bps exceeds 10_000");
+            return Err(TreasuryError::InvalidTreasurySplit);
         }
         env.storage()
             .instance()
             .set(&Symbol::new(&env, TREASURY_SPLIT_BPS_KEY), &treasury_bps);
+        env.events().publish(
+            (Symbol::new(&env, "TreasurySplitSet"),),
+            treasury_bps,
+        );
+        Ok(())
     }
 
     /// Returns the configured treasury split in basis points.
-    pub fn get_treasury_split(env: Env) -> u32 {
-        read_treasury_split_bps(&env)
+    pub fn get_treasury_split(env: Env) -> Result<u32, TreasuryError> {
+        Ok(read_treasury_split_bps(&env))
     }
 
     /// Distributes all accumulated fees for `token` between the treasury wallet
@@ -235,17 +299,29 @@ impl TreasuryContract {
     /// - The remainder goes to the LP pool (must be configured via `set_lp_pool`).
     ///
     /// Emits `FeeDistributed` with `(token, treasury_amount, lp_amount)`.
-    pub fn distribute(env: Env, token: Address, destination: Address) -> (i128, i128) {
-        check_admin(&env);
+    pub fn distribute(env: Env, token: Address, destination: Address) -> Result<(i128, i128), TreasuryError> {
+        check_admin(&env)?;
         let key = balance_key(&env, &token);
         let total: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         if total == 0 {
-            return (0, 0);
+            return Ok((0, 0));
+        }
+        if total < 0 {
+            return Err(TreasuryError::InvalidAmount);
         }
 
         let treasury_bps = read_treasury_split_bps(&env);
-        let treasury_amount = total * treasury_bps as i128 / 10_000;
+        let treasury_amount = total
+            .checked_mul(treasury_bps as i128)
+            .and_then(|amount| amount.checked_div(10_000))
+            .expect("treasury distribution overflow");
         let lp_amount = total - treasury_amount;
+
+        let lp_pool = if lp_amount > 0 {
+            Some(read_lp_pool(&env).ok_or(TreasuryError::LpPoolNotConfigured)?)
+        } else {
+            None
+        };
 
         // Clear the balance before transfers (checks-effects-interactions)
         env.storage().persistent().remove(&key);
@@ -259,8 +335,7 @@ impl TreasuryContract {
                 &treasury_amount,
             );
         }
-        if lp_amount > 0 {
-            let lp_pool = read_lp_pool(&env).expect("lp_pool not configured");
+        if let Some(lp_pool) = lp_pool {
             token_client.transfer(
                 &env.current_contract_address(),
                 &lp_pool,
@@ -273,7 +348,7 @@ impl TreasuryContract {
             (token, treasury_amount, lp_amount),
         );
 
-        (treasury_amount, lp_amount)
+        Ok((treasury_amount, lp_amount))
     }
 }
 
@@ -283,7 +358,7 @@ mod test {
     use soroban_sdk::{
         testutils::{Address as _, Events},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env,
+        Address, Env, IntoVal,
     };
 
     struct TreasuryTest {
@@ -296,7 +371,7 @@ mod test {
 
     fn setup() -> TreasuryTest {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let treasury_id = env.register(TreasuryContract, ());
         let token_admin = Address::generate(&env);
@@ -313,6 +388,13 @@ mod test {
             admin,
             user,
         }
+    }
+
+    fn withdrawal_events(env: &Env) -> std::vec::Vec<(Symbol, soroban_sdk::Val)> {
+        env.events().all().iter().filter_map(|(_, topics, data)| {
+            let name: Symbol = topics.get(0)?.into_val(env);
+            (name == Symbol::new(env, "TreasuryWithdrawn")).then(|| (name, data.clone()))
+        }).collect()
     }
 
     #[test]
@@ -370,9 +452,22 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        let _new_admin = Address::generate(&t.env);
-        // The main flow is tested in test_propose_and_accept_admin
-        // This test name serves as documentation for the behavior
+        // Only authorize the non-admin caller, so the admin's `require_auth`
+        // inside `check_admin` cannot be satisfied.
+        let non_admin = Address::generate(&t.env);
+        let new_admin = Address::generate(&t.env);
+        t.env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &non_admin,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &t.treasury_id,
+                fn_name: "propose_admin",
+                args: (new_admin.clone(),).into_val(&t.env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = c.try_propose_admin(&new_admin);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -403,24 +498,13 @@ mod test {
     }
 
     #[test]
-    fn test_deposit_emits_event() {
+    fn test_distribute_rejects_overflowing_treasury_calculation() {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
+        c.deposit(&t.token_id, &i128::MAX);
 
-        // Mint tokens to user
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &5_000);
-
-        // Record events before deposit
-        let events_before = t.env.events().all();
-
-        // User deposits
-        c.deposit(&t.user, &t.token_id, &2_000);
-
-        // Check that a Deposited event was emitted
-        let events_after = t.env.events().all();
-        // The deposit should emit a "Deposited" event
-        assert!(events_after.len() > events_before.len(), "Should have emitted at least one event");
+        assert!(c.try_distribute(&t.token_id, &t.user).is_err());
     }
 
     #[test]
@@ -440,9 +524,31 @@ mod test {
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 3000, t.user.clone()));
+
         let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
         assert_eq!(user_balance, 3000);
         assert_eq!(c.get_balance(&t.token_id), 7000);
+    }
+
+    #[test]
+    fn test_withdraw_treasury_exact_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+
+        // Full withdrawal via the non-withdraw_all path: amount == balance.
+        c.withdraw_treasury(&t.token_id, &10_000, &t.user);
+
+        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(user_balance, 10_000);
+        assert_eq!(c.get_balance(&t.token_id), 0);
     }
 
     #[test]
@@ -460,8 +566,154 @@ mod test {
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
 
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 10_000, t.user.clone()));
+
         let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
         assert_eq!(user_balance, 10_000);
         assert_eq!(c.get_balance(&t.token_id), 0);
     }
+
+    #[test]
+    fn test_withdraw_all_zero_balance_emits_no_withdrawal_event() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        assert_eq!(c.withdraw_all(&t.token_id, &t.user), 0);
+        assert!(withdrawal_events(&t.env).is_empty());
+    }
+
+    #[test]
+    fn test_initialize_zero_address_rejected() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let treasury_id = env.register(TreasuryContract, ());
+        let c = TreasuryContractClient::new(&env, &treasury_id);
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+        let result = c.try_initialize(&zero_addr);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_set_treasury_zero_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&t.env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+        let result = c.try_set_treasury(&zero_addr);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_withdraw_treasury_returns_typed_insufficient_balance_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let result = c.try_withdraw_treasury(&t.token_id, &1, &t.user);
+        assert_eq!(result, Err(Ok(TreasuryError::InsufficientBalance)));
+    }
+
+    #[test]
+    fn test_distribute_returns_typed_missing_lp_pool_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &100);
+        c.deposit(&t.token_id, &100);
+        c.set_treasury_split(&5000);
+
+        let result = c.try_distribute(&t.token_id, &t.user);
+        assert_eq!(result, Err(Ok(TreasuryError::LpPoolNotConfigured)));
+    }
+
+    #[test]
+    fn test_set_treasury_split_returns_typed_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let result = c.try_set_treasury_split(&10_001);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasurySplit)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_zero_address_returns_typed_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&t.env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
+
+        let result = c.try_set_lp_pool(&zero_addr);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidLpPoolAddress)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_self_reference_returns_typed_error() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let result = c.try_set_lp_pool(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::LpPoolIsTreasuryContract)));
+    }
+
+    #[test]
+    fn test_set_lp_pool_succeeds_with_valid_address() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let lp_pool = Address::generate(&t.env);
+        c.set_lp_pool(&lp_pool);
+        assert_eq!(c.get_lp_pool(), Some(lp_pool));
+    }
+
+    #[test]
+    fn test_distribute_succeeds_without_lp_pool_when_treasury_bps_is_10000() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        c.set_treasury_split(&10_000u32);
+
+        assert_eq!(c.get_lp_pool(), None);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+
+        // lp_amount is 0, so read_lp_pool is never reached and no lp_pool is required.
+        let (treasury_amount, lp_amount) = c.distribute(&t.token_id, &t.admin);
+        assert_eq!(treasury_amount, 10_000);
+        assert_eq!(lp_amount, 0);
+        assert_eq!(c.get_balance(&t.token_id), 0);
+        assert!(c.get_lp_pool().is_none());
+    }
+
+    #[test]
+    fn test_set_admin_clears_pending_admin() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let pending_admin = Address::generate(&t.env);
+        let new_admin = Address::generate(&t.env);
+
+        // Propose a pending admin
+        c.propose_admin(&pending_admin);
+        assert_eq!(c.get_admin(), Some(t.admin.clone()));
+
+        // Use set_admin to immediately transfer to a different admin
+        c.set_admin(&new_admin);
+
+        // Verify the new admin is set and pending admin is cleared
+        assert_eq!(c.get_admin(), Some(new_admin.clone()));
+
+        // Verify that the old pending admin can no longer accept
+        let result = c.try_accept_admin(&pending_admin);
+        assert_eq!(result, Err(Ok(TreasuryError::NoPendingAdmin)));
+    }
 }
+

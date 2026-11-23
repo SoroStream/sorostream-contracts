@@ -65,7 +65,10 @@ The counter+slot layout replaces an earlier unbounded `Vec` in temporary storage
 
 ### Temporary storage (`temporary()`)
 
-**Not used** in the current codebase. Do not reintroduce it for indexes or stream metadata without maintainer review and an explicit TTL-extension strategy.
+Stream context metadata uses temporary storage under `("md", stream_id)`. Each
+update extends its TTL to approximately 24 hours (17,280 ledgers), so callers
+can refresh short-lived payroll, invoice, or IPFS context without expanding the
+persistent `Stream` record. The metadata blob is capped at 256 bytes.
 
 ## The mistake we are documenting (issue #1)
 

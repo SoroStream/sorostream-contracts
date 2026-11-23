@@ -1560,6 +1560,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sorostream-factory"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "sorostream-governance"
 version = "0.1.0"
 dependencies = [
@@ -1588,6 +1595,13 @@ dependencies = [
  "serde_json",
  "soroban-sdk",
  "sorostream-treasury",
+]
+
+[[package]]
+name = "sorostream-streaming"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

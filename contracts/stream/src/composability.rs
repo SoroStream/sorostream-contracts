@@ -7,32 +7,62 @@
 //!
 //! ## Usage
 //!
-//! An external contract imports and instantiates [`SoroStreamComposabilityClient`]:
+//! An external contract imports and instantiates [`SoroStreamComposabilityClient`].
+//! Its calling entry point should return `Result` so protocol errors can be
+//! propagated instead of panicking:
 //!
 //! ```rust,ignore
 //! use sorostream_stream::composability::SoroStreamComposabilityClient;
+//! use sorostream_stream::{CreateStreamParams, StreamError};
+//! use soroban_sdk::{contract, contractimpl, Address, Env};
 //!
-//! let client = SoroStreamComposabilityClient::new(&env, &sorostream_contract_id);
+//! #[contract]
+//! pub struct DaoGrants;
 //!
-//! // Create a stream on behalf of a DAO grant
-//! let stream_id = client.create_stream(
-//!     &env.current_contract_address(), // sender = the calling contract
-//!     &recipient,
-//!     &usdc_token,
-//!     &1_000_000_000i128,              // 1 000 USDC (7 decimals)
-//!     &(30 * 24 * 60 * 60u64),         // 30 days
-//!     &0u64,                           // no cliff
-//!     &0u64,                           // nonce = 0
-//!     &false,                          // no auto-renew
-//!     &None::<u32>,                    // unlimited renewals
-//!     &0u64,                           // no lock
-//!     &false,                          // recipient cannot terminate
-//!     &false,                          // transferable
-//! )?;
+//! #[contractimpl]
+//! impl DaoGrants {
+//!     pub fn create_grant(
+//!         env: Env,
+//!         sorostream_contract_id: Address,
+//!         recipient: Address,
+//!         usdc_token: Address,
+//!     ) -> Result<u64, StreamError> {
+//!         let client = SoroStreamComposabilityClient::new(&env, &sorostream_contract_id);
+//!         let params = CreateStreamParams {
+//!             cliff_seconds: 0,
+//!             nonce: 0,
+//!             lock_until: 0,
+//!             allow_recipient_termination: false,
+//!             non_transferable: false,
+//!             ..Default::default()
+//!         };
 //!
-//! // Query current claimable balance
-//! let claimable = client.get_claimable(&stream_id)?;
+//!         let stream_id = client.composable_create_stream(
+//!             &env.current_contract_address(), // sender = this contract
+//!             &recipient,
+//!             &usdc_token,
+//!             &1_000_000_000i128, // 1,000 USDC (7 decimals)
+//!             &(30 * 24 * 60 * 60u64), // 30 days
+//!             &false, // no auto-renew
+//!             &params,
+//!         )?;
+//!
+//!         // Errors from SoroStream propagate through this Result as well.
+//!         let _claimable = client.composable_get_claimable(&stream_id)?;
+//!         Ok(stream_id)
+//!     }
+//! }
 //! ```
+//!
+//! ## Reentrancy Considerations
+//!
+//! SoroStream guards its own state during operations, but that guard does not
+//! protect the calling contract. Stream creation and settlement can invoke a
+//! token contract; if the token implementation can call back into this contract,
+//! that callback may re-enter its entry points before the composability call
+//! returns. External integrators should apply checks-effects-interactions and
+//! use a reentrancy guard around their own sensitive state transitions. Do not
+//! rely on SoroStream's guard as protection for caller-owned state.
 //!
 //! ## Design Decisions
 //!

@@ -54,6 +54,11 @@ billed storage.
 > **Note:** The exact `rent_fee_per_byte_per_ledger` is a network parameter voted on by validators.
 > Always check the current schedule before budgeting.
 
+The contract exposes `estimate_stream_rent_cost(stream_id, rate, ledgers)` for an on-chain
+baseline. Pass the current network rate in **stroops per KiB per ledger**; the result is in
+stroops and is rounded up. The estimate uses the serialized stream value size and excludes its
+storage key and auxiliary index entries, so it is not a complete transaction-level rent quote.
+
 ---
 
 ## When to Expect Rent Bumps

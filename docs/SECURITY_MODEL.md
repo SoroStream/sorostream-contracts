@@ -331,7 +331,7 @@ mitigations, and residual risks. For complete details, refer to
 | **Arithmetic overflow** | Kani-verified `claimable ≤ deposit`; all arithmetic uses `checked_*` operations | Inputs exceeding Kani symbolic bounds (>10-year streams, >100,000 XLM deposits) are not exhaustively proved |
 | **Reentrancy** | Checks-effects-interactions pattern; per-stream reentrancy guard; `try_invoke_contract` for callbacks | If a transaction panics after acquiring the lock but before releasing it, the stream becomes permanently locked — guard release is verified in all code paths |
 | **Admin key compromise** | 7-day fee-change timelock; auto-expiring pause; on-chain audit log; guardian separation | Immediate WASM upgrade has no timelock; treasury redirection takes effect immediately |
-| **Non-SAC token** | `docs/ADDING_TOKENS.md` procedural due diligence | No on-chain token allowlist; any `Address` is accepted as `token` today |
+| **Non-SAC or malicious token** | `docs/ADDING_TOKENS.md` plus the mandatory token allowlist | Stream creation rejects token addresses that have not been explicitly approved by the admin |
 | **Storage exhaustion / DoS** | Global stream cap (`set_max_streams`); per-sender cap (`set_sender_stream_limit`); paginated queries | Well-funded attacker can fill slots to the cap; cap must be monitored |
 | **Replay / duplicate stream** | Per-sender nonce registry; `DuplicateStream` error on reuse | Nonces must be managed carefully in batch creation workflows |
 | **MEV / transaction ordering** | No AMM or price-sensitive operations; `withdraw` amount is purely time-based | Reordering a `cancel` ahead of a `withdraw` is benign — both paths are correct |

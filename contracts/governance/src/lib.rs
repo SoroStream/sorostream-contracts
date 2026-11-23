@@ -9,9 +9,14 @@
 //! 3. After the voting period ends, if quorum is met, anyone calls `queue` to start the timelock.
 //! 4. After the 48-hour timelock the proposal is executable via `execute`.
 //! 5. The guardian may `veto` a queued proposal before it executes.
+//! A proposer may withdraw their proposal while it is still active.
+
+#[cfg(test)]
+mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracterror, contracttype, token, Address, Bytes, Env, Symbol, Vec,
+    contract, contractimpl, contracterror, contracttype, token, Address, Bytes, Env, Symbol, Val,
+    Vec,
 };
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -19,6 +24,7 @@ use soroban_sdk::{
 const ADMIN_KEY: &str = "admin";
 const PENDING_ADMIN_KEY: &str = "pending_admin";
 const GUARDIAN_KEY: &str = "guardian";
+const PENDING_GUARDIAN_KEY: &str = "pending_guardian";
 const TOKEN_KEY: &str = "token";
 const PROPOSAL_THRESHOLD_KEY: &str = "p_thresh";
 const QUORUM_KEY: &str = "quorum";
@@ -28,6 +34,7 @@ const PROPOSAL_COUNT_KEY: &str = "p_cnt";
 
 const DEFAULT_VOTING_PERIOD: u64 = 7 * 24 * 60 * 60; // 7 days
 const DEFAULT_TIMELOCK_PERIOD: u64 = 48 * 60 * 60;   // 48 hours
+const MAX_GOVERNANCE_PERIOD: u64 = 365 * 24 * 60 * 60; // 1 year
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,6 +51,10 @@ pub enum ProposalStatus {
     Executed,
     /// Vetoed by the guardian during the timelock.
     Vetoed,
+    /// Execution was attempted but the target invocation failed; retryable via `execute`.
+    Failed,
+    /// Withdrawn by its proposer before voting ended.
+    Cancelled,
 }
 
 #[contracttype]
@@ -55,8 +66,14 @@ pub struct Proposal {
     pub target: Address,
     /// Function name to call on the target.
     pub function: Symbol,
-    /// ABI-encoded arguments passed verbatim to the target.
-    pub calldata: Bytes,
+    /// Snapshot of the quorum required for this proposal.
+    pub quorum: u64,
+    /// Snapshot of the timelock period applied when this proposal is queued.
+    pub timelock_period: u64,
+    /// Guardian authorized to veto this proposal.
+    pub guardian: Address,
+    /// Typed arguments passed to the target; empty means no arguments.
+    pub calldata: Vec<Val>,
     pub status: ProposalStatus,
     /// Ledger timestamp when voting opened.
     pub vote_start: u64,
@@ -86,6 +103,10 @@ pub enum GovernanceError {
     ProposalNotQueued = 10,
     InsufficientTokens = 11,
     InvalidParam = 12,
+    InvokeFailed = 13,
+    NoVoteToWithdraw = 14,
+    NotProposer = 15,
+    ProposalNotActive = 16,
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -96,6 +117,10 @@ fn read_admin(env: &Env) -> Option<Address> {
 
 fn read_pending_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&Symbol::new(env, PENDING_ADMIN_KEY))
+}
+
+fn read_pending_guardian(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&Symbol::new(env, PENDING_GUARDIAN_KEY))
 }
 
 fn check_admin(env: &Env) {
@@ -140,6 +165,10 @@ fn mark_voted(env: &Env, proposal_id: u64, voter: &Address) {
         .set(&voted_key(env, proposal_id, voter), &true);
 }
 
+fn locked_balance_key(env: &Env, proposal_id: u64, voter: &Address) -> (Symbol, u64, Address) {
+    (Symbol::new(env, "locked"), proposal_id, voter.clone())
+}
+
 fn get_u64(env: &Env, key: &str, default: u64) -> u64 {
     env.storage().instance().get(&Symbol::new(env, key)).unwrap_or(default)
 }
@@ -157,8 +186,8 @@ impl GovernanceContract {
     /// * `token` — governance token used to check balances and vote weight.
     /// * `proposal_threshold` — minimum token balance required to create a proposal.
     /// * `quorum` — minimum total votes (for + against) required for a proposal to pass.
-    /// * `voting_period` — seconds the voting window stays open (0 = default 7 days).
-    /// * `timelock_period` — seconds between queue and execution (0 = default 48 h).
+    /// * `voting_period` — seconds the voting window stays open (0 = default 7 days, max 1 year).
+    /// * `timelock_period` — seconds between queue and execution (0 = default 48 h, max 1 year).
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
@@ -172,6 +201,9 @@ impl GovernanceContract {
     ) -> Result<(), GovernanceError> {
         if read_admin(&env).is_some() {
             return Err(GovernanceError::AlreadyInitialized);
+        }
+        if voting_period > MAX_GOVERNANCE_PERIOD || timelock_period > MAX_GOVERNANCE_PERIOD {
+            return Err(GovernanceError::InvalidParam);
         }
         env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &admin);
         env.storage().instance().set(&Symbol::new(&env, GUARDIAN_KEY), &guardian);
@@ -192,12 +224,14 @@ impl GovernanceContract {
     /// Creates a new governance proposal.
     ///
     /// The proposer must hold at least `proposal_threshold` tokens.
+    /// `calldata` must contain the XDR encoding of the target's `Vec<Val>` arguments,
+    /// or be empty for a target function with no arguments.
     pub fn create_proposal(
         env: Env,
         proposer: Address,
         target: Address,
         function: Symbol,
-        calldata: Bytes,
+        calldata: Vec<Val>,
     ) -> Result<u64, GovernanceError> {
         proposer.require_auth();
 
@@ -207,12 +241,18 @@ impl GovernanceContract {
         let threshold = get_u64(&env, PROPOSAL_THRESHOLD_KEY, 0);
 
         let balance = token::Client::new(&env, &token).balance(&proposer);
-        if (balance as u64) < threshold {
+        let balance = u64::try_from(balance).map_err(|_| GovernanceError::InvalidParam)?;
+        if balance < threshold {
             return Err(GovernanceError::InsufficientTokens);
         }
 
         let now = env.ledger().timestamp();
         let voting_period = get_u64(&env, VOTING_PERIOD_KEY, DEFAULT_VOTING_PERIOD);
+        let quorum = get_u64(&env, QUORUM_KEY, 0);
+        let timelock_period = get_u64(&env, TIMELOCK_PERIOD_KEY, DEFAULT_TIMELOCK_PERIOD);
+        let guardian: Address = env.storage().instance()
+            .get(&Symbol::new(&env, GUARDIAN_KEY))
+            .ok_or(GovernanceError::NotInitialized)?;
 
         let id = next_proposal_id(&env);
         let proposal = Proposal {
@@ -220,6 +260,9 @@ impl GovernanceContract {
             proposer: proposer.clone(),
             target: target.clone(),
             function: function.clone(),
+            quorum,
+            timelock_period,
+            guardian,
             calldata: calldata.clone(),
             status: ProposalStatus::Active,
             vote_start: now,
@@ -232,7 +275,14 @@ impl GovernanceContract {
 
         env.events().publish(
             (Symbol::new(&env, "ProposalCreated"), id),
-            (proposer, target, function, now, proposal.vote_end),
+            (
+                proposer,
+                target,
+                function,
+                now,
+                proposal.vote_end,
+                proposal.calldata.clone(),
+            ),
         );
 
         Ok(id)
@@ -240,8 +290,9 @@ impl GovernanceContract {
 
     /// Casts a vote on an active proposal.
     ///
-    /// Vote weight equals the voter's current token balance (1 token = 1 vote).
-    /// Each address may vote only once per proposal.
+    /// Vote weight equals the voter's token balance when voting. Those tokens are
+    /// held in escrow until the voting period ends, preventing them from being
+    /// transferred and counted again through another address.
     pub fn vote(
         env: Env,
         voter: Address,
@@ -268,7 +319,20 @@ impl GovernanceContract {
         let token: Address = env.storage().instance()
             .get(&Symbol::new(&env, TOKEN_KEY))
             .ok_or(GovernanceError::NotInitialized)?;
-        let balance = token::Client::new(&env, &token).balance(&voter) as u64;
+        let token_client = token::Client::new(&env, &token);
+        let balance = token_client.balance(&voter);
+        let balance = u64::try_from(balance).map_err(|_| GovernanceError::InvalidParam)?;
+
+        if balance > 0 {
+            token_client.transfer(
+                &voter,
+                &env.current_contract_address(),
+                &(balance as i128),
+            );
+        }
+        env.storage()
+            .persistent()
+            .set(&locked_balance_key(&env, proposal_id, &voter), &balance);
 
         mark_voted(&env, proposal_id, &voter);
 
@@ -287,6 +351,42 @@ impl GovernanceContract {
         Ok(())
     }
 
+    /// Returns escrowed voting tokens after the proposal's voting period ends.
+    pub fn withdraw_vote_tokens(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+    ) -> Result<(), GovernanceError> {
+        voter.require_auth();
+
+        let proposal = load_proposal(&env, proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+        if env.ledger().timestamp() <= proposal.vote_end {
+            return Err(GovernanceError::VotingNotActive);
+        }
+
+        let key = locked_balance_key(&env, proposal_id, &voter);
+        let balance: u64 = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(GovernanceError::NoVoteToWithdraw)?;
+        env.storage().persistent().remove(&key);
+
+        if balance > 0 {
+            let token: Address = env.storage().instance()
+                .get(&Symbol::new(&env, TOKEN_KEY))
+                .ok_or(GovernanceError::NotInitialized)?;
+            token::Client::new(&env, &token).transfer(
+                &env.current_contract_address(),
+                &voter,
+                &(balance as i128),
+            );
+        }
+
+        Ok(())
+    }
+
     /// Queues a passed proposal into the timelock.
     ///
     /// Callable by anyone after voting ends. Fails if quorum was not reached or the
@@ -300,20 +400,22 @@ impl GovernanceContract {
             return Err(GovernanceError::VotingNotActive);
         }
 
-        let quorum = get_u64(&env, QUORUM_KEY, 0);
         let total_votes = proposal.votes_for.saturating_add(proposal.votes_against);
-        if total_votes < quorum || proposal.votes_for <= proposal.votes_against {
+        if total_votes < proposal.quorum || proposal.votes_for <= proposal.votes_against {
+            // Soroban rolls back all storage writes made during an invocation
+            // that returns `Err`, so the Defeated status would never persist
+            // if we returned an error here. The call itself succeeds; the
+            // proposal's outcome is just negative.
             proposal.status = ProposalStatus::Defeated;
             save_proposal(&env, &proposal);
             env.events().publish(
                 (Symbol::new(&env, "ProposalDefeated"), proposal_id),
                 (proposal.votes_for, proposal.votes_against, total_votes),
             );
-            return Err(GovernanceError::QuorumNotReached);
+            return Ok(());
         }
 
-        let timelock = get_u64(&env, TIMELOCK_PERIOD_KEY, DEFAULT_TIMELOCK_PERIOD);
-        proposal.eta = now.saturating_add(timelock);
+        proposal.eta = now.saturating_add(proposal.timelock_period);
         proposal.status = ProposalStatus::Queued;
         save_proposal(&env, &proposal);
 
@@ -328,12 +430,22 @@ impl GovernanceContract {
     /// Executes a queued proposal after the timelock has elapsed.
     ///
     /// Callable by anyone. Invokes `proposal.function` on `proposal.target` with
-    /// `proposal.calldata` as arguments.
+    /// `proposal.calldata` — the proposer's own distinct typed `Vec<Val>` arguments,
+    /// collected at `create_proposal` time — so a proposal can target a real entry
+    /// point's actual parameter list directly, unlike the multi-sig's `approve`,
+    /// which still forwards its intent's calldata as a single raw `Bytes` argument.
+    ///
+    /// The invocation still assumes the target returns `()`; a target returning
+    /// `Result<_, StreamError>` (as the main stream contract's entry points do)
+    /// fails the `T::Error` conversion and is treated as a failed execution
+    /// (`ProposalStatus::Failed`) rather than a successful one.
     pub fn execute(env: Env, proposal_id: u64) -> Result<(), GovernanceError> {
         let mut proposal = load_proposal(&env, proposal_id)
             .ok_or(GovernanceError::ProposalNotFound)?;
 
-        if proposal.status != ProposalStatus::Queued {
+        if proposal.status != ProposalStatus::Queued
+            && proposal.status != ProposalStatus::Failed
+        {
             return Err(GovernanceError::ProposalNotQueued);
         }
 
@@ -342,37 +454,47 @@ impl GovernanceContract {
             return Err(GovernanceError::TimelockNotExpired);
         }
 
-        proposal.status = ProposalStatus::Executed;
-        save_proposal(&env, &proposal);
-
-        env.invoke_contract::<()>(
+        let invoke_result = env.try_invoke_contract::<(), soroban_sdk::Error>(
             &proposal.target,
             &proposal.function,
-            Vec::from_array(&env, [soroban_sdk::IntoVal::into_val(&proposal.calldata, &env)]),
+            proposal.calldata.clone(),
         );
 
-        env.events().publish(
-            (Symbol::new(&env, "ProposalExecuted"), proposal_id),
-            (),
-        );
+        match invoke_result {
+            Ok(Ok(())) => {
+                proposal.status = ProposalStatus::Executed;
+                save_proposal(&env, &proposal);
 
-        Ok(())
+                env.events().publish(
+                    (Symbol::new(&env, "ProposalExecuted"), proposal_id),
+                    (),
+                );
+
+                Ok(())
+            }
+            _ => {
+                proposal.status = ProposalStatus::Failed;
+                save_proposal(&env, &proposal);
+
+                env.events().publish(
+                    (Symbol::new(&env, "ProposalFailed"), proposal_id),
+                    (),
+                );
+
+                Err(GovernanceError::InvokeFailed)
+            }
+        }
     }
 
     /// Vetoes a queued proposal. Only the guardian may call this.
     pub fn veto(env: Env, guardian: Address, proposal_id: u64) -> Result<(), GovernanceError> {
         guardian.require_auth();
 
-        let stored: Address = env.storage().instance()
-            .get(&Symbol::new(&env, GUARDIAN_KEY))
-            .ok_or(GovernanceError::NotInitialized)?;
-        if guardian != stored {
-            return Err(GovernanceError::NotGuardian);
-        }
-
         let mut proposal = load_proposal(&env, proposal_id)
             .ok_or(GovernanceError::ProposalNotFound)?;
-
+        if guardian != proposal.guardian {
+            return Err(GovernanceError::NotGuardian);
+        }
         if proposal.status != ProposalStatus::Queued {
             return Err(GovernanceError::ProposalNotQueued);
         }
@@ -383,6 +505,33 @@ impl GovernanceContract {
         env.events().publish(
             (Symbol::new(&env, "ProposalVetoed"), proposal_id),
             guardian,
+        );
+
+        Ok(())
+    }
+
+    /// Withdraws an active proposal. Only its proposer may cancel it.
+    pub fn cancel_proposal(
+        env: Env,
+        proposer: Address,
+        proposal_id: u64,
+    ) -> Result<(), GovernanceError> {
+        proposer.require_auth();
+
+        let mut proposal = load_proposal(&env, proposal_id)
+            .ok_or(GovernanceError::ProposalNotFound)?;
+        if proposal.proposer != proposer {
+            return Err(GovernanceError::NotProposer);
+        }
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::ProposalNotActive);
+        }
+
+        proposal.status = ProposalStatus::Cancelled;
+        save_proposal(&env, &proposal);
+        env.events().publish(
+            (Symbol::new(&env, "ProposalCancelled"), proposal_id),
+            proposer,
         );
 
         Ok(())
@@ -408,6 +557,40 @@ impl GovernanceContract {
         Ok(())
     }
 
+    /// Proposes a new guardian address. Only admin may call this.
+    ///
+    /// The proposed guardian must call [`accept_guardian`] to complete the
+    /// two-step transfer, mirroring the admin propose/accept flow and avoiding
+    /// an accidental lockout from a typo'd address.
+    pub fn propose_guardian(env: Env, new_guardian: Address) -> Result<(), GovernanceError> {
+        check_admin(&env);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, PENDING_GUARDIAN_KEY), &new_guardian);
+        env.events().publish(
+            (Symbol::new(&env, "GuardianTransferProposed"),),
+            new_guardian,
+        );
+        Ok(())
+    }
+
+    /// Accepts the guardian role. The pending guardian must call this.
+    pub fn accept_guardian(env: Env, accepted_by: Address) -> Result<(), GovernanceError> {
+        accepted_by.require_auth();
+        let pending = read_pending_guardian(&env)
+            .ok_or(GovernanceError::NotInitialized)?;
+        if accepted_by != pending {
+            return Err(GovernanceError::NotAdmin);
+        }
+        env.storage().instance().set(&Symbol::new(&env, GUARDIAN_KEY), &accepted_by);
+        env.storage().instance().remove(&Symbol::new(&env, PENDING_GUARDIAN_KEY));
+        env.events().publish(
+            (Symbol::new(&env, "GuardianTransferAccepted"),),
+            accepted_by,
+        );
+        Ok(())
+    }
+
     /// Updates the proposal threshold. Only admin may call this.
     pub fn set_proposal_threshold(env: Env, threshold: u64) -> Result<(), GovernanceError> {
         check_admin(&env);
@@ -425,7 +608,7 @@ impl GovernanceContract {
     /// Updates the voting period in seconds. Only admin may call this.
     pub fn set_voting_period(env: Env, seconds: u64) -> Result<(), GovernanceError> {
         check_admin(&env);
-        if seconds == 0 {
+        if seconds == 0 || seconds > MAX_GOVERNANCE_PERIOD {
             return Err(GovernanceError::InvalidParam);
         }
         env.storage().instance().set(&Symbol::new(&env, VOTING_PERIOD_KEY), &seconds);
@@ -435,7 +618,7 @@ impl GovernanceContract {
     /// Updates the timelock period in seconds. Only admin may call this.
     pub fn set_timelock_period(env: Env, seconds: u64) -> Result<(), GovernanceError> {
         check_admin(&env);
-        if seconds == 0 {
+        if seconds == 0 || seconds > MAX_GOVERNANCE_PERIOD {
             return Err(GovernanceError::InvalidParam);
         }
         env.storage().instance().set(&Symbol::new(&env, TIMELOCK_PERIOD_KEY), &seconds);
@@ -468,5 +651,60 @@ impl GovernanceContract {
             accepted_by,
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod embedded_test {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::token::StellarAssetClient;
+    use soroban_sdk::{Address, Env, Vec};
+
+    fn setup() -> (Env, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(GovernanceContract, ());
+        let admin = Address::generate(&env);
+        let guardian = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_id = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        let c = GovernanceContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &guardian, &token_id, &100u64, &10u64, &0u64, &0u64);
+        (env, contract_id, token_id)
+    }
+
+    #[test]
+    fn test_queue_on_already_defeated_proposal_rejected() {
+        let (env, contract_id, token_id) = setup();
+        let c = GovernanceContractClient::new(&env, &contract_id);
+        let proposer = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&proposer, &1000);
+
+        let target = Address::generate(&env);
+        let function = Symbol::new(&env, "dummy");
+        let calldata: Vec<Val> = Vec::new(&env);
+
+        env.ledger().set_timestamp(1000);
+        let proposal_id = c.create_proposal(&proposer, &target, &function, &calldata);
+
+        // advance time past the end of the voting period
+        env.ledger().set_timestamp(10_000_000);
+
+        // first queue: no votes cast, quorum not reached -> proposal defeated.
+        // The call itself succeeds (Ok); the proposal's resolved outcome is
+        // Defeated, which persists because Soroban rolls back storage writes
+        // on an Err return.
+        let result = c.try_queue(&proposal_id);
+        assert_eq!(result, Ok(Ok(())));
+        let proposal = c.get_proposal(&proposal_id);
+        assert_eq!(proposal.status, ProposalStatus::Defeated);
+
+        // second queue on an already-defeated proposal -> VotingNotActive,
+        // quorum is not re-evaluated
+        let result = c.try_queue(&proposal_id);
+        assert_eq!(result, Err(Ok(GovernanceError::VotingNotActive)));
     }
 }

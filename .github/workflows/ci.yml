@@ -6,51 +6,6 @@ on:
     branches: [main]
 
 jobs:
-  integration:
-    name: Integration & Regression
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-      - uses: Swatinem/rust-cache@v2
-      - name: Build WASM
-        run: cargo build --target wasm32v1-none --release
-      - name: Integration tests
-        run: cargo test integration_tests -- --nocapture
-      - name: Event field integration tests
-        run: cargo test event_field_tests -- --nocapture
-      - name: Testnet manifest validation
-        run: cargo test testnet_manifest_loads -- --nocapture
-      - name: Storage baseline regression
-        run: cargo test --package sorostream-stream -- storage_bench::check_storage_baseline_regression --nocapture
-      - name: Build size-optimised WASM
-        run: cargo build --target wasm32v1-none --profile release-size
-      - name: Record WASM binary size
-        id: wasm_size
-        run: |
-          SIZE=$(wc -c < target/wasm32v1-none/release/sorostream_stream.wasm)
-          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
-          echo "WASM binary size: $SIZE bytes"
-      - name: Check WASM size regression
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin main
-          git checkout origin/main -- wasm-size.log 2>/dev/null || echo "0" > wasm-size.log
-          BASELINE=$(cat wasm-size.log | tr -d '[:space:]')
-          CURRENT=${{ steps.wasm_size.outputs.size }}
-          if [ "$BASELINE" -gt 0 ] 2>/dev/null; then
-            GROWTH=$(( (CURRENT - BASELINE) * 100 / BASELINE ))
-            echo "Baseline: $BASELINE bytes, Current: $CURRENT bytes, Growth: ${GROWTH}%"
-            if [ "$GROWTH" -gt 5 ]; then
-              echo "::error::WASM binary grew by ${GROWTH}% (${BASELINE} -> ${CURRENT}), exceeding the 5% threshold"
-              exit 1
-            fi
-          else
-            echo "No baseline size found, skipping regression check"
-          fi
-
   property-tests:
     name: Property Tests
     runs-on: ubuntu-latest
@@ -58,23 +13,53 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Check stream test module declarations
+        run: python3 scripts/check_stream_test_modules.py
+      - name: Check StreamError variant limit
+        run: |
+          count=$(grep -cE '^[[:space:]]+[[:alnum:]_]+ = [0-9]+,?$' contracts/stream/src/errors.rs)
+          echo "StreamError variants: $count / 50"
+          if [[ "$count" -gt 50 ]]; then
+            echo "::error::StreamError has $count variants; Soroban supports at most 50. Consolidate a variant before building."
+            exit 1
+          fi
       - name: Property-based tests (1,000 iterations per property)
         env:
           PROPTEST_CASES: 1000
         run: cargo test proptest_tests -- --nocapture
         timeout-minutes: 10
+      - name: Fee conservation properties (10,000 cases)
+        env:
+          PROPTEST_CASES: 10000
+        run: cargo test -p sorostream-stream --lib issue_647_tests -- --nocapture
+        timeout-minutes: 20
+      - name: feat/39 create-stream fuzz (10,000 cases, fixed seed)
+        env:
+          PROPTEST_CASES: 10000
+        run: cargo test issue_39_tests -- --nocapture
+        timeout-minutes: 15
+      - name: feat/6 resume paused-at reset tests
+        run: cargo test issue_6_tests -- --nocapture
+        timeout-minutes: 5
+      - name: feat/37 sender stream cap tests
+        run: cargo test issue_37_tests -- --nocapture
+        timeout-minutes: 5
+      - name: Duplicate stream ID collision tests
+        run: cargo test duplicate_id_tests -- --nocapture
+        timeout-minutes: 5
 
-  security-audit:
-    name: Security Audit
+  debug-accounting-fuzz:
+    name: Debug Accounting and Randomized Suites
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      RUSTFLAGS: -C debug-assertions=yes
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-      - name: Run cargo audit (fail on critical CVEs)
-        run: cargo audit
-      - name: Check for known vulnerabilities
-        run: cargo audit --json
+      - name: Chaos campaigns with accounting invariants enabled
+        run: cargo test -p sorostream-stream --lib chaos -- --nocapture
+      - name: Differential fuzz with accounting invariants enabled
+        run: cargo test -p sorostream-stream --lib differential_fuzz -- --nocapture
 

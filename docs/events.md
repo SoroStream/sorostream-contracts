@@ -246,13 +246,13 @@ Timestamps are **Unix seconds** as returned by `env.ledger().timestamp()`.
 
 ### 12. `MetadataUpdated`
 
-**Trigger:** `update_metadata` is called with a new binary metadata blob (max 64 bytes).
+**Trigger:** `update_metadata` is called with a new temporary binary metadata blob (max 256 bytes).
 
 | Position | Field | Type | Description |
 |----------|-------|------|-------------|
 | topics[0] | event name | `Symbol` | `"MetadataUpdated"` |
 | topics[1] | `stream_id` | `u64` | Stream identifier |
-| data | `metadata` | `Bytes` | New metadata blob (raw bytes, max 64 bytes) |
+| data | `metadata` | `Bytes` | New metadata blob (raw bytes, max 256 bytes) |
 
 ---
 
@@ -617,7 +617,7 @@ Timestamps are **Unix seconds** as returned by `env.ledger().timestamp()`.
 
 ### 40. `TokenWhitelistToggled`
 
-**Trigger:** Admin calls `toggle_whitelist` to enable or disable token whitelist enforcement globally.
+**Trigger:** Admin enables token whitelist enforcement globally. Enforcement cannot be disabled because token calls are an external trust boundary.
 
 > This event has **one topic**.
 

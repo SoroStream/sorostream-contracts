@@ -37,6 +37,12 @@ stellar contract invoke \
 # returns: (fee_bps: u32, treasury: Option<Address>)
 ```
 
+Protocol fee changes are timelocked for seven days. `set_protocol_fee` and
+`propose_fee_change` create a pending proposal; the current fee is unchanged
+until anyone calls `execute_fee_change` after the unlock time. This delay
+prevents an administrator from raising the fee immediately before a large
+withdrawal.
+
 ### 1.2 Fee Deduction in `withdraw`
 
 Every call to `withdraw(stream_id, recipient)` goes through this calculation:

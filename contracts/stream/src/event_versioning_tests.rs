@@ -4,7 +4,7 @@ use crate::events::get_event_schema_version;
 #[test]
 fn test_event_schema_version_constant() {
     let version = get_event_schema_version();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 }
 
 #[test]
@@ -22,7 +22,7 @@ fn test_event_schema_version_is_u32() {
 #[test]
 fn test_event_schema_version_matches_expected() {
     let version = get_event_schema_version();
-    assert_eq!(version, 1, "Event schema version should be 1 for version 1 contract");
+    assert_eq!(version, 2, "Event schema version should be 2 for the per-stream event nonce schema");
 }
 
 #[test]
@@ -55,10 +55,11 @@ fn test_event_versioning_migration_path() {
     // Future versions should have monotonically increasing version numbers
     // This allows indexers to handle version transitions:
     // - v0: Handle legacy events (if any)
-    // - v1: Current schema with fields (version, ...)
-    // - v2+: Future schemas with additional fields
+    // - v1: Original schema with fields (version, ...)
+    // - v2: Adds the per-stream event nonce used for replay protection
+    // - v3+: Future schemas with additional fields
 
-    assert!(current_version >= 1, "Event schema version should support at least v1");
+    assert!(current_version >= 2, "Event schema version should support the per-stream event nonce");
 }
 
 #[test]
@@ -94,7 +95,7 @@ fn test_event_versioning_documents_schema_changes() {
 
     let version = get_event_schema_version();
 
-    // Version 1 schema includes: (version_field, ...original_fields)
-    // This allows backward-compatible field additions in future versions
-    assert_eq!(version, 1, "Current schema version is 1");
+    // Version 2 schema includes: (version_field, ...original_fields, event_nonce)
+    // This adds replay-protection for per-stream event replays.
+    assert_eq!(version, 2, "Current schema version is 2");
 }

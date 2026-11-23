@@ -28,7 +28,7 @@ struct StorageBenchEnv {
 
 fn setup() -> StorageBenchEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract_id = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -455,4 +455,137 @@ fn parse_json_u32(s: &str, key: &str) -> u32 {
     } else {
         0
     }
+}
+
+// ---------------------------------------------------------------------------
+// Audit log storage benchmarks (issue #766)
+// ---------------------------------------------------------------------------
+
+/// Measures the cumulative storage cost of appending `n` audit entries (the
+/// admin/role action log) and then reading it back. Compares against the
+/// per-stream storage footprint to highlight audit log growth as a separate
+/// unbounded growth vector.
+#[test]
+fn generate_audit_log_storage_baseline() {
+    let mut results: std::vec::Vec<EntryCount> = std::vec::Vec::new();
+
+    let append_counts = [0u32, 10, 50, 100, 250, 500, 1000];
+
+    for &n in &append_counts {
+        let b = setup();
+        let cl = c(&b);
+        b.env.ledger().set_timestamp(0);
+        let stream_id = cl.create_stream(
+            &b.sender, &b.recipient, &b.token_id,
+            &100_000, &1000, &0, &0u64, &false, &0u64,
+            &false,
+            &0i128,
+        );
+
+        let admin = Address::generate(&b.env);
+        let mut params = soroban_sdk::String::from_str(&b.env, "fee_change");
+        for _ in 0..n {
+            let entry = AuditEntry {
+                instruction: soroban_sdk::String::from_str(&b.env, "set_fee"),
+                admin: admin.clone(),
+                timestamp: b.env.ledger().timestamp(),
+                params: params.clone(),
+            };
+            append_audit_entry(&b.env, &entry);
+            let _ = &stream_id;
+        }
+
+        // Read the log back to measure read_entries.
+        let _log = read_audit_log(&b.env);
+
+        results.push(measure(&b.env, "append_audit_entry_n", n));
+    }
+
+    let mut json = std::string::String::from("{\n");
+    for (i, entry) in results.iter().enumerate() {
+        let n = append_counts[i];
+        json.push_str(&std::format!(
+            "  \"{}_n{}\": {{ \"read_entries\": {}, \"write_entries\": {}, \"append_count\": {} }}",
+            entry.name, n, entry.read_entries, entry.write_entries, n
+        ));
+        if i < results.len() - 1 {
+            json.push(',');
+        }
+        json.push('\n');
+    }
+    json.push('}');
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../benches/audit_log_storage_baseline.json");
+    std::fs::write(&path, &json).expect("failed to write audit_log_storage_baseline.json");
+    println!("\nWrote audit log baseline to {}", path.display());
+}
+
+#[test]
+fn check_audit_log_storage_baseline_regression() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../benches/audit_log_storage_baseline.json");
+    let baseline = std::fs::read_to_string(&path)
+        .expect("benches/audit_log_storage_baseline.json not found — run generate_audit_log_storage_baseline first");
+
+    let append_counts = [0u32, 10, 50, 100, 250, 500, 1000];
+    let mut failures: std::vec::Vec<std::string::String> = std::vec::Vec::new();
+    const MAX_REGRESSION: u32 = 10;
+
+    for &n in &append_counts {
+        let b = setup();
+        let cl = c(&b);
+        b.env.ledger().set_timestamp(0);
+        let _stream_id = cl.create_stream(
+            &b.sender, &b.recipient, &b.token_id,
+            &100_000, &1000, &0, &0u64, &false, &0u64,
+            &false,
+            &0i128,
+        );
+
+        let admin = Address::generate(&b.env);
+        let params = soroban_sdk::String::from_str(&b.env, "fee_change");
+        for _ in 0..n {
+            let entry = AuditEntry {
+                instruction: soroban_sdk::String::from_str(&b.env, "set_fee"),
+                admin: admin.clone(),
+                timestamp: b.env.ledger().timestamp(),
+                params: params.clone(),
+            };
+            append_audit_entry(&b.env, &entry);
+        }
+        let _log = read_audit_log(&b.env);
+        let res = b.env.cost_estimate().resources();
+
+        let key = std::format!("append_audit_entry_n_n{}", n);
+        if let Some(start) = baseline.find(&std::format!("\"{}\"", key)) {
+            let rest = &baseline[start..];
+            let read_base = parse_json_u32(rest, "read_entries");
+            let write_base = parse_json_u32(rest, "write_entries");
+
+            if res.read_entries > read_base + MAX_REGRESSION {
+                failures.push(std::format!(
+                    "n{}: read_entries {} exceeds baseline {} by more than {}",
+                    n, res.read_entries, read_base, MAX_REGRESSION
+                ));
+            }
+            if res.write_entries > write_base + MAX_REGRESSION {
+                failures.push(std::format!(
+                    "n{}: write_entries {} exceeds baseline {} by more than {}",
+                    n, res.write_entries, write_base, MAX_REGRESSION
+                ));
+            }
+        } else {
+            println!("WARNING: no baseline found for {key}, skipping regression check");
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "Audit log storage baseline regression detected:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    println!("\nAudit log append counts within 10-entry tolerance of baseline.");
 }

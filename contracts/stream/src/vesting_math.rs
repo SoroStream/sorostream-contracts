@@ -72,10 +72,58 @@ pub fn compute_refund(
     Some(deposit.saturating_sub(total_streamed))
 }
 
-/// Computes flow rate from deposit and duration (integer division, floors).
+#[cfg(test)]
+mod issue_841_tests {
+    use super::*;
+
+    #[test]
+    fn compute_refund_before_start_returns_full_deposit() {
+        // now strictly before start_time: nothing streamed yet.
+        let deposit = 1000i128;
+        let duration = 100u64;
+        let start_time = 1000u64;
+        let now = 500u64; // before start
+        let end_time = start_time + duration;
+        let flow_rate = compute_flow_rate(deposit, duration);
+        let refund = compute_refund(deposit, flow_rate, now, end_time, start_time).unwrap();
+        assert_eq!(refund, deposit, "refund must be full deposit when now < start_time");
+    }
+}
+
 pub fn compute_flow_rate(deposit: i128, duration_seconds: u64) -> i128 {
     deposit / duration_seconds as i128
 }
+
+// ---------------------------------------------------------------------------
+// Cost comparison: Linear vs TimeDecay
+// ---------------------------------------------------------------------------
+//
+// On-chain resource/gas implications for a stream creator choosing between the
+// two curves (see [`VestingCurve`] in types.rs):
+//
+// | Curve     | On-chain work per `withdraw`/`compute_claimable` call           | Storage reads | Best for                            |
+// |-----------|-----------------------------------------------------------------|---------------|-------------------------------------|
+// | Linear    | Single multiply: `flow_rate × elapsed`                          | 0 (pure math) | Long-duration streams; lowest cost  |
+// | TimeDecay | Iterative loop: one `checked_mul` + `checked_div` per 1 ks window | 0 (pure math) | Front-weighted vesting; higher cost |
+//
+// Linear is O(1) — one multiplication regardless of stream length, so it is
+// the cheapest option and the safe default for multi-year streams.
+//
+// TimeDecay is O(windows) where `windows = elapsed / DECAY_WINDOW_SECS`.
+// Each window iteration performs a fixed-point multiply and division, so cost
+// grows linearly with stream duration. For a 1-year stream (~31.5M seconds)
+// that is ~31 500 loop iterations — roughly 30 000× the arithmetic of Linear.
+// Use TimeDecay only when front-weighted release is genuinely required, and
+// prefer shorter durations or larger windows to keep the iteration count low.
+//
+// Both curves are pure arithmetic (zero storage reads) and `decay_factor == 0`
+// degenerates to the linear formula, so a TimeDecay stream with a zero factor
+// costs the same as Linear.
+//
+// # Convergence guarantee
+//
+// When `query_time >= end_time` both curves return exactly `deposit`, so the
+// full amount is always reachable at stream end regardless of curve choice.
 
 // ---------------------------------------------------------------------------
 // Time-decay (exponential front-weighting) helpers
@@ -84,8 +132,8 @@ pub fn compute_flow_rate(deposit: i128, duration_seconds: u64) -> i128 {
 /// Window size for the discretised decay computation (1 000 seconds).
 ///
 /// The decay factor is applied once per window. Smaller windows give a
-/// smoother curve but cost more iterations; 1 ks is a good balance for
-/// streams up to ~1 year (≤ 32 000 windows).
+/// smoother curve but cost more arithmetic; computation uses logarithmic
+/// exponentiation, so long streams do not add per-window invocation cost.
 pub const DECAY_WINDOW_SECS: u64 = 1_000;
 
 /// Fixed-point scale factor used internally (10^9 = 1 billion).
@@ -93,6 +141,23 @@ pub const DECAY_WINDOW_SECS: u64 = 1_000;
 /// All intermediate `remaining_weight` values are kept multiplied by this
 /// scale to preserve precision through many iterations of integer division.
 const SCALE: i128 = 1_000_000_000;
+
+fn fixed_point_pow(base: i128, mut exponent: u64) -> Option<i128> {
+    let mut result = SCALE;
+    let mut factor = base;
+
+    while exponent > 0 {
+        if exponent & 1 == 1 {
+            result = result.checked_mul(factor)?.checked_div(SCALE)?;
+        }
+        exponent >>= 1;
+        if exponent > 0 {
+            factor = factor.checked_mul(factor)?.checked_div(SCALE)?;
+        }
+    }
+
+    Some(result)
+}
 
 /// Computes the **cumulative** amount vested from `start_time` up to `query_time`
 /// under an exponential time-decay curve.
@@ -140,6 +205,9 @@ pub fn compute_cumulative_decay(
     query_time: u64,
     decay_factor: u32,
 ) -> Option<i128> {
+    if decay_factor >= 10_000 {
+        return None;
+    }
     if deposit <= 0 || end_time <= start_time {
         return Some(0);
     }
@@ -161,8 +229,7 @@ pub fn compute_cumulative_decay(
             .checked_div(duration as i128);
     }
 
-    // Guard: decay_factor must be < 10_000 (otherwise remaining goes to zero immediately).
-    let decay_factor = decay_factor.min(9_999) as i128;
+    let decay_factor = decay_factor as i128;
     let keep_bps: i128 = 10_000 - decay_factor; // how many bps of remainder survives each window
 
     let elapsed = effective_now - start_time;
@@ -170,14 +237,9 @@ pub fn compute_cumulative_decay(
     // Full windows completed so far.
     let full_windows = elapsed / DECAY_WINDOW_SECS;
 
-    // Compute remaining_scaled = SCALE × keep_bps^full_windows / 10_000^full_windows
-    // iteratively to avoid huge intermediate values.
-    let mut remaining_scaled: i128 = SCALE;
-    for _ in 0..full_windows {
-        remaining_scaled = remaining_scaled
-            .checked_mul(keep_bps)?
-            .checked_div(10_000)?;
-    }
+    // Keep fixed-point work bounded to O(log(full_windows)).
+    let keep_scaled = keep_bps.checked_mul(SCALE)?.checked_div(10_000)?;
+    let remaining_scaled = fixed_point_pow(keep_scaled, full_windows)?;
 
     // Fraction vested = (SCALE - remaining_scaled) / SCALE
     // vested = deposit × (SCALE - remaining_scaled) / SCALE
@@ -448,5 +510,127 @@ mod proofs {
         let refund = compute_refund(deposit, flow_rate, now, end_time, start_time).unwrap();
 
         assert!(refund >= 0, "refund must be non-negative");
+    }
+
+    /// Time-decay cumulative vesting remains within the deposited amount.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_decay_cumulative_bounds() {
+        let deposit: i128 = kani::any();
+        let duration: u64 = kani::any();
+        let start_time: u64 = kani::any();
+        let query_time: u64 = kani::any();
+        let decay_factor: u32 = kani::any();
+
+        kani::assume(deposit > 0 && deposit <= 1_000_000_000_000_i128);
+        kani::assume(duration > 0 && duration <= 1_000_000_u64);
+        kani::assume(start_time <= u64::MAX / 2);
+        kani::assume(decay_factor <= 9_999);
+
+        let end_time = start_time + duration;
+        let vested = compute_cumulative_decay(
+            deposit, start_time, end_time, query_time, decay_factor,
+        )
+        .unwrap();
+
+        assert!(vested >= 0 && vested <= deposit);
+    }
+
+    /// Time-decay cumulative vesting is monotone for valid factors.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_decay_cumulative_monotonic() {
+        let deposit: i128 = kani::any();
+        let duration: u64 = kani::any();
+        let start_time: u64 = kani::any();
+        let first_time: u64 = kani::any();
+        let second_time: u64 = kani::any();
+        let decay_factor: u32 = kani::any();
+
+        kani::assume(deposit > 0 && deposit <= 1_000_000_000_000_i128);
+        kani::assume(duration > 0 && duration <= 1_000_000_u64);
+        kani::assume(start_time <= u64::MAX / 2);
+        kani::assume(second_time >= first_time);
+        kani::assume(decay_factor <= 9_999);
+
+        let end_time = start_time + duration;
+        let first = compute_cumulative_decay(
+            deposit, start_time, end_time, first_time, decay_factor,
+        )
+        .unwrap();
+        let second = compute_cumulative_decay(
+            deposit, start_time, end_time, second_time, decay_factor,
+        )
+        .unwrap();
+
+        assert!(second >= first);
+    }
+
+    /// Incremental time-decay claims remain non-negative and deposit-bounded.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_decay_claimable_bounds() {
+        let deposit: i128 = kani::any();
+        let duration: u64 = kani::any();
+        let start_time: u64 = kani::any();
+        let now: u64 = kani::any();
+        let cliff_offset: u64 = kani::any();
+        let decay_factor: u32 = kani::any();
+
+        kani::assume(deposit > 0 && deposit <= 1_000_000_000_000_i128);
+        kani::assume(duration > 0 && duration <= 1_000_000_u64);
+        kani::assume(start_time <= u64::MAX / 2);
+        kani::assume(cliff_offset <= duration);
+        kani::assume(now >= start_time + cliff_offset);
+        kani::assume(decay_factor <= 9_999);
+
+        let end_time = start_time + duration;
+        let claimable = compute_claimable_decay(
+            deposit,
+            start_time,
+            end_time,
+            now,
+            start_time + cliff_offset,
+            start_time,
+            decay_factor,
+        )
+        .unwrap();
+
+        assert!(claimable >= 0 && claimable <= deposit);
+    }
+
+    /// The preview helper enforces the cliff and matches cumulative vesting after it.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_decay_simulation_cliff_and_cumulative() {
+        let deposit: i128 = kani::any();
+        let duration: u64 = kani::any();
+        let start_time: u64 = kani::any();
+        let query_time: u64 = kani::any();
+        let cliff_offset: u64 = kani::any();
+        let decay_factor: u32 = kani::any();
+
+        kani::assume(deposit > 0 && deposit <= 1_000_000_000_000_i128);
+        kani::assume(duration > 0 && duration <= 1_000_000_u64);
+        kani::assume(start_time <= u64::MAX / 2);
+        kani::assume(cliff_offset <= duration);
+        kani::assume(decay_factor <= 9_999);
+
+        let end_time = start_time + duration;
+        let cliff_time = start_time + cliff_offset;
+        let preview = simulate_claimable(
+            deposit, start_time, end_time, query_time, cliff_time, decay_factor,
+        )
+        .unwrap();
+
+        if query_time < cliff_time {
+            assert!(preview == 0);
+        } else {
+            let cumulative = compute_cumulative_decay(
+                deposit, start_time, end_time, query_time, decay_factor,
+            )
+            .unwrap();
+            assert!(preview == cumulative);
+        }
     }
 }

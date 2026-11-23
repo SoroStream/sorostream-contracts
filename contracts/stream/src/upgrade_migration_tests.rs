@@ -21,7 +21,7 @@ struct UpgradeEnv {
 
 fn setup_upgrade() -> UpgradeEnv {
     let env = Env::default();
-    env.mock_all_auths();
+    env.mock_all_auths_allowing_non_root_auth();
 
     let contract = env.register(SoroStreamContract, ());
     let token_admin = Address::generate(&env);
@@ -120,7 +120,7 @@ fn upgrade_migration_paused_stream_preserves_state() {
 
     // Pause the stream
     ue.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id, &ue.sender);
+    c.pause_stream(&stream_id, &ue.sender, &None);
 
     let stream_before_upgrade = c.get_stream(&stream_id);
     assert_eq!(stream_before_upgrade.status, StreamStatus::Paused);
@@ -203,7 +203,7 @@ fn upgrade_migration_multiple_streams_all_queryable() {
 
     // Pause stream 2
     ue.env.ledger().set_timestamp(100);
-    c.pause_stream(&stream_id_2, &ue.sender);
+    c.pause_stream(&stream_id_2, &ue.sender, &None);
 
     // Store state before upgrade
     let stream_1_before = c.get_stream(&stream_id_1);

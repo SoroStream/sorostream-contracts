@@ -482,11 +482,11 @@ This file must be updated whenever a new `StreamError` variant is added to `cont
 | Variant | `StreamError::MetadataTooLong` |
 | Code | `30` |
 
-**Description:** The metadata blob exceeds the 64-byte maximum.
+**Description:** The temporary metadata blob exceeds the 256-byte maximum.
 
-**Trigger:** Passing a `metadata` field longer than 64 bytes to `create_stream` or `update_metadata`.
+**Trigger:** Passing a `metadata` field longer than 256 bytes to `update_metadata`.
 
-**Remediation:** Truncate or compress the metadata to 64 bytes or fewer. For larger metadata, store the content off-chain (IPFS or HTTPS) and use `metadata_uri` to reference it.
+**Remediation:** Truncate or compress the metadata to 256 bytes or fewer. For larger metadata, store the content off-chain (IPFS or HTTPS) and use `metadata_uri` to reference it.
 
 ---
 
@@ -589,7 +589,7 @@ This file must be updated whenever a new `StreamError` variant is added to `cont
 
 > **Note:** Code `37` is shared by three variants in the current enum definition due to a known duplicate-discriminant issue. All three are returned as code `37` at the ABI level.
 
-**`TokenNotWhitelisted`** — The token used in `create_stream` is not on the token whitelist when enforcement is enabled.
+**`TokenNotWhitelisted`** — The token used in `create_stream` is not on the mandatory token whitelist.
 - *Trigger:* Token whitelist is active and the provided token address is not approved.
 - *Remediation:* Use an approved token. Query the whitelist or request the admin to add the token.
 

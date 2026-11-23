@@ -6,14 +6,32 @@
 use soroban_sdk::{contractclient, Address, Bytes, BytesN, Env, String, Symbol, Vec};
 
 use crate::errors::StreamError;
-use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats, Stream, StreamHealth, StreamOptions, StreamQueryFilter, VestingCurve, VestingTranche};
+use crate::types::{AdminOverrideRequest, AuditEntry, CreateStreamOptions, OverrideAction, ProtocolStats, Stats, Stream, StreamHealth, StreamOptions, StreamQueryFilter, StreamTransition, VestingCurve, VestingTranche, WithdrawalProof};
 
 #[contractclient(name = "SoroStreamClient")]
 pub trait SoroStreamInterface {
     fn initialize(env: Env, admin: Address, version: String) -> Result<(), StreamError>;
+    fn initialize_roles(
+        env: Env,
+        admin: Address,
+        version: String,
+        fee_admin: Option<Address>,
+        emergency_admin: Option<Address>,
+        token_admin: Option<Address>,
+    ) -> Result<(), StreamError>;
     fn get_admin(env: Env) -> Result<Address, StreamError>;
     fn get_version(env: Env) -> Result<String, StreamError>;
     fn set_admin(env: Env, new_admin: Address) -> Result<(), StreamError>;
+    fn set_fee_admin(env: Env, admin: Address, fee_admin: Address) -> Result<(), StreamError>;
+    fn transfer_fee_manager_role(env: Env, admin: Address, old_holder: Address, new_holder: Address) -> Result<(), StreamError>;
+    fn get_fee_admin(env: Env) -> Option<Address>;
+    fn set_emergency_admin(env: Env, admin: Address, emergency_admin: Address) -> Result<(), StreamError>;
+    fn transfer_emergency_pause_role(env: Env, admin: Address, old_holder: Address, new_holder: Address) -> Result<(), StreamError>;
+    fn get_emergency_admin(env: Env) -> Option<Address>;
+    fn transfer_analytics_role(env: Env, admin: Address, old_holder: Address, new_holder: Address) -> Result<(), StreamError>;
+    fn set_token_admin(env: Env, admin: Address, token_admin: Address) -> Result<(), StreamError>;
+    fn transfer_token_admin_role(env: Env, admin: Address, old_holder: Address, new_holder: Address) -> Result<(), StreamError>;
+    fn get_token_admin(env: Env) -> Option<Address>;
     fn emergency_pause(env: Env) -> Result<(), StreamError>;
     fn emergency_resume(env: Env) -> Result<(), StreamError>;
     fn is_paused(env: Env) -> bool;
@@ -96,12 +114,28 @@ pub trait SoroStreamInterface {
         allow_recipient_termination: bool,
     ) -> Result<u64, StreamError>;
 
+    /// Creates a stream whose zero flow rate is unlocked one milestone at a time
+    /// by the configured oracle or multisig address.
+    fn create_stream_with_approval(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit: i128,
+        milestones: Vec<(i128, BytesN<32>)>,  // (amount, description_hash)
+        nonce: u64,
+        lock_until: u64,
+        allow_recipient_termination: bool,
+        approver: Address,
+    ) -> Result<u64, StreamError>;
+
     fn register_federation(env: Env, admin: Address, federation_name: String, stellar_address: Address) -> Result<(), StreamError>;
     fn unregister_federation(env: Env, admin: Address, federation_name: String) -> Result<(), StreamError>;
     fn resolve_federation(env: Env, federation_name: String) -> Result<Address, StreamError>;
 
     fn release_holdback(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
     fn claw_back_holdback(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
+    fn clawback_stream(env: Env, stream_id: u64, issuer: Address) -> Result<(), StreamError>;
 
     fn set_withdrawal_cooldown(env: Env, admin: Address, cooldown_seconds: u64) -> Result<(), StreamError>;
     fn set_whitelist_enabled(env: Env, admin: Address, enabled: bool) -> Result<(), StreamError>;
@@ -136,6 +170,8 @@ pub trait SoroStreamInterface {
     fn is_recipient_allowed(env: Env, recipient: Address) -> bool;
 
     fn update_metadata(env: Env, sender: Address, stream_id: u64, metadata: Bytes) -> Result<(), StreamError>;
+    /// Returns the temporary metadata blob attached to a stream, if it has not expired.
+    fn get_metadata(env: Env, stream_id: u64) -> Option<Bytes>;
     fn cancel_auto_renew(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError>;
 
     /// Activates a stream that was created with escrow_hold = true.
@@ -144,12 +180,69 @@ pub trait SoroStreamInterface {
     /// Only the sender may call this. No-op if the stream is not in EscrowHold state.
     fn activate_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
 
+    /// Approves escrow release for a stream placed in `EscrowHold`.
+    ///
+    /// Once both sender and recipient have called this method, the stream moves
+    /// from `EscrowHold` to `Active` and vesting begins from the approval time.
+    fn approve_release(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
+
     fn withdraw(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
+    fn get_withdrawal_proof(
+        env: Env,
+        stream_id: u64,
+        withdrawal_index: u32,
+    ) -> Result<WithdrawalProof, StreamError>;
+    fn get_withdrawal_history_root(env: Env, stream_id: u64) -> Result<BytesN<32>, StreamError>;
+    fn verify_withdrawal_proof(env: Env, proof: WithdrawalProof) -> bool;
+
+    fn partial_withdraw(
+        env: Env,
+        stream_id: u64,
+        amount: i128,
+        caller: Address,
+    ) -> Result<(), StreamError>;
+
+    /// Clones an existing active stream into a new stream.
+    ///
+    /// For a pure clone (no overrides) the new stream continues the source at
+    /// the same flow rate for the source's remaining duration and is funded
+    /// with the source's remaining unstreamed balance rather than its original
+    /// deposit, so a clone created mid-stream cannot over-pay.
+    fn clone_stream(
+        env: Env,
+        source_stream_id: u64,
+        caller: Address,
+        recipient_override: Option<Address>,
+        token_override: Option<Address>,
+        rate_override: Option<i128>,
+        duration_override: Option<u64>,
+    ) -> Result<u64, StreamError>;
     fn cancel_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
     fn stop_stream(env: Env, stream_id: u64, caller: Address) -> Result<(), StreamError>;
+    fn transfer_sender(env: Env, stream_id: u64, current_sender: Address, new_sender: Address) -> Result<(), StreamError>;
     fn transfer_recipient(env: Env, stream_id: u64, current_recipient: Address, new_recipient: Address) -> Result<(), StreamError>;
     fn partial_cancel_stream(env: Env, stream_id: u64, sender: Address, cancel_amount: i128) -> Result<u64, StreamError>;
     fn top_up(env: Env, stream_id: u64, sender: Address, token: Address, amount: i128) -> Result<(), StreamError>;
+
+    /// Adds funds to multiple streams atomically in a single transaction.
+    ///
+    /// All-or-none: if any individual top-up would fail, the entire batch is
+    /// rejected and no state is modified. Maximum 20 entries per call.
+    ///
+    /// # Parameters
+    /// - `sender`         — must be the sender (or delegate) of every stream.
+    /// - `token`          — all streams in the batch must use this token.
+    /// - `stream_amounts` — `Vec<(stream_id, amount)>` pairs; max 20 entries.
+    ///
+    /// # Errors
+    /// - `ContractPaused`, `StreamNotFound`, `NotAuthorized`, `StreamNotActive`,
+    ///   `StreamPaused`, `ZeroAmount`, `Overflow`, `BatchLengthMismatch`
+    fn batch_top_up_streams(
+        env: Env,
+        sender: Address,
+        token: Address,
+        stream_amounts: Vec<(u64, i128)>,
+    ) -> Result<(), StreamError>;
     
     /// Updates the token-per-second flow rate of an active stream.
     ///
@@ -167,12 +260,22 @@ pub trait SoroStreamInterface {
     /// - `InsufficientBalance` — insufficient remaining balance to support the new rate until end_time.
     /// - `Overflow` — arithmetic overflow during calculations.
     fn update_stream_rate(env: Env, stream_id: u64, sender: Address, new_rate: i128) -> Result<(), StreamError>;
+    fn update_stream(env: Env, stream_id: u64, new_flow_rate: i128, new_end_time: u64) -> Result<(), StreamError>;
     
     fn recipient_terminate(env: Env, stream_id: u64, recipient: Address) -> Result<(), StreamError>;
 
     fn get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError>;
+    fn estimate_stream_rent_cost(
+        env: Env,
+        stream_id: u64,
+        rent_rate_stroops_per_kib_per_ledger: i128,
+        ledgers: u32,
+    ) -> Result<i128, StreamError>;
+    /// Returns up to the last 10 persisted lifecycle transitions, oldest first.
+    fn get_stream_transitions(env: Env, stream_id: u64) -> Result<Vec<StreamTransition>, StreamError>;
     fn get_all_stream_ids(env: Env, start: u32, limit: u32) -> Vec<u64>;
     fn get_claimable(env: Env, stream_id: u64) -> Result<i128, StreamError>;
+    fn get_stream_earnings_estimate(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn get_accrued_balance(env: Env, stream_id: u64, recipient: Address) -> Result<i128, StreamError>;
     fn is_participant(env: Env, stream_id: u64, address: Address) -> Result<bool, StreamError>;
     fn get_streams_by_sender(env: Env, sender: Address, start: u32, limit: u32) -> Vec<Stream>;
@@ -180,11 +283,20 @@ pub trait SoroStreamInterface {
     fn get_streams_by_tag(env: Env, sender: Address, tag: String, start: u32, limit: u32) -> Vec<Stream>;
     fn set_stream_tag(env: Env, stream_id: u64, sender: Address, tag: Option<String>) -> Result<(), StreamError>;
     fn get_active_streams_by_sender(env: Env, sender: Address) -> Vec<Stream>;
+    /// Returns active stream IDs for a sender using the on-chain active index.
+    fn get_active_stream_ids_by_sender(env: Env, sender: Address) -> Vec<u64>;
     fn get_active_streams_by_recipient(env: Env, recipient: Address) -> Vec<Stream>;
     fn query_streams(env: Env, filter: StreamQueryFilter, start: u32, limit: u32) -> Vec<Stream>;
     fn simulate_claimable(env: Env, stream_id: u64, query_time: u64) -> Result<i128, StreamError>;
 
-    fn pause_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
+    /// Pauses an active stream and optionally records a reason of at most 256 bytes.
+    /// The latest reason remains available from `get_stream` after resuming.
+    fn pause_stream(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        reason: Option<String>,
+    ) -> Result<(), StreamError>;
     fn resume_stream(env: Env, stream_id: u64, sender: Address) -> Result<(), StreamError>;
 
     fn batch_create_stream(
@@ -201,17 +313,40 @@ pub trait SoroStreamInterface {
         non_transferable: bool,
     ) -> Result<Vec<u64>, StreamError>;
     fn get_nonce(env: Env, sender: Address) -> u64;
+    fn split_stream_with_schedules(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        recipients: Vec<Address>,
+        amounts: Vec<i128>,
+        flow_rates: Vec<i128>,
+        end_times: Vec<u64>,
+        nonce: u64,
+    ) -> Result<Vec<u64>, StreamError>;
     fn batch_withdraw(env: Env, stream_ids: Vec<u64>, recipient: Address) -> Result<Vec<i128>, StreamError>;
     fn batch_cancel_stream(env: Env, stream_ids: Vec<u64>, sender: Address) -> Result<Vec<Result<(), StreamError>>, StreamError>;
+    /// Cancels all currently active streams for a sender, capped at 20 entries.
+    fn batch_cancel_streams(env: Env, sender: Address) -> Result<Vec<Result<(), StreamError>>, StreamError>;
 
     fn set_protocol_fee(env: Env, fee_bps: u32) -> Result<(), StreamError>;
     fn propose_fee_change(env: Env, admin: Address, new_fee_bps: u32) -> Result<(), StreamError>;
     fn execute_fee_change(env: Env) -> Result<(), StreamError>;
+
+    /// Returns the pending protocol-fee update as `(new_fee_bps, unlock_time)`,
+    /// or `None` when no change is waiting out the 48-hour timelock.
+    fn get_pending_fee_update(env: Env) -> Option<(u32, u64)>;
     fn set_treasury_address(env: Env, treasury: Address) -> Result<(), StreamError>;
+    fn set_treasury(env: Env, treasury: Address) -> Result<(), StreamError>;
     fn get_protocol_fee_info(env: Env) -> (u32, Option<Address>);
     fn get_stats(env: Env) -> Stats;
     fn get_protocol_stats(env: Env) -> ProtocolStats;
     fn recalibrate_stats(env: Env, admin: Address) -> Result<(), StreamError>;
+
+    /// Returns the total number of non-expired (active) streams across the protocol.
+    ///
+    /// Incremented on stream creation; decremented on cancellation / expiry.
+    /// Returns a `u64` for dashboard metrics and protocol health monitoring.
+    fn get_active_stream_count(env: Env) -> u64;
 
     fn min_duration(env: Env) -> u64;
     fn set_min_duration(env: Env, admin: Address, seconds: u64);
@@ -291,6 +426,15 @@ pub trait SoroStreamInterface {
     fn get_fees_collected(env: Env, token: Address) -> i128;
     fn sweep_fees(env: Env, token: Address, destination: Address) -> Result<(), StreamError>;
 
+    /// Returns the reward points accumulated by an address (issue #516).
+    fn get_reward_points(env: Env, address: Address) -> i128;
+
+    /// Returns the pending stream-creation fee discount (bps) for an address.
+    fn get_fee_discount(env: Env, address: Address) -> u32;
+
+    /// Redeems reward points for a discount on the caller's next stream creation.
+    fn redeem_points(env: Env, caller: Address, points: i128) -> Result<u32, StreamError>;
+
     fn set_guardian(env: Env, guardian: Address) -> Result<(), StreamError>;
     fn get_guardian(env: Env) -> Option<Address>;
     fn set_governance(env: Env, governance: Address) -> Result<(), StreamError>;
@@ -309,10 +453,13 @@ pub trait SoroStreamInterface {
     fn get_metadata_uri(env: Env, stream_id: u64) -> Option<String>;
     fn update_metadata_uri(env: Env, stream_id: u64, sender: Address, new_uri: Option<String>) -> Result<(), StreamError>;
     fn release_milestone(env: Env, stream_id: u64, milestone_index: u32, sender: Address) -> Result<(), StreamError>;
+    fn approve_milestone(env: Env, stream_id: u64, milestone_id: u32, approver: Address) -> Result<(), StreamError>;
 
     fn set_delegate(env: Env, sender: Address, stream_id: u64, delegate: Address) -> Result<(), StreamError>;
     fn revoke_delegate(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError>;
     fn get_delegate(env: Env, stream_id: u64) -> Option<Address>;
+    fn delegate_stream(env: Env, stream_id: u64, delegate_address: Address) -> Result<(), StreamError>;
+    fn get_recipient_delegate(env: Env, stream_id: u64) -> Option<Address>;
 
     /// Sets the sliding-window size for the per-sender rate limit, in **ledgers**.
     /// Default: 720 ledgers (~1 hour at 5 s/ledger). Only admin may call this.
@@ -382,8 +529,8 @@ pub trait SoroStreamInterface {
     ///
     /// # Errors
     /// - `NotRecipient` — caller is not this stream's recipient.
-    /// - `InvalidRedirectTarget` — target stream does not exist.
-    /// - `RedirectRecipientMismatch` — target stream's recipient differs from this stream's.
+    /// - `StreamNotFound` — target stream does not exist.
+    /// - `NotAuthorized` — target stream's recipient differs from this stream's.
     /// - `CircularRedirect` — setting this redirect would create a cycle.
     fn set_redirect(env: Env, stream_id: u64, target_stream_id: u64, recipient: Address) -> Result<(), StreamError>;
 
@@ -402,7 +549,6 @@ pub trait SoroStreamInterface {
     /// both tokens proportionally. A single `cancel_stream` refunds both.
     ///
     /// # Errors
-    /// - `DuplicateTokenInDualStream` if `token1 == token2`.
     /// - `ZeroAmount` if either amount <= 0.
     /// - `ZeroFlowRate` if either `amount / duration_seconds` rounds to 0.
     /// - Standard errors from `create_stream` also apply.
@@ -468,6 +614,19 @@ pub trait SoroStreamInterface {
     /// Only the admin may call this.
     fn execute_admin_override(env: Env, request_id: u64) -> Result<(), StreamError>;
 
+    /// Cancels a pending or ready override request before it is executed.
+    fn cancel_admin_override(env: Env, request_id: u64) -> Result<(), StreamError>;
+
     /// Returns an admin override request by ID.
     fn get_override_request(env: Env, request_id: u64) -> Result<AdminOverrideRequest, StreamError>;
+
+    /// Prunes expired/completed streams from storage to reclaim space (Admin only - Issue #401).
+    fn prune_expired_streams(env: Env, admin: Address, stream_ids: Vec<u64>) -> Result<u32, StreamError>;
+
+    /// Reads stream details with rate-limiting per caller (Issue #615).
+    fn get_stream_with_rate_limit(env: Env, caller: Address, stream_id: u64) -> Result<Stream, StreamError>;
+
+    /// Claims accrued yield from a collateral vault (Issue #472).
+    fn claim_collateral_yield(env: Env, stream_id: u64, caller: Address) -> Result<(i128, i128), StreamError>;
 }
+
