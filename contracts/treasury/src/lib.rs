@@ -252,6 +252,22 @@ impl TreasuryContract {
         Ok(())
     }
 
+    /// Clears the configured LP reward pool address, reverting to a treasury-only
+    /// configuration. Only admin may call this.
+    ///
+    /// Succeeds even when no LP pool is currently configured.
+    pub fn clear_lp_pool(env: Env) -> Result<(), TreasuryError> {
+        check_admin(&env)?;
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(&env, LP_POOL_KEY));
+        env.events().publish(
+            (Symbol::new(&env, "LpPoolCleared"),),
+            (),
+        );
+        Ok(())
+    }
+
     /// Returns the LP reward pool address, if set.
     pub fn get_lp_pool(env: Env) -> Result<Option<Address>, TreasuryError> {
         Ok(read_lp_pool(&env))
@@ -598,6 +614,47 @@ mod test {
 
         let result = c.try_set_treasury_split(&10_001);
         assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasurySplit)));
+    }
+
+    #[test]
+    fn test_set_then_clear_lp_pool() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let lp_pool = Address::generate(&t.env);
+        c.set_lp_pool(&lp_pool);
+        assert_eq!(c.get_lp_pool(), Some(lp_pool));
+
+        c.clear_lp_pool();
+        assert_eq!(c.get_lp_pool(), None);
+    }
+
+    #[test]
+    fn test_clear_lp_pool_when_unset_succeeds() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        assert_eq!(c.get_lp_pool(), None);
+        c.clear_lp_pool();
+        assert_eq!(c.get_lp_pool(), None);
+    }
+
+    #[test]
+    fn test_clear_lp_pool_by_non_admin_fails() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let lp_pool = Address::generate(&t.env);
+        c.set_lp_pool(&lp_pool);
+
+        // Only the admin is authorized; a non-admin caller must be rejected.
+        t.env.mock_auths(&[]);
+        let result = c.try_clear_lp_pool();
+        assert!(result.is_err());
+        assert_eq!(c.get_lp_pool(), Some(lp_pool));
     }
 
     #[test]
