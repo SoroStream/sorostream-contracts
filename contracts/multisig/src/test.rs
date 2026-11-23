@@ -49,6 +49,55 @@ fn env_with_auth() -> Env {
     env
 }
 
+/// Target contract used to exercise the success/failure paths of `approve()`
+/// and `retry()`. The `should_fail` flag is stored in instance storage so a
+/// test can flip it between invocations.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn set_should_fail(env: Env, should_fail: bool) {
+        env.storage().instance().set(&"fail", &should_fail);
+    }
+
+    pub fn run(env: Env) -> u32 {
+        let should_fail: bool = env
+            .storage()
+            .instance()
+            .get(&"fail")
+            .unwrap_or(false);
+        if should_fail {
+            panic!("mock target failure");
+        }
+        42u32
+    }
+}
+
+fn has_event(env: &Env, contract: &Address, topic: Symbol) -> bool {
+    env.events().all().iter().any(|(addr, topics, _)| {
+        if &addr != contract {
+            return false;
+        }
+        let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+        topics == expected
+    })
+}
+
+fn count_event(env: &Env, contract: &Address, topic: Symbol) -> usize {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(addr, topics, _)| {
+            if &addr != contract {
+                return false;
+            }
+            let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+            topics == expected
+        })
+        .count()
+}
+
 #[test]
 fn test_get_owners_returns_empty_before_initialize() {
     let env = env_with_auth();
