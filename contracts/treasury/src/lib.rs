@@ -495,24 +495,12 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
-
         assert_eq!(c.get_balance(&t.token_id), 0);
 
-        // User deposits tokens into treasury
-        c.deposit(&t.user, &t.token_id, &1000);
+        c.deposit(&t.token_id, &1000);
         assert_eq!(c.get_balance(&t.token_id), 1000);
 
-        // Verify tokens were transferred from user to treasury
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 9000);
-
-        let treasury_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id);
-        assert_eq!(treasury_balance, 1000);
-
-        // Another deposit
-        c.deposit(&t.user, &t.token_id, &500);
+        c.deposit(&t.token_id, &500);
         assert_eq!(c.get_balance(&t.token_id), 1500);
     }
 
@@ -532,14 +520,12 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user first (since deposit will transfer from user to treasury)
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+        // Mint tokens to treasury
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
-        // User deposits tokens
-        c.deposit(&t.user, &t.token_id, &10_000);
-
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 0);
+        let initial_user = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(initial_user, 0);
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
@@ -570,16 +556,16 @@ mod test {
         // A zero-amount withdrawal is a no-op: it must not fail or alter balances.
         c.withdraw_treasury(&t.token_id, &0, &t.user);
 
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
+
         assert_eq!(c.get_balance(&t.token_id), treasury_balance_before);
         assert_eq!(
             TokenClient::new(&t.env, &t.token_id).balance(&t.user),
             user_balance_before
         );
-
-        let events = withdrawal_events(&t.env);
-        assert_eq!(events.len(), 1);
-        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
-        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
     }
 
     #[test]
@@ -605,11 +591,9 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user first
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
-
-        // User deposits
-        c.deposit(&t.user, &t.token_id, &10_000);
+        // Mint tokens to treasury first
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
@@ -800,7 +784,114 @@ mod test {
         let result = c.try_accept_admin(&pending_admin);
         assert_eq!(result, Err(Ok(TreasuryError::NoPendingAdmin)));
     }
-}
+
+    #[test]
+    fn test_withdraw_all_fails_when_recorded_balance_exceeds_actual_token_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // Actual on-chain balance transferred/minted to the contract is only 50
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &50);
+
+        // But internal accounting records a deposit of 100, causing get_balance to diverge
+        c.deposit(&t.token_id, &100);
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+
+        // Attempting to withdraw_all attempts to transfer the full recorded balance (100) via token::Client.
+        // Because the contract holds only 50 tokens, the token::Client.transfer call fails
+        // and rolls back rather than silently succeeding with insufficient real funds.
+        let result = c.try_withdraw_all(&t.token_id, &t.user);
+        assert!(result.is_err());
+
+        // Internal accounting balance is rolled back and remains intact
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        // On-chain funds were not moved
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.user), 0);
+        // No withdrawal events were published
+        assert!(withdrawal_events(&t.env).is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_withdraw_all_panics_when_recorded_balance_exceeds_actual_token_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &50);
+        c.deposit(&t.token_id, &100);
+
+        // Direct call panics when the underlying token transfer fails
+        c.withdraw_all(&t.token_id, &t.user);
+    }
+
+    #[test]
+    fn test_withdraw_all_fails_when_contract_holds_zero_real_tokens() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // No tokens were minted or transferred to the treasury contract (real balance = 0).
+        // Internal accounting records a deposit of 100.
+        c.deposit(&t.token_id, &100);
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            0
+        );
+
+        let result = c.try_withdraw_all(&t.token_id, &t.user);
+        assert!(result.is_err());
+
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            0
+        );
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.user), 0);
+        assert!(withdrawal_events(&t.env).is_empty());
+    }
+
+    #[test]
+    fn test_withdraw_treasury_fails_when_recorded_balance_exceeds_actual_token_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // Actual on-chain balance held is 50
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &50);
+
+        // Internal accounting ledger recorded is 100
+        c.deposit(&t.token_id, &100);
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+
+        // Amount requested is 75, which is <= recorded balance (100) so treasury internal
+        // check passes, but > real on-chain balance (50), so token::Client.transfer fails.
+        let result = c.try_withdraw_treasury(&t.token_id, &75, &t.user);
+        assert!(result.is_err());
+
+        // State is rolled back
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.user), 0);
+        assert!(withdrawal_events(&t.env).is_empty());
+    }
 
     #[test]
     fn test_set_lp_pool_reconfigured_after_distribution_routes_to_new_pool() {
