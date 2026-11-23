@@ -80,6 +80,9 @@ fn validate_treasury_address(env: &Env, address: &Address) -> Result<(), Treasur
     if is_zero_address(env, address) {
         return Err(TreasuryError::InvalidTreasuryAddress);
     }
+    if address == &env.current_contract_address() {
+        return Err(TreasuryError::InvalidTreasuryAddress);
+    }
     Ok(())
 }
 
@@ -633,6 +636,43 @@ mod test {
         c.initialize(&t.admin);
         let zero_addr = Address::from_string(&soroban_sdk::String::from_str(&t.env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"));
         let result = c.try_set_treasury(&zero_addr);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_initialize_self_address_rejected() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let treasury_id = env.register(TreasuryContract, ());
+        let c = TreasuryContractClient::new(&env, &treasury_id);
+        let result = c.try_initialize(&treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_propose_admin_self_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let result = c.try_propose_admin(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_accept_admin_self_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let result = c.try_accept_admin(&t.treasury_id);
+        assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_set_treasury_self_address_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+        let result = c.try_set_treasury(&t.treasury_id);
         assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
     }
 
