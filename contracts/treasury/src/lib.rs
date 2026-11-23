@@ -94,6 +94,10 @@ impl TreasuryContract {
         if read_admin(&env).is_some() {
             return Err(TreasuryError::AlreadyInitialized);
         }
+        
+        // Validate that admin is not a burn address
+        validate_treasury_address(&env, &admin).expect("invalid admin address");
+        
         env.storage()
             .instance()
             .set(&Symbol::new(&env, ADMIN_KEY), &admin);
@@ -472,12 +476,24 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
+        // Mint tokens to user
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+
         assert_eq!(c.get_balance(&t.token_id), 0);
 
-        c.deposit(&t.token_id, &1000);
+        // User deposits tokens into treasury
+        c.deposit(&t.user, &t.token_id, &1000);
         assert_eq!(c.get_balance(&t.token_id), 1000);
 
-        c.deposit(&t.token_id, &500);
+        // Verify tokens were transferred from user to treasury
+        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(user_balance, 9000);
+
+        let treasury_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id);
+        assert_eq!(treasury_balance, 1000);
+
+        // Another deposit
+        c.deposit(&t.user, &t.token_id, &500);
         assert_eq!(c.get_balance(&t.token_id), 1500);
     }
 
@@ -497,12 +513,14 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to treasury
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
-        c.deposit(&t.token_id, &10_000);
+        // Mint tokens to user first (since deposit will transfer from user to treasury)
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
 
-        let initial_user = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(initial_user, 0);
+        // User deposits tokens
+        c.deposit(&t.user, &t.token_id, &10_000);
+
+        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(user_balance, 0);
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
@@ -539,8 +557,11 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
-        c.deposit(&t.token_id, &10_000);
+        // Mint tokens to user first
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+
+        // User deposits
+        c.deposit(&t.user, &t.token_id, &10_000);
 
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
