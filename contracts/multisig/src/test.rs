@@ -133,3 +133,39 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+#[test]
+fn test_cancel_rejects_non_proposer_with_prior_approvals() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    let owner_c = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner_a.clone(), owner_b.clone(), owner_c.clone()]);
+
+    // Threshold of 3 so a single approval does not execute the intent.
+    c.initialize(&owners, &3u32);
+
+    let target = Address::generate(&env);
+    let intent_id = c.propose(
+        &owner_a,
+        &target,
+        &soroban_sdk::symbol_short!("fn"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+
+    // Owner B approves; threshold not reached so the intent stays pending.
+    let executed = c.approve(&owner_b, &intent_id);
+    assert!(!executed);
+    assert_eq!(c.get_intent(&intent_id).approval_count, 1);
+
+    // Owner C is not the proposer and must not be able to cancel.
+    let result = c.try_cancel(&owner_c, &intent_id);
+    assert_eq!(result, Err(Ok(MultiSigError::NotProposer)));
+
+    // The intent is still pending, confirming the cancel did not take effect.
+    assert_eq!(c.get_intent(&intent_id).status, super::IntentStatus::Pending);
+}
