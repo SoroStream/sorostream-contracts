@@ -51,6 +51,32 @@ fn self_targeting_intent_records_the_method_whose_invariants_apply() {
 }
 
 #[test]
+fn propose_accepts_arbitrary_target_function_and_calldata_verbatim() {
+    let (env, contract_id, owner, _) = setup();
+    let client = MultiSigContractClient::new(&env, &contract_id);
+    // `propose` performs no validation of the intent's target, function or
+    // calldata: reviewers must decode the calldata themselves before
+    // approving, since nothing here constrains what is being proposed.
+    let arbitrary_target = Address::generate(&env);
+    let arbitrary_function = Symbol::new(&env, "some_unrelated_function");
+    let arbitrary_calldata = Bytes::from_array(&env, &[0xde, 0xad, 0xbe, 0xef]);
+
+    let id = client.propose(
+        &owner,
+        &arbitrary_target,
+        &arbitrary_function,
+        &arbitrary_calldata,
+        &u64::MAX,
+    );
+
+    let intent = client.get_intent(&id);
+    assert_eq!(intent.target, arbitrary_target);
+    assert_eq!(intent.function, arbitrary_function);
+    assert_eq!(intent.calldata, arbitrary_calldata);
+    assert_eq!(intent.approval_count, 0);
+}
+
+#[test]
 fn typed_self_targeting_call_cannot_bypass_checks_while_bytes_dispatch_is_broken() {
     let (env, contract_id, owner, second_owner) = setup();
     let client = MultiSigContractClient::new(&env, &contract_id);

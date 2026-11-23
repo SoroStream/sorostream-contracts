@@ -133,3 +133,47 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+/// Documents the trust assumption described in issue #887: `propose()` performs
+/// no validation of `target`, `function`, or `calldata`. An owner can propose an
+/// intent targeting an arbitrary address with an arbitrary function and opaque
+/// calldata, and the contract stores those fields verbatim. Approvers are
+/// therefore responsible for decoding the calldata themselves before approving;
+/// routing owner-management calls through propose + approve is not by itself a
+/// guarantee that the parameters were reviewed.
+#[test]
+fn test_propose_accepts_arbitrary_target_function_and_calldata() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let proposer = Address::generate(&env);
+    let owners = Vec::from_array(&env, [proposer.clone()]);
+    c.initialize(&owners, &1u32);
+
+    // An arbitrary address that is not this contract and not an owner.
+    let arbitrary_target = Address::generate(&env);
+    let arbitrary_fn = soroban_sdk::symbol_short!("chg_thr");
+    let mut raw = soroban_sdk::Bytes::new(&env);
+    raw.push_back(0xde);
+    raw.push_back(0xad);
+    raw.push_back(0xbe);
+    raw.push_back(0xef);
+
+    let intent_id = c.propose(
+        &proposer,
+        &arbitrary_target,
+        &arbitrary_fn,
+        &raw,
+        &1000u64,
+    );
+
+    // The proposal is accepted and the unvalidated fields are stored verbatim.
+    let intent = c.get_intent(&intent_id);
+    assert_eq!(intent.id, intent_id);
+    assert_eq!(intent.proposer, proposer);
+    assert_eq!(intent.target, arbitrary_target);
+    assert_eq!(intent.function, arbitrary_fn);
+    assert_eq!(intent.calldata, raw);
+    assert_eq!(intent.status, super::IntentStatus::Pending);
+}
