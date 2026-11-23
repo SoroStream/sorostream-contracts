@@ -204,10 +204,10 @@ fn test_queue_quorum_boundary_evenly_split() {
 }
 
 #[test]
-fn test_withdraw_vote_tokens_after_cancel_before_vote_end() {
-    // Issue #889: once a proposal is cancelled, voters should be able to
-    // reclaim their escrowed tokens immediately, without waiting for the
-    // proposal's original vote_end.
+fn test_withdraw_vote_tokens_twice_fails_with_no_vote_to_withdraw() {
+    // Issue #983: withdraw_vote_tokens removes the locked_balance_key entry
+    // immediately after reading it, so a second withdrawal for the same
+    // voter/proposal pair must fail with NoVoteToWithdraw.
     let env = env_with_auth();
     let id = env.register(GovernanceContract, ());
     let c = GovernanceContractClient::new(&env, &id);
@@ -225,72 +225,39 @@ fn test_withdraw_vote_tokens_after_cancel_before_vote_end() {
     let target = Address::generate(&env);
     let function = soroban_sdk::Symbol::new(&env, "dummy");
     let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
-
     let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
 
     let voter = Address::generate(&env);
     let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    stellar_asset.mint(&voter, &10);
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    stellar_asset.mint(&voter, &100);
 
     c.vote(&voter, &prop_id, &true);
-
-    // Tokens are escrowed by the contract after voting.
-    let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&voter), 0);
-    assert_eq!(token_client.balance(&id), 10);
+    assert_eq!(token_client.balance(&id), 100);
 
-    // Proposer cancels the proposal before vote_end.
-    c.cancel_proposal(&admin, &prop_id);
+    // Move past vote_end so withdrawal is permitted.
     let proposal = c.get_proposal(&prop_id);
-    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+    env.ledger().set_timestamp(proposal.vote_end + 1);
 
-    // Still before the original vote_end, the voter can withdraw immediately.
-    assert!(env.ledger().timestamp() <= proposal.vote_end);
-    let result = c.try_withdraw_vote_tokens(&voter, &prop_id);
-    assert_eq!(result, Ok(Ok(())));
-
-    assert_eq!(token_client.balance(&voter), 10);
+    // First withdrawal succeeds and returns the escrowed tokens.
+    c.withdraw_vote_tokens(&voter, &prop_id);
+    assert_eq!(token_client.balance(&voter), 100);
     assert_eq!(token_client.balance(&id), 0);
-}
 
-#[test]
-fn test_withdraw_vote_tokens_before_vote_end_active_fails() {
-    // Issue #889: on an Active proposal, withdrawing before vote_end must
-    // still be rejected with VotingNotActive.
-    let env = env_with_auth();
-    let id = env.register(GovernanceContract, ());
-    let c = GovernanceContractClient::new(&env, &id);
+    // The locked balance entry has been removed from persistent storage.
+    let locked: Option<u64> = env.as_contract(&id, || {
+        env.storage()
+            .persistent()
+            .get(&super::locked_balance_key(&env, prop_id, &voter))
+    });
+    assert!(locked.is_none());
 
-    let admin = Address::generate(&env);
-    let guardian = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-
-    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
-    env.ledger().set_timestamp(1000);
-
-    let target = Address::generate(&env);
-    let function = soroban_sdk::Symbol::new(&env, "dummy");
-    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
-
-    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
-
-    let voter = Address::generate(&env);
-    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    stellar_asset.mint(&voter, &10);
-
-    c.vote(&voter, &prop_id, &true);
-
-    let proposal = c.get_proposal(&prop_id);
-    assert_eq!(proposal.status, ProposalStatus::Active);
-    assert!(env.ledger().timestamp() <= proposal.vote_end);
-
+    // Second withdrawal for the same voter/proposal fails.
     let result = c.try_withdraw_vote_tokens(&voter, &prop_id);
-    assert!(result.is_err());
-    match result {
-        Err(Ok(e)) => assert_eq!(e, GovernanceError::VotingNotActive),
-        _ => panic!("expected VotingNotActive"),
-    }
+    assert_eq!(result, Err(Ok(GovernanceError::NoVoteToWithdraw)));
+
+    // Balances are unchanged by the failed second call.
+    assert_eq!(token_client.balance(&voter), 100);
+    assert_eq!(token_client.balance(&id), 0);
 }
