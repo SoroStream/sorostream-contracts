@@ -80,13 +80,13 @@ impl StreamingContract {
         // non-sequential and an attacker cannot enumerate all streams.
         // The monotonic nonce prevents collisions for same-block creations.
         let nonce = storage::next_nonce(&env);
-        let mut stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, nonce);
-        // Extremely unlikely, but handle hash collisions by incrementing nonce.
-        let mut retry = nonce + 1;
-        while storage::stream_id_exists(&env, stream_id) {
-            stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, retry);
-            retry += 1;
-        }
+        let stream_id = storage::derive_stream_id_with_collision_handling(
+            &env,
+            &sender,
+            &recipient,
+            start_time,
+            nonce,
+        );
 
         storage::save_stream(
             &env,
@@ -153,12 +153,13 @@ impl StreamingContract {
         );
 
         let nonce = storage::next_nonce(&env);
-        let mut stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, nonce);
-        let mut retry = nonce + 1;
-        while storage::stream_id_exists(&env, stream_id) {
-            stream_id = storage::derive_stream_id(&env, &sender, &recipient, start_time, retry);
-            retry += 1;
-        }
+        let stream_id = storage::derive_stream_id_with_collision_handling(
+            &env,
+            &sender,
+            &recipient,
+            start_time,
+            nonce,
+        );
 
         storage::save_stream(
             &env,
@@ -208,6 +209,7 @@ impl StreamingContract {
 
     /// Cancel a stream. Vested tokens go to recipient; remainder goes back to sender.
     /// Emits `StreamCancelled` with sender, recipient, token, vested amount, and refund.
+    /// Cancelled streams decrement the sender's reputation score.
     pub fn cancel(env: Env, stream_id: u64) {
         let mut stream = storage::get_stream(&env, stream_id);
         stream.sender.require_auth();
@@ -238,7 +240,8 @@ impl StreamingContract {
             (Symbol::new(&env, "StreamCancelled"), stream_id),
             (stream.sender, stream.recipient, stream.token, claimable, refund),
         );
-        // Cancelled streams do NOT increment reputation.
+        // Decrement reputation for stream cancellation to penalize bad-faith stream churn.
+        storage::decrement_reputation(&env, &stream.sender);
     }
 
     /// Pull-based auto-renewal (issue #8 fix, with keeper authorization in #821).
@@ -327,6 +330,16 @@ impl StreamingContract {
     /// approve within `approval_window_ledgers` ledgers, anyone can call
     /// `discard_proposal` to return the deposit. Before expiry, only the sender
     /// can retract the proposal.
+    ///
+    /// # Approval Window
+    /// The `approval_window_ledgers` parameter specifies a ledger-sequence-based
+    /// timeout: the proposal expires after `env.ledger().sequence() + approval_window_ledgers`.
+    /// **There is no parallel wall-clock timeout.** Ledger production rate is not
+    /// perfectly constant (typically ~6 seconds on average in Soroban mainnet, but
+    /// can vary significantly). Integrators reasoning in wall-clock time should
+    /// convert the approval window accordingly. For example, to allow 1 hour:
+    /// - Assume typical ~6-second ledger time: 1 hour ÷ 6s/ledger ≈ 600 ledgers
+    /// - Use a safety margin; e.g., request 500–600 ledgers depending on risk tolerance
     pub fn propose_stream(
         env: Env,
         sender: Address,
@@ -384,6 +397,12 @@ impl StreamingContract {
     ///
     /// The stream's `start_time` is set to the current ledger timestamp at the
     /// moment of approval.
+    ///
+    /// # Note on Self-Cosigning
+    /// The contract does not enforce that `cosigner ≠ sender`. A sender can propose
+    /// a stream naming themselves as the cosigner, then approve their own proposal
+    /// unilaterally. If the 2-of-2 flow should strictly require two distinct parties,
+    /// integrators must validate `sender ≠ cosigner` on the client side.
     pub fn approve_proposal(env: Env, proposal_id: u64) -> u64 {
         let proposal = storage::get_proposal(&env, proposal_id);
         proposal.cosigner.require_auth();
@@ -396,26 +415,16 @@ impl StreamingContract {
         let start_time = env.ledger().timestamp();
         let end_time = start_time + proposal.duration;
 
-        // Same non-enumerable ID derivation as create_stream/propose_stream.
+        // Same non-enumerable ID derivation as create_stream/sponsor_stream.
         let nonce = storage::next_nonce(&env);
-        let mut stream_id = storage::derive_stream_id(
+        let stream_id = storage::derive_stream_id_with_collision_handling(
             &env,
             &proposal.sender,
             &proposal.recipient,
             start_time,
             nonce,
         );
-        let mut retry = nonce + 1;
-        while storage::stream_id_exists(&env, stream_id) {
-            stream_id = storage::derive_stream_id(
-                &env,
-                &proposal.sender,
-                &proposal.recipient,
-                start_time,
-                retry,
-            );
-            retry += 1;
-        }
+
         storage::save_stream(
             &env,
             stream_id,
@@ -454,6 +463,25 @@ impl StreamingContract {
         }
 
         // Return escrowed deposit to sender.
+        token::Client::new(&env, &proposal.token).transfer(
+            &env.current_contract_address(),
+            &proposal.sender,
+            &proposal.deposit,
+        );
+
+        storage::remove_proposal(&env, proposal_id);
+    }
+
+    /// Allows the cosigner to explicitly decline a pending proposal before expiry,
+    /// immediately refunding the escrowed deposit to the sender (#945).
+    pub fn reject_proposal(env: Env, proposal_id: u64, cosigner: Address) {
+        cosigner.require_auth();
+        let proposal = storage::get_proposal(&env, proposal_id);
+        assert!(
+            cosigner == proposal.cosigner,
+            "Error::Unauthorized: only the designated cosigner can reject this proposal"
+        );
+
         token::Client::new(&env, &proposal.token).transfer(
             &env.current_contract_address(),
             &proposal.sender,

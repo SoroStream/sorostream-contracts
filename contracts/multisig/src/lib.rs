@@ -562,16 +562,22 @@ impl MultiSigContract {
     }
 
     /// Proposes a new admin. Only an owner may propose (through propose+approve).
+    ///
+    /// # Design Note (Issue #935 & #934)
+    /// Admin-transfer intents are intentionally long-lived with u64::MAX expiry to prevent premature
+    /// expiration while owners vote on governance migration.
+    /// Both proposer and target secondary index lists are updated so the intent is discoverable.
     pub fn propose_transfer_admin(env: Env, new_admin: Address) -> Result<u64, MultiSigError> {
         env.current_contract_address().require_auth();
         let nonce = get_and_increment_nonce(&env);
         let id = next_intent_id(&env);
+        let self_addr = env.current_contract_address();
 
         let intent = Intent {
             id,
             nonce,
-            proposer: env.current_contract_address(),
-            target: env.current_contract_address(),
+            proposer: self_addr.clone(),
+            target: self_addr.clone(),
             function: Symbol::new(&env, "accept_transfer_admin"),
             calldata: Bytes::new(&env),
             status: IntentStatus::Pending,
@@ -579,6 +585,9 @@ impl MultiSigContract {
             approval_count: 0,
         };
         save_intent(&env, &intent);
+
+        append_intent_index(&env, proposer_intents_key(&env, &self_addr), id);
+        append_intent_index(&env, target_intents_key(&env, &self_addr), id);
 
         // Store the proposed admin separately
         env.storage().instance().set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
@@ -657,5 +666,16 @@ mod embedded_test {
         let intent = c.get_intent(&intent_id);
         assert_eq!(intent.status, IntentStatus::Pending);
         assert_eq!(intent.approval_count, 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_propose_transfer_admin_fails_direct_external_call() {
+        let (env, contract_id, _owners) = setup();
+        let c = MultiSigContractClient::new(&env, &contract_id);
+        let new_admin = Address::generate(&env);
+        // Direct call without contract's own self-auth must panic/fail
+        env.mock_auths(&[]);
+        c.propose_transfer_admin(&new_admin);
     }
 }
