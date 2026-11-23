@@ -361,7 +361,9 @@ impl GovernanceContract {
 
         let proposal = load_proposal(&env, proposal_id)
             .ok_or(GovernanceError::ProposalNotFound)?;
-        if env.ledger().timestamp() <= proposal.vote_end {
+        if proposal.status == ProposalStatus::Active
+            && env.ledger().timestamp() <= proposal.vote_end
+        {
             return Err(GovernanceError::VotingNotActive);
         }
 
@@ -383,6 +385,11 @@ impl GovernanceContract {
                 &(balance as i128),
             );
         }
+
+        env.events().publish(
+            (Symbol::new(&env, "VoteWithdrawn"), proposal_id),
+            (voter, balance),
+        );
 
         Ok(())
     }
