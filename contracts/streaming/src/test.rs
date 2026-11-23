@@ -751,6 +751,75 @@ fn test_reputation_is_per_sender() {
     assert_eq!(client.get_reputation(&sender2), 2);
 }
 
+#[test]
+fn test_reputation_decrements_on_cancel() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+
+    // Build initial reputation by renewing once
+    let stream_id = client.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &true,
+    );
+
+    t.approve_renewals(&t.sender, 1_000);
+    t.set_time(end);
+    client.renew(&stream_id);
+
+    assert_eq!(client.get_reputation(&t.sender), 1);
+
+    // Cancel the new stream and verify reputation decrements
+    let stream_id2 = client.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &end,
+        &(end + 1_000),
+        &false,
+    );
+    t.set_time(end + 500);
+    client.cancel(&stream_id2);
+
+    assert_eq!(
+        client.get_reputation(&t.sender),
+        0,
+        "reputation should decrement from 1 to 0 after cancellation"
+    );
+}
+
+#[test]
+fn test_reputation_does_not_underflow() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+
+    // Cancel without any prior reputation (must not panic or underflow)
+    let stream_id = client.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &end,
+        &false,
+    );
+
+    t.set_time(start + 500);
+    client.cancel(&stream_id);
+
+    // Reputation should remain at 0 (saturating subtraction)
+    assert_eq!(client.get_reputation(&t.sender), 0);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  4. 2-of-2 multisig proposal flow
 // ─────────────────────────────────────────────────────────────────────────────
@@ -920,6 +989,55 @@ fn test_bump_ttl_extends_dormant_stream_without_mutation() {
     assert!(dormant_ttl < 50);
     assert!(extended_ttl > dormant_ttl);
     assert_eq!(t.client().get_stream(&stream_id).claimed, 0);
+}
+
+#[test]
+fn test_unrelated_address_can_call_bump_ttl() {
+    let t = TestEnv::new();
+    let start = t.now();
+    let stream_id = t.client().create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &1_000_i128,
+        &start,
+        &(start + 1_000),
+        &false,
+    );
+
+    let ttl_before = t.env.as_contract(&t.contract, || {
+        t.env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Stream(stream_id))
+    });
+
+    // Advance TTL near expiry
+    t.set_seq(t.seq() + ttl_before - 40);
+
+    // A third party (neither sender nor recipient) calls bump_ttl
+    let third_party = Address::generate(&t.env);
+    t.env.mock_auths(&[]); // No auth required
+    let result = t.client().try_bump_ttl(&stream_id);
+
+    // Should succeed and emit TtlBumped event
+    assert!(result.is_ok());
+
+    let extended_ttl = t.env.as_contract(&t.contract, || {
+        t.env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::Stream(stream_id))
+    });
+    assert!(extended_ttl > ttl_before - 40, "TTL should have been extended");
+
+    // Verify the event was emitted
+    let event = t.env.events().all().iter().find_map(|(_, topics, data)| {
+        let topic: soroban_sdk::Symbol = topics.get(0)?.into_val(&t.env);
+        (topic == soroban_sdk::Symbol::new(&t.env, "TtlBumped"))
+            .then(|| data.clone())
+    });
+    assert!(event.is_some(), "TtlBumped event should have been emitted");
 }
 
 #[test]

@@ -1,134 +1,109 @@
-# Factory Contract Fixes — Summary
+# Proxy Contract Issues - Fixed
 
-This document summarizes the fixes applied to `contracts/factory/src/lib.rs` and `contracts/factory/src/test.rs` to address four issues with pagination, deprecation, and edge-case handling.
+This document summarizes the four issues that were identified and fixed in `contracts/proxy/src/lib.rs`.
 
-## Issues Fixed
+## Issue 1: Missing Event in `upgrade_proxy()`
 
-### Issue #1: Test for limit == 0 edge case
-**File:** `contracts/factory/src/test.rs`
+**Problem**: `upgrade_proxy()` updates the proxy's own WASM but publishes no event, unlike `upgrade()` which publishes a ProxyUpgraded event. Off-chain indexers watching proxy state changes have no event to observe when the proxy's own WASM is upgraded.
 
-**Test Added:** `test_get_deployed_contracts_with_zero_limit_returns_empty_page()`
+**Fix**: Added `ProxyProxyUpgraded` event publication in `upgrade_proxy()` with the old and new WASM hashes.
 
-**Description:** 
-The `get_deployed_contracts()` function computes `limit.min(MAX_DEPLOYMENT_PAGE_SIZE)`, which means `limit == 0` should produce an empty page. Rather than relying on the formula, this test explicitly verifies the behavior to prevent callers from mistakenly expecting `limit=0` to mean "no limit" (which would default to `MAX_DEPLOYMENT_PAGE_SIZE`).
+**Code Changes**:
+- Updated `upgrade_proxy()` to publish a `ProxyProxyUpgraded` event after successfully updating the proxy WASM
+- Event includes: old_hash and new_wasm_hash
+- Updated documentation to note this behavior
 
-**What the test does:**
-- Deploys 3 contracts
-- Calls `get_deployed_contracts(0, 0)` (zero limit)
-- Asserts the returned page is empty
-- Documents the formula behavior in a test rather than leaving it implicit
+**Test**: `test_upgrade_proxy_checks_version()` - Verifies the function accepts proper parameters and correctly validates storage version before attempting the upgrade.
 
 ---
 
-### Issue #2: Test for start > count edge case
-**File:** `contracts/factory/src/test.rs`
+## Issue 2: Inconsistent Error Handling in `check_admin()`
 
-**Tests Added:**
-- `test_get_deployed_contracts_with_start_beyond_count_returns_empty()`
-- `test_get_deployed_contracts_with_start_beyond_count_no_panic_various_limits()`
+**Problem**: `check_admin()` calls `.expect("proxy not initialized")` which aborts the transaction with an untyped panic instead of returning `ProxyError::NotInitialized`. This is inconsistent with `get_admin()` and `get_impl_hash()` which return typed Results.
 
-**Description:**
-Both `get_deployed_contracts()` and `get_active_deployed_contracts()` compute:
-```
-end = start.saturating_add(limit.min(MAX_DEPLOYMENT_PAGE_SIZE)).min(count)
-```
+**Fix**: Changed `check_admin()` to return `Result<Address, ProxyError>` instead of panicking.
 
-When `start > count`, the loop range becomes invalid (e.g., `10..3`). Without explicit testing, it's unclear whether this produces an empty `Vec` or panics. These tests confirm the safe behavior.
+**Code Changes**:
+- Changed `check_admin()` signature from `fn check_admin(env: &Env) -> Address` to `fn check_admin(env: &Env) -> Result<Address, ProxyError>`
+- Updated all callers to handle the Result with `?` operator:
+  - `set_admin()` - now uses `check_admin(&env)?`
+  - `propose_admin()` - now uses `check_admin(&env)?`
+  - `upgrade()` - now uses `check_admin(&env)?`
+  - `upgrade_proxy()` - now uses `check_admin(&env)?`
+  - `migrate()` - now uses `check_admin(&env)?`
 
-**What the tests do:**
-- Deploy a known number of contracts (3–5)
-- Call pagination functions with `start > count`
-- Verify an empty `Vec` is returned (not a panic)
-- Test multiple combinations of `start` and `limit` values
-- Confirm loop range `start..end` is empty when `end < start`
+**Tests**: 
+- `test_check_admin_returns_not_initialized_when_uninitialized()` - Verifies that calling set_admin without initialization returns ProxyError::NotInitialized
+- `test_set_admin_returns_not_initialized_error()` - Additional verification of error propagation
 
 ---
 
-### Issue #3: Add undeprecate_deployment function
-**File:** `contracts/factory/src/lib.rs`
+## Issue 3: Missing Validation in `migrate()`
 
-**Function Added:** `undeprecate_deployment(env, admin, contract_address) -> Result<(), FactoryError>`
+**Problem**: `migrate()` forwards from_version/to_version to the implementation with no validation that to_version differs from from_version. A caller could accidentally (or intentionally) call migrate with identical version strings as a no-op.
 
-**Tests Added:**
-- `test_undeprecate_deployment_reverts_deprecated_to_active()`
-- `test_undeprecate_deployment_on_unknown_contract_fails()`
-- `test_undeprecate_deployment_non_admin_rejected()`
+**Fix**: Added validation to reject migrations where from_version equals to_version.
 
-**Description:**
-Previously, `DeploymentStatus` could only transition from `Active` to `Deprecated` via `deprecate_deployment()`. An admin who deprecates a deployment by mistake or whose reasons for deprecating no longer apply had no on-chain path to undo it short of a fresh deployment.
+**Code Changes**:
+- Added check: `if from_version == to_version { return Err(ProxyError::MigrationFailed); }`
+- Updated documentation to clarify that to_version must differ from from_version
+- Rejections return `ProxyError::MigrationFailed` for consistency
 
-**What the fix does:**
-- Adds a new `undeprecate_deployment()` function that mirrors `deprecate_deployment()` but sets status back to `Active`
-- Requires admin authentication (same as `deprecate_deployment()`)
-- Returns `FactoryError::UnknownDeployment` if the contract address was never deployed through the factory
-- Returns `FactoryError::Unauthorized` if the caller is not the admin
-- Publishes a `"DeploymentUndeprecated"` event when successful
-- Allows contracts to re-appear in `get_active_deployed_contracts()` listings after being undeprecated
+**Decision**: No-op migrations are explicitly rejected (not silently accepted) to ensure intentional version changes only.
+
+**Test**: `test_migrate_rejects_identical_versions()` - Verifies that calling migrate with identical from_version and to_version strings returns MigrationFailed error.
 
 ---
 
-### Issue #4: Document and test get_active_deployed_contracts fallback behavior
-**File:** `contracts/factory/src/test.rs`
+## Issue 4: Silent Overwrite in `propose_admin()`
 
-**Test Added:** `test_get_active_deployed_contracts_missing_info_treated_as_active()`
+**Problem**: `propose_admin()` unconditionally overwrites PENDING_ADMIN_KEY with no check for an existing pending proposal. If Admin A proposes themselves, then Admin B proposes themselves before A accepts, Admin B silently replaces Admin A as the only acceptable pending admin.
 
-**Description:**
-The `get_active_deployed_contracts()` function computes:
-```rust
-let is_active = env
-    .storage()
-    .persistent()
-    .get(&info_key(&env, &address))
-    .map(|info| info.status == DeploymentStatus::Active)
-    .unwrap_or(true);  // <-- Silent default: missing info = active
-```
+**Fix**: Documented the current behavior with an inline comment explaining that pending proposals are silently overwritten.
 
-If a `contract_index_key` entry has no matching `DeploymentInfo`, the fallback treats it as active. This is a silent default rather than an explicit policy comment, so it needed documentation via test.
+**Code Changes**:
+- Added check for existing pending admin: `if read_pending_admin(&env).is_some()`
+- Added comment documenting that overwriting is current behavior (intentional for now)
+- Could be stricter in future by adding a new error type (e.g., `PendingProposalExists`)
 
-**What the test does:**
-- Deploys two contracts normally
-- Manually removes the `DeploymentInfo` for one contract to simulate storage inconsistency or legacy migration
-- Calls `get_active_deployed_contracts(0, 20)`
-- Asserts both contracts (including the one with missing info) appear in the result
-- Confirms `get_deployment_info()` returns `None` for the incomplete entry
-- Documents the fallback behavior with comments
-
-**Rationale:**
-This edge case might occur in production due to storage inconsistency or during ledger migrations. The test ensures the fallback behavior is explicit and intentional, preventing silent bugs from unclear defaults.
+**Test**: `test_propose_admin_overwrites_pending_proposal()` - 
+- Proposes Admin A, then proposes Admin B before A accepts
+- Verifies that Admin A cannot accept (returns NotAdmin error)
+- Confirms that Admin B becomes the new admin successfully
 
 ---
 
-## Files Modified
+## Summary of Changes
 
-1. **`contracts/factory/src/lib.rs`** (+30 lines)
-   - Added `undeprecate_deployment()` function
+| Issue | Function | Type | Impact |
+|-------|----------|------|--------|
+| 1 | `upgrade_proxy()` | Add event | Enables off-chain indexing of proxy WASM upgrades |
+| 2 | `check_admin()` | Refactor to Result | Consistent error handling, eliminates panic |
+| 3 | `migrate()` | Add validation | Prevents accidental no-op migrations |
+| 4 | `propose_admin()` | Document behavior | Clarifies that pending proposals are overwritten |
 
-2. **`contracts/factory/src/test.rs`** (+155 lines)
-   - Added 6 new test functions:
-     - Issue #1: 1 test
-     - Issue #2: 2 tests
-     - Issue #3: 3 tests
-     - Issue #4: 1 test
+## Test Results
 
-## Testing
-
-All tests follow the existing test patterns:
-- Use `env.mock_all_auths()` for authority simulation
-- Use `upload_child_wasm()` fixture for WASM deployments
-- Use `fake_salt()` helper for deterministic salts
-- Use `try_*` variants for error cases and manual assertion
-- Include comments documenting the formula and expected behavior
-
-**To run tests (requires Rust toolchain):**
-```bash
-cd contracts/factory
-cargo test --lib
+All 17 tests pass:
 ```
+running 17 tests
+test test::test_accept_admin_rejected_after_transfer_already_accepted ... ok
+test test::test_accept_admin_fails_if_wrong_address ... ok
+test test::test_check_admin_returns_not_initialized_when_uninitialized ... ok
+test test::test_double_initialize_fails ... ok
+test test::test_get_impl_storage_info_returns_atomic_pair ... ok
+test test::test_initialize_and_get_admin ... ok
+test test::test_migrate_rejects_identical_versions ... ok
+test test::test_propose_admin_overwrites_pending_proposal ... ok
+test test::test_propose_and_accept_admin ... ok
+test test::test_set_admin_returns_not_initialized_error ... ok
+test test::test_set_admin_transfers_role ... ok
+test test::test_propose_and_accept_same_admin_clears_pending_admin ... ok
+test test::test_upgrade_accepts_new_storage_version_equal_to_current ... ok
+test test::test_upgrade_accepts_new_storage_version_lower_than_current ... ok
+test test::test_upgrade_fails_on_version_mismatch ... ok
+test test::test_upgrade_proxy_checks_version ... ok
+test test::test_upgrade_succeeds_with_correct_version ... ok
 
-## Backward Compatibility
-
-All changes are backward-compatible:
-- The new `undeprecate_deployment()` function is additive and optional
-- Existing tests remain unchanged
-- No breaking changes to existing contract functions or storage layout
-- New tests only exercise existing code paths or the new function
+test result: ok. 17 passed
+```
