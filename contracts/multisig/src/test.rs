@@ -62,6 +62,70 @@ fn test_get_owners_reflects_removal() {
 }
 
 #[test]
+fn test_get_owners_after_multiple_add_remove_cycles() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    // Start with five owners. Threshold of 1 so removals are always allowed.
+    let mut expected: Vec<Address> = Vec::new(&env);
+    for _ in 0..5 {
+        expected.push_back(Address::generate(&env));
+    }
+    c.initialize(&expected, &1u32);
+    assert_eq!(c.owner_count(), 5);
+
+    // Perform several cycles: remove an owner from the middle of the current
+    // list (exercising swap-and-pop compaction), then add a fresh owner.
+    for _ in 0..4 {
+        let current = c.get_owners();
+        assert!(current.len() >= 3);
+
+        // Pick an owner from the middle of the current list.
+        let victim = current.get(current.len() / 2).unwrap();
+        c.remove_owner(&victim);
+
+        // Update the expected set: drop the victim.
+        let mut new_expected: Vec<Address> = Vec::new(&env);
+        for i in 0..expected.len() {
+            let addr = expected.get(i).unwrap();
+            if addr != victim {
+                new_expected.push_back(addr);
+            }
+        }
+        expected = new_expected;
+
+        // Add a fresh owner.
+        let fresh = Address::generate(&env);
+        c.add_owner(&fresh);
+        expected.push_back(fresh);
+
+        // (a) Length matches owner_count().
+        let owners = c.get_owners();
+        assert_eq!(owners.len(), c.owner_count());
+        assert_eq!(owners.len(), expected.len());
+
+        // (b) The returned set exactly matches the expected set.
+        for i in 0..expected.len() {
+            let addr = expected.get(i).unwrap();
+            assert!(owners.contains(&addr));
+        }
+        for i in 0..owners.len() {
+            let addr = owners.get(i).unwrap();
+            assert!(expected.contains(&addr));
+        }
+
+        // (c) No duplicates in the returned Vec.
+        for i in 0..owners.len() {
+            let addr = owners.get(i).unwrap();
+            for j in (i + 1)..owners.len() {
+                assert_ne!(addr, owners.get(j).unwrap());
+            }
+        }
+    }
+}
+
+#[test]
 fn test_get_intents_by_proposer_and_target() {
     let env = env_with_auth();
     let id = env.register(MultiSigContract, ());
