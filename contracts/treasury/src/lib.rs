@@ -535,6 +535,35 @@ mod test {
     }
 
     #[test]
+    fn test_withdraw_treasury_zero_amount() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
+
+        let treasury_balance_before = c.get_balance(&t.token_id);
+        let user_balance_before = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(treasury_balance_before, 10_000);
+        assert_eq!(user_balance_before, 0);
+
+        // A zero-amount withdrawal is a no-op: it must not fail or alter balances.
+        c.withdraw_treasury(&t.token_id, &0, &t.user);
+
+        assert_eq!(c.get_balance(&t.token_id), treasury_balance_before);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.user),
+            user_balance_before
+        );
+
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
+    }
+
+    #[test]
     fn test_withdraw_treasury_exact_balance() {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
