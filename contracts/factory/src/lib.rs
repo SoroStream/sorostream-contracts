@@ -348,7 +348,21 @@ impl StreamFactory {
         active
     }
 
-    /// Returns the current factory admin address.
+    /// Returns the current factory admin address, or `None` if the factory has
+    /// not been initialized yet.
+    ///
+    /// This is a read-only getter and deliberately returns `Option<Address>`
+    /// rather than `Result<Address, FactoryError>`: querying an uninitialized
+    /// factory is a normal, non-exceptional state for callers (dashboards,
+    /// scripts, other contracts probing configuration), so `None` is the
+    /// ergonomic answer and avoids forcing callers to handle an error variant
+    /// just to check whether setup has happened.
+    ///
+    /// This intentionally differs from state-changing or typed-error methods
+    /// such as `deploy_stream_contract`, `propose_admin`, and
+    /// `deprecate_deployment`, which surface `FactoryError::NotInitialized`
+    /// for the equivalent "not yet set up" condition because those calls
+    /// cannot meaningfully proceed without an admin and must fail loudly.
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&admin_key(&env))
     }

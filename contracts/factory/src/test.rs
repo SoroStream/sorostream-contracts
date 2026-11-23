@@ -84,6 +84,13 @@ fn test_get_deployed_contracts_empty_before_any_deployment() {
     assert_eq!(c.get_deployed_contract_count(), 0);
 }
 
+/// `get_admin` is the one factory getter that returns a plain `Option<Address>`
+/// instead of a typed `Result<_, FactoryError>`. On a freshly-deployed factory
+/// that has never been initialized, it must return `None` rather than panicking
+/// or surfacing `FactoryError::NotInitialized` (which is what the
+/// `Result`-returning entry points such as `deploy_stream_contract` and
+/// `propose_admin` use for the same "not yet set up" condition). This mirrors
+/// the treasury contract's `get_admin` behaviour.
 #[test]
 fn test_get_admin_returns_none_before_init() {
     let env = Env::default();
@@ -92,7 +99,16 @@ fn test_get_admin_returns_none_before_init() {
     let factory_id = env.register(StreamFactory, ());
     let c = StreamFactoryClient::new(&env, &factory_id);
 
+    // No initialize() call: the admin key has never been written.
     assert_eq!(c.get_admin(), None);
+
+    // Contrast: a Result-returning entry point reports NotInitialized instead.
+    let result = c.try_propose_admin(&Address::generate(&env));
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, FactoryError::NotInitialized),
+        _ => panic!("expected NotInitialized"),
+    }
 }
 
 #[test]
