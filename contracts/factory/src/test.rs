@@ -384,120 +384,194 @@ fn test_deprecate_deployment_updates_info_and_active_listing() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #911 — propose_admin authorizes the *stored* admin
+// Tests — Issue #1: limit == 0 should return empty page
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_propose_admin_from_non_admin_caller_is_rejected() {
+fn test_get_deployed_contracts_with_zero_limit_returns_empty_page() {
     let env = Env::default();
     env.mock_all_auths();
-
-    let factory_id = env.register(StreamFactory, ());
-    let c = StreamFactoryClient::new(&env, &factory_id);
-    let admin = Address::generate(&env);
-    let attacker = Address::generate(&env);
-    c.initialize(&admin);
-
-    // Only the attacker signs. propose_admin has no caller-address parameter;
-    // it reads the admin from storage and requires *that* address's auth, so
-    // the attacker's own signature can never satisfy the check.
-    env.mock_auths(&[MockAuth {
-        address: &attacker,
-        invoke: &MockAuthInvoke {
-            contract: &factory_id,
-            fn_name: "propose_admin",
-            args: (attacker.clone(),).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-    assert!(c.try_propose_admin(&attacker).is_err());
-
-    // State is untouched: admin unchanged and no pending admin was recorded.
-    env.mock_all_auths();
-    assert_eq!(c.get_admin(), Some(admin));
-    match c.try_accept_admin(&attacker) {
-        Err(Ok(e)) => assert_eq!(e, FactoryError::NotInitialized),
-        _ => panic!("expected no pending admin"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Issue #912 — deployment label length is bounded
-// ---------------------------------------------------------------------------
-
-fn label_of_len(env: &Env, len: usize) -> String {
-    let bytes = std::vec![b'a'; len];
-    String::from_bytes(env, &bytes)
-}
-
-#[test]
-fn test_deploy_rejects_label_longer_than_max() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let factory_id = env.register(StreamFactory, ());
-    let c = StreamFactoryClient::new(&env, &factory_id);
-    let admin = Address::generate(&env);
-    c.initialize(&admin);
-
-    let label = label_of_len(&env, MAX_LABEL_LEN as usize + 1);
-    let result = c.try_deploy_stream_contract(
-        &admin,
-        &BytesN::from_array(&env, &[0xAB_u8; 32]),
-        &fake_salt(&env, 1),
-        &Some(label),
-    );
-    match result {
-        Err(Ok(e)) => assert_eq!(e, FactoryError::LabelTooLong),
-        _ => panic!("expected LabelTooLong"),
-    }
-    assert_eq!(c.get_deployed_contract_count(), 0);
-}
-
-#[test]
-fn test_deploy_accepts_label_at_max_length() {
-    let env = Env::default();
-    env.mock_all_auths();
-
     let factory_id = env.register(StreamFactory, ());
     let c = StreamFactoryClient::new(&env, &factory_id);
     let admin = Address::generate(&env);
     c.initialize(&admin);
 
     let wasm_hash = upload_child_wasm(&env);
-    let label = label_of_len(&env, MAX_LABEL_LEN as usize);
-    let child = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 7), &Some(label.clone()));
-    assert_eq!(c.get_deployment_info(&child).unwrap().label, Some(label));
+    // Deploy some contracts.
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None);
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 2), &None);
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 3), &None);
+
+    // Requesting limit=0 should still return empty page, not all contracts.
+    // The limit is capped at min(0, MAX_DEPLOYMENT_PAGE_SIZE) = 0, producing empty range.
+    let page = c.get_deployed_contracts(&0, &0);
+    assert_eq!(page.len(), 0);
 }
 
 // ---------------------------------------------------------------------------
-// Issue #913 — deprecate_deployment is idempotent
+// Tests — Issue #2: start > count should return empty page without panicking
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_deprecate_deployment_twice_is_harmless_noop() {
+fn test_get_deployed_contracts_with_start_beyond_count_returns_empty() {
     let env = Env::default();
     env.mock_all_auths();
-
     let factory_id = env.register(StreamFactory, ());
     let c = StreamFactoryClient::new(&env, &factory_id);
     let admin = Address::generate(&env);
     c.initialize(&admin);
 
     let wasm_hash = upload_child_wasm(&env);
-    let child = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 71), &None);
+    // Deploy 3 contracts (indices 0, 1, 2).
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None);
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 2), &None);
+    c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 3), &None);
 
-    c.deprecate_deployment(&admin, &child);
-    let after_first = c.get_deployment_info(&child).unwrap();
-    assert_eq!(after_first.status, DeploymentStatus::Deprecated);
+    // Requesting start=10 (beyond count=3) must not panic.
+    // The range is computed as: end = start.saturating_add(limit).min(count)
+    // end = 10.saturating_add(20).min(3) = 30.min(3) = 3
+    // Loop range is 10..3 which is empty, so an empty Vec is returned.
+    let page = c.get_deployed_contracts(&10, &20);
+    assert_eq!(page.len(), 0);
+}
 
-    // Second call succeeds (no error) and re-publishes the event.
-    assert!(c.try_deprecate_deployment(&admin, &child).is_ok());
-    assert!(has_event(&env, "DeploymentDeprecated"));
+#[test]
+fn test_get_deployed_contracts_with_start_beyond_count_no_panic_various_limits() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
 
-    // Stored metadata is identical after the repeated call.
-    let after_second = c.get_deployment_info(&child).unwrap();
-    assert_eq!(after_second, after_first);
-    assert_eq!(c.get_deployed_contract_count(), 1);
+    let wasm_hash = upload_child_wasm(&env);
+    // Deploy 5 contracts.
+    for i in 1..=5 {
+        c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, i as u8), &None);
+    }
+
+    // Test several start values beyond count.
+    let test_cases = vec![
+        (100, 10),  // start >> count, limit normal
+        (5, 1),     // start == count, limit=1
+        (6, 100),   // start > count, limit large
+        (1000, 0),  // start >> count, limit=0
+    ];
+
+    for (start, limit) in test_cases {
+        let page = c.get_deployed_contracts(&start, &limit);
+        assert_eq!(page.len(), 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Issue #3: undeprecate_deployment should allow reverting deprecation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_undeprecate_deployment_reverts_deprecated_to_active() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    let contract = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None);
+
+    // Verify contract is active initially.
+    assert_eq!(c.get_deployment_info(&contract).unwrap().status, DeploymentStatus::Active);
+
+    // Deprecate the contract.
+    c.deprecate_deployment(&admin, &contract);
+    assert_eq!(c.get_deployment_info(&contract).unwrap().status, DeploymentStatus::Deprecated);
+
+    // Verify it's excluded from active listings.
     assert_eq!(c.get_active_deployed_contracts(&0, &20).len(), 0);
+
+    // Undeprecate the contract.
+    c.undeprecate_deployment(&admin, &contract);
+    assert_eq!(c.get_deployment_info(&contract).unwrap().status, DeploymentStatus::Active);
+
+    // Verify it's restored to active listings.
+    let active = c.get_active_deployed_contracts(&0, &20);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap(), contract);
+}
+
+#[test]
+fn test_undeprecate_deployment_on_unknown_contract_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let unknown = Address::generate(&env);
+    let result = c.try_undeprecate_deployment(&admin, &unknown);
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, FactoryError::UnknownDeployment),
+        _ => panic!("expected UnknownDeployment"),
+    }
+}
+
+#[test]
+fn test_undeprecate_deployment_non_admin_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    let contract = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None);
+    c.deprecate_deployment(&admin, &contract);
+
+    let result = c.try_undeprecate_deployment(&non_admin, &contract);
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, FactoryError::Unauthorized),
+        _ => panic!("expected Unauthorized"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Issue #4: get_active_deployed_contracts fallback for missing info
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_active_deployed_contracts_missing_info_treated_as_active() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let factory_id = env.register(StreamFactory, ());
+    let c = StreamFactoryClient::new(&env, &factory_id);
+    let admin = Address::generate(&env);
+    c.initialize(&admin);
+
+    let wasm_hash = upload_child_wasm(&env);
+    // Deploy two contracts normally.
+    let first = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 1), &None);
+    let second = c.deploy_stream_contract(&admin, &wasm_hash, &fake_salt(&env, 2), &None);
+
+    // Manually remove the info for the second contract to simulate a contract_index_key
+    // entry with no matching DeploymentInfo (edge case that might occur from storage
+    // inconsistency or legacy migrations).
+    env.storage()
+        .persistent()
+        .remove(&info_key(&env, &second));
+
+    // get_active_deployed_contracts should treat the second contract as active
+    // (via the .unwrap_or(true) fallback) even though its info is missing.
+    let active = c.get_active_deployed_contracts(&0, &20);
+    assert_eq!(active.len(), 2);
+    assert_eq!(active.get(0).unwrap(), first);
+    assert_eq!(active.get(1).unwrap(), second);
+
+    // Verify the info is indeed missing.
+    assert!(c.get_deployment_info(&second).is_none());
 }

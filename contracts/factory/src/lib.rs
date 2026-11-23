@@ -358,6 +358,34 @@ impl StreamFactory {
         Ok(())
     }
 
+    /// Marks a deployment as active again. Only the current factory admin may do this.
+    /// This allows an admin to undo a deprecation if the reasons for deprecating no longer apply.
+    pub fn undeprecate_deployment(
+        env: Env,
+        admin: Address,
+        contract_address: Address,
+    ) -> Result<(), FactoryError> {
+        admin.require_auth();
+        let stored_admin = read_admin(&env).ok_or(FactoryError::NotInitialized)?;
+        if admin != stored_admin {
+            return Err(FactoryError::Unauthorized);
+        }
+        let mut info: DeploymentInfo = env
+            .storage()
+            .persistent()
+            .get(&info_key(&env, &contract_address))
+            .ok_or(FactoryError::UnknownDeployment)?;
+        info.status = DeploymentStatus::Active;
+        env.storage()
+            .persistent()
+            .set(&info_key(&env, &contract_address), &info);
+        env.events().publish(
+            (Symbol::new(&env, "DeploymentUndeprecated"),),
+            contract_address,
+        );
+        Ok(())
+    }
+
     /// Returns a page containing only active deployments, in deployment order.
     pub fn get_active_deployed_contracts(env: Env, start: u32, limit: u32) -> Vec<Address> {
         let mut active = Vec::new(&env);
