@@ -202,3 +202,58 @@ fn test_queue_quorum_boundary_evenly_split() {
         "Tied proposal at quorum boundary should be Defeated, not Queued"
     );
 }
+
+#[test]
+fn test_queue_tie_votes_for_equals_votes_against() {
+    // Issue #892: queue() defeats a proposal when
+    // `votes_for <= votes_against`, so an exact tie must resolve as Defeated.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let quorum = 4u64;
+
+    c.initialize(&admin, &guardian, &token, &0u64, &quorum, &0u64, &0u64);
+    env.ledger().set_timestamp(1000);
+
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+
+    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
+
+    // Each voter's weight equals their token balance: mint 1 unit each.
+    let voter1 = Address::generate(&env);
+    let voter2 = Address::generate(&env);
+    let voter3 = Address::generate(&env);
+    let voter4 = Address::generate(&env);
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    for voter in [&voter1, &voter2, &voter3, &voter4] {
+        stellar_asset.mint(voter, &1);
+    }
+
+    c.vote(&voter1, &prop_id, &true); // vote_for
+    c.vote(&voter2, &prop_id, &true); // vote_for
+    c.vote(&voter3, &prop_id, &false); // vote_against
+    c.vote(&voter4, &prop_id, &false); // vote_against
+
+    // Advance past the voting period and queue: the call succeeds, but the
+    // exact tie (votes_for == votes_against) resolves as Defeated.
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+    let result = c.try_queue(&prop_id);
+    assert_eq!(result, Ok(Ok(())));
+
+    let proposal = c.get_proposal(&prop_id);
+    assert_eq!(
+        proposal.status,
+        ProposalStatus::Defeated,
+        "Tied proposal (votes_for == votes_against) should be Defeated, not Queued"
+    );
+    assert_eq!(proposal.eta, 0, "Defeated proposal must not have an ETA");
+}
