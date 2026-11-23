@@ -117,6 +117,7 @@ fn remove_owner_storage(env: &Env, addr: &Address) {
     let cnt: u32 = env.storage().instance().get(&Symbol::new(env, OWNER_COUNT_KEY)).unwrap_or(0);
     env.storage().persistent().remove(&owner_key(env, addr));
     // Compact the slot array (swap-and-pop)
+    let mut found = false;
     for i in 0..cnt {
         let slot: Option<Address> = env.storage().persistent().get(&owner_slot_key(env, i));
         if slot.as_ref() == Some(addr) {
@@ -133,7 +134,37 @@ fn remove_owner_storage(env: &Env, addr: &Address) {
             }
             env.storage().persistent().remove(&owner_slot_key(env, last));
             env.storage().instance().set(&Symbol::new(env, OWNER_COUNT_KEY), &last);
-            return;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return;
+    }
+
+    // Purge the removed owner's approvals from all still-pending intents so a
+    // stale approval no longer counts toward the execution threshold.
+    let intent_cnt: u64 = env
+        .storage()
+        .instance()
+        .get(&Symbol::new(env, INTENT_COUNT_KEY))
+        .unwrap_or(0u64);
+    for id in 0..intent_cnt {
+        let mut intent = match load_intent(env, id) {
+            Some(intent) => intent,
+            None => continue,
+        };
+        if intent.status != IntentStatus::Pending {
+            continue;
+        }
+        if has_approved(env, id, addr) {
+            env.storage().persistent().remove(&approval_key(env, id, addr));
+            intent.approval_count = intent.approval_count.saturating_sub(1);
+            save_intent(env, &intent);
+            env.events().publish(
+                (Symbol::new(env, "ApprovalRevoked"), id),
+                (addr.clone(), intent.approval_count),
+            );
         }
     }
 }

@@ -69,3 +69,89 @@ fn typed_self_targeting_call_cannot_bypass_checks_while_bytes_dispatch_is_broken
     assert_eq!(client.owner_count(), 2);
     assert_eq!(client.get_intent(&id).approval_count, 1);
 }
+
+fn setup_three() -> (Env, Address, Address, Address, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultiSigContract, ());
+    let owners = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    let client = MultiSigContractClient::new(&env, &contract_id);
+    client.initialize(
+        &vec![
+            &env,
+            owners[0].clone(),
+            owners[1].clone(),
+            owners[2].clone(),
+        ],
+        &2,
+    );
+    (
+        env,
+        contract_id,
+        owners[0].clone(),
+        owners[1].clone(),
+        owners[2].clone(),
+    )
+}
+
+#[test]
+fn removing_an_approving_owner_decrements_pending_approval_count() {
+    let (env, contract_id, owner, second_owner, third_owner) = setup_three();
+    let client = MultiSigContractClient::new(&env, &contract_id);
+    let id = client.propose(
+        &owner,
+        &contract_id,
+        &Symbol::new(&env, "remove_owner"),
+        &Bytes::new(&env),
+        &u64::MAX,
+    );
+
+    assert!(!client.approve(&owner, &id));
+    assert_eq!(client.get_intent(&id).approval_count, 1);
+
+    // Removing the approving owner must drop their stale approval from the
+    // still-pending intent.
+    client.remove_owner(&owner);
+    assert_eq!(client.owner_count(), 2);
+    assert_eq!(client.get_intent(&id).approval_count, 0);
+
+    // The removed owner's approval can no longer count toward the threshold,
+    // so a single remaining approval is not enough to execute.
+    assert!(!client.approve(&second_owner, &id));
+    assert_eq!(client.get_intent(&id).approval_count, 1);
+    assert!(client.get_intent(&id).executed == false);
+
+    // A second legitimate approval still reaches the threshold.
+    assert!(client.approve(&third_owner, &id));
+    assert_eq!(client.get_intent(&id).approval_count, 2);
+}
+
+#[test]
+fn removing_an_owner_without_approvals_leaves_counts_unchanged() {
+    let (env, contract_id, owner, second_owner, third_owner) = setup_three();
+    let client = MultiSigContractClient::new(&env, &contract_id);
+    let id = client.propose(
+        &owner,
+        &contract_id,
+        &Symbol::new(&env, "remove_owner"),
+        &Bytes::new(&env),
+        &u64::MAX,
+    );
+
+    assert!(!client.approve(&owner, &id));
+    assert_eq!(client.get_intent(&id).approval_count, 1);
+
+    // `third_owner` never approved the intent, so removing them must not
+    // change the stored approval count.
+    client.remove_owner(&third_owner);
+    assert_eq!(client.owner_count(), 2);
+    assert_eq!(client.get_intent(&id).approval_count, 1);
+
+    // The remaining approval still counts toward the threshold.
+    assert!(client.approve(&second_owner, &id));
+    assert_eq!(client.get_intent(&id).approval_count, 2);
+}

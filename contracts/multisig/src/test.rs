@@ -133,3 +133,101 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+#[test]
+fn test_remove_owner_decrements_approval_count_and_stale_approval_does_not_count() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner1.clone(), owner2.clone(), owner3.clone()]);
+
+    c.initialize(&owners, &2u32);
+
+    let intent_id = c.propose(
+        &owner1,
+        &target,
+        &soroban_sdk::symbol_short!("fn"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+
+    // owner2 approves the pending intent.
+    c.mark_approved(&owner2, &intent_id);
+    assert_eq!(c.get_intent(&intent_id).approval_count, 1);
+
+    // owner2 is removed; its stale approval must no longer count.
+    c.remove_owner(&owner2);
+    assert_eq!(c.get_intent(&intent_id).approval_count, 0);
+
+    // A single approval from a remaining owner must not reach threshold 2.
+    c.mark_approved(&owner1, &intent_id);
+    assert_eq!(c.get_intent(&intent_id).approval_count, 1);
+    assert_eq!(c.get_intent(&intent_id).status, super::IntentStatus::Pending);
+}
+
+#[test]
+fn test_remove_owner_decrements_approval_count_on_multiple_intents() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let target_a = Address::generate(&env);
+    let target_b = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner1.clone(), owner2.clone(), owner3.clone()]);
+
+    c.initialize(&owners, &2u32);
+
+    let calldata = soroban_sdk::Bytes::new(&env);
+    let id1 = c.propose(&owner1, &target_a, &soroban_sdk::symbol_short!("fn_a"), &calldata, &1000u64);
+    let id2 = c.propose(&owner1, &target_b, &soroban_sdk::symbol_short!("fn_b"), &calldata, &1000u64);
+
+    // owner2 approves both pending intents.
+    c.mark_approved(&owner2, &id1);
+    c.mark_approved(&owner2, &id2);
+    assert_eq!(c.get_intent(&id1).approval_count, 1);
+    assert_eq!(c.get_intent(&id2).approval_count, 1);
+
+    // Removing owner2 must decrement every intent it approved.
+    c.remove_owner(&owner2);
+    assert_eq!(c.get_intent(&id1).approval_count, 0);
+    assert_eq!(c.get_intent(&id2).approval_count, 0);
+}
+
+#[test]
+fn test_remove_non_approving_owner_leaves_approval_counts_unchanged() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let target = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner1.clone(), owner2.clone(), owner3.clone()]);
+
+    c.initialize(&owners, &2u32);
+
+    let intent_id = c.propose(
+        &owner1,
+        &target,
+        &soroban_sdk::symbol_short!("fn"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+
+    // owner1 approves; owner3 never approves.
+    c.mark_approved(&owner1, &intent_id);
+    assert_eq!(c.get_intent(&intent_id).approval_count, 1);
+
+    // Removing a non-approving owner must not change the approval count.
+    c.remove_owner(&owner3);
+    assert_eq!(c.get_intent(&intent_id).approval_count, 1);
+}
