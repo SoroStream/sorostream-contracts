@@ -202,3 +202,28 @@ fn test_queue_quorum_boundary_evenly_split() {
         "Tied proposal at quorum boundary should be Defeated, not Queued"
     );
 }
+
+#[test]
+fn test_initialize_with_unreachable_quorum_fails_queue() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+
+    // Initialize with unreachable quorum (e.g. u64::MAX)
+    c.initialize(&admin, &token, &u64::MAX, &100u64, &500u64, &1000u64);
+    assert_eq!(c.get_quorum(), u64::MAX);
+
+    let proposer = Address::generate(&env);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&proposer, &1_000);
+    let prop_id = c.propose(&proposer, &Symbol::new(&env, "prop"), &Bytes::new(&env));
+    c.vote(&proposer, &prop_id, &true);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+    let result = c.try_queue(&prop_id);
+    assert_eq!(result, Ok(Ok(())));
+    let proposal = c.get_proposal(&prop_id);
+    assert_eq!(proposal.status, ProposalStatus::Defeated);
+}

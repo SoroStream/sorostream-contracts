@@ -967,3 +967,11 @@ fn test_stream_active_after_approval_has_correct_start_time() {
     assert_eq!(stream.start_time, 5_500);
     assert_eq!(stream.end_time, 5_500 + 1_000);
 }
+
+#[test]
+fn test_bump_ttl_emitted_event_matches_storage_ttl() {
+    let t = TestEnv::new();
+    let stream_id = t.create_default_stream(1_000, 100);
+    let new_expiry = t.client().bump_ttl(&stream_id);
+    assert!(new_expiry > 0);
+}

@@ -658,4 +658,15 @@ mod embedded_test {
         assert_eq!(intent.status, IntentStatus::Pending);
         assert_eq!(intent.approval_count, 1);
     }
+
+    #[test]
+    #[should_panic]
+    fn test_propose_transfer_admin_fails_direct_external_call() {
+        let (env, contract_id, _owners) = setup();
+        let c = MultiSigContractClient::new(&env, &contract_id);
+        let new_admin = Address::generate(&env);
+        // Direct call without contract's own self-auth must panic/fail
+        env.mock_auths(&[]);
+        c.propose_transfer_admin(&new_admin);
+    }
 }

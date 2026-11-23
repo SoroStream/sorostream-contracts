@@ -319,6 +319,18 @@ mod test {
     }
 
     #[test]
+    fn test_upgrade_with_same_impl_hash_succeeds() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &1u32);
+
+        // Upgrade with identical implementation hash but higher storage version
+        c.upgrade(&impl_hash, &1u32, &2u32);
+        assert_eq!(c.get_impl_hash(), impl_hash);
+        assert_eq!(c.get_storage_version(), 2u32);
+    }
+
+    #[test]
     fn test_upgrade_fails_on_version_mismatch() {
         let (env, contract_id, admin, impl_hash) = setup();
         let c = ProxyContractClient::new(&env, &contract_id);
