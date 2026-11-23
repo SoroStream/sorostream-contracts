@@ -507,3 +507,33 @@ fn boundary_repeated_pause_resume_claimable_stays_correct() {
         "after two pause cycles, claimable must equal flow_rate × total_active_seconds"
     );
 }
+
+#[test]
+fn boundary_create_stream_minimal_deposit_one_duration_one_second() {
+    let ctx = setup();
+    let c = client(&ctx);
+
+    let amount: i128 = 1;
+    let duration: u64 = 1;
+
+    mint(&ctx, &ctx.sender, amount);
+
+    let stream_id = c.create_stream(
+        &ctx.sender,
+        &ctx.recipient,
+        &ctx.token,
+        &amount,
+        &duration,
+        &false,
+        &bare_params(0),
+    );
+
+    assert_eq!(c.get_claimable(&stream_id), 0);
+
+    ctx.env.ledger().set_timestamp(duration);
+    assert_eq!(c.get_claimable(&stream_id), 1);
+
+    c.withdraw(&stream_id, &ctx.recipient);
+    assert_eq!(balance(&ctx, &ctx.recipient), 1);
+}
+

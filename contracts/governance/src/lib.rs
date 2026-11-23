@@ -34,6 +34,8 @@ const PROPOSAL_COUNT_KEY: &str = "p_cnt";
 
 const DEFAULT_VOTING_PERIOD: u64 = 7 * 24 * 60 * 60; // 7 days
 const DEFAULT_TIMELOCK_PERIOD: u64 = 48 * 60 * 60;   // 48 hours
+const MIN_VOTING_PERIOD: u64 = 24 * 60 * 60;         // 1 day
+const MIN_TIMELOCK_PERIOD: u64 = 48 * 60 * 60;       // 48 hours
 const MAX_GOVERNANCE_PERIOD: u64 = 365 * 24 * 60 * 60; // 1 year
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -361,7 +363,9 @@ impl GovernanceContract {
 
         let proposal = load_proposal(&env, proposal_id)
             .ok_or(GovernanceError::ProposalNotFound)?;
-        if env.ledger().timestamp() <= proposal.vote_end {
+        if proposal.status == ProposalStatus::Active
+            && env.ledger().timestamp() <= proposal.vote_end
+        {
             return Err(GovernanceError::VotingNotActive);
         }
 
@@ -383,6 +387,11 @@ impl GovernanceContract {
                 &(balance as i128),
             );
         }
+
+        env.events().publish(
+            (Symbol::new(&env, "VoteWithdrawn"), proposal_id),
+            (voter, balance),
+        );
 
         Ok(())
     }
@@ -606,9 +615,12 @@ impl GovernanceContract {
     }
 
     /// Updates the voting period in seconds. Only admin may call this.
+    ///
+    /// `seconds` must be at least `MIN_VOTING_PERIOD` (1 day) and at most
+    /// `MAX_GOVERNANCE_PERIOD` (1 year); otherwise `InvalidParam` is returned.
     pub fn set_voting_period(env: Env, seconds: u64) -> Result<(), GovernanceError> {
         check_admin(&env);
-        if seconds == 0 || seconds > MAX_GOVERNANCE_PERIOD {
+        if seconds < MIN_VOTING_PERIOD || seconds > MAX_GOVERNANCE_PERIOD {
             return Err(GovernanceError::InvalidParam);
         }
         env.storage().instance().set(&Symbol::new(&env, VOTING_PERIOD_KEY), &seconds);
@@ -616,9 +628,12 @@ impl GovernanceContract {
     }
 
     /// Updates the timelock period in seconds. Only admin may call this.
+    ///
+    /// `seconds` must be at least `MIN_TIMELOCK_PERIOD` (48 hours) and at most
+    /// `MAX_GOVERNANCE_PERIOD` (1 year); otherwise `InvalidParam` is returned.
     pub fn set_timelock_period(env: Env, seconds: u64) -> Result<(), GovernanceError> {
         check_admin(&env);
-        if seconds == 0 || seconds > MAX_GOVERNANCE_PERIOD {
+        if seconds < MIN_TIMELOCK_PERIOD || seconds > MAX_GOVERNANCE_PERIOD {
             return Err(GovernanceError::InvalidParam);
         }
         env.storage().instance().set(&Symbol::new(&env, TIMELOCK_PERIOD_KEY), &seconds);

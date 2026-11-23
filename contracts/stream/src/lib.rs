@@ -33,6 +33,7 @@ pub use roles::{AdminRole, RoleHolders};
 
 #[cfg(test)] mod integration_tests;
 #[cfg(test)] mod issue_815_admin_uninitialized_tests;
+#[cfg(test)] mod issue_78_modify_flow_rate_tests;
 #[cfg(test)] mod renewal_limit_tests;
 #[cfg(test)] mod cost_bench;
 // other test modules disabled during grace-period test restore
@@ -6363,6 +6364,192 @@ impl SoroStreamContract {
         Self::debug_check_invariants(&env, Some(stream_id));
 
         Ok(())
+    }
+
+    /// Modifies the flow rate of an active linear stream (issue #78).
+    ///
+    /// Only the stream's sender may call this. The modification happens in two
+    /// steps at the current ledger timestamp `now`:
+    ///
+    /// 1. **Settle at the old rate.** Everything the recipient has accrued up to
+    ///    `now` at the old rate is locked in by paying it out to the recipient
+    ///    (protocol fee applied exactly as in `withdraw`). `total_withdrawn` and
+    ///    `last_withdraw_time` are advanced, so nothing earned before `now` can be
+    ///    re-priced by the new rate.
+    /// 2. **Apply the new rate.** `new_flow_rate` applies from `now` onward and
+    ///    `end_time` is recalculated as `now + ceil(remaining / new_flow_rate)`,
+    ///    where `remaining = deposit - total_withdrawn` after settlement. Rounding
+    ///    up guarantees the recipient can claim the entire remaining balance by
+    ///    the new end time (claimable is always capped at the remaining balance).
+    ///
+    /// The recipient's cumulative earnings (`total_withdrawn + claimable`) are
+    /// therefore continuous across the modification.
+    ///
+    /// Returns the recalculated `end_time` and emits `FlowRateModified`.
+    ///
+    /// # Errors
+    /// - `NotSender` — `sender` is not the stream's sender.
+    /// - `StreamNotActive` — the stream is not active or has already reached its end time.
+    /// - `InvalidParameter` — the stream is not a plain linear stream (step vesting,
+    ///   milestones, a non-linear curve or withdrawal steps).
+    /// - `InvalidCliff` — the cliff has not been reached yet, so accrual cannot be settled.
+    /// - `StreamLocked` — withdrawals are still locked (`lock_until`), so accrual cannot be paid out.
+    /// - `ZeroFlowRate` / `Overflow` — invalid new rate.
+    /// - `ZeroAmount` — no balance remains to stream after settlement.
+    /// - `DurationExceedsMax` — the recalculated duration exceeds the maximum stream duration.
+    pub fn modify_flow_rate(
+        env: Env,
+        stream_id: u64,
+        sender: Address,
+        new_flow_rate: i128,
+    ) -> Result<u64, StreamError> {
+        reject_reentrant_call(&env)?;
+        if is_paused_or_auto_unpause(&env) {
+            return Err(StreamError::ContractPaused);
+        }
+        assert_storage_version(&env)?;
+
+        sender.require_auth();
+
+        let mut stream = load_stream(&env, stream_id).ok_or(StreamError::StreamNotFound)?;
+        if stream.sender != sender {
+            return Err(StreamError::NotSender);
+        }
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+        if stream.options.locked {
+            return Err(StreamError::ReentrancyDetected);
+        }
+        if stream.options.is_step_vesting
+            || stream.options.milestone_release_mode
+            || !stream.options.milestones.is_empty()
+            || stream.options.withdrawal_steps.is_some()
+            || stream.options.curve != VestingCurve::Linear
+        {
+            return Err(StreamError::InvalidParameter);
+        }
+
+        validation::require_positive_rate(new_flow_rate)?;
+        if new_flow_rate > MAX_SAFE_FLOW_RATE {
+            return Err(StreamError::Overflow);
+        }
+
+        let now = env.ledger().timestamp();
+        if now >= stream.end_time {
+            return Err(StreamError::StreamNotActive);
+        }
+        if now < stream.cliff_time {
+            return Err(StreamError::InvalidCliff);
+        }
+        if now < stream.lock_until {
+            return Err(StreamError::StreamLocked);
+        }
+
+        // ── 1. Settle accrued balance at the old rate ───────────────────────
+        let accrued = vesting_math::compute_claimable(
+            stream.flow_rate,
+            now,
+            stream.cliff_time,
+            stream.end_time,
+            stream.last_withdraw_time,
+        )
+        .ok_or(StreamError::Overflow)?
+        .checked_add(storage::get_partial_withdrawal_carry(&env, stream_id))
+        .ok_or(StreamError::Overflow)?;
+
+        let available = stream
+            .deposit
+            .checked_sub(stream.options.total_withdrawn)
+            .ok_or(StreamError::Overflow)?;
+        let settled = accrued.max(0).min(available);
+        let remaining = available - settled;
+        if remaining <= 0 {
+            return Err(StreamError::ZeroAmount);
+        }
+
+        // ── 2. Recalculate end_time at the new rate ─────────────────────────
+        let mut new_duration = remaining / new_flow_rate;
+        if remaining % new_flow_rate != 0 {
+            new_duration += 1;
+        }
+        let new_duration = u64::try_from(new_duration).map_err(|_| StreamError::Overflow)?;
+        if new_duration > MAX_STREAM_DURATION_SECONDS {
+            return Err(StreamError::DurationExceedsMax);
+        }
+        let new_end_time = now.checked_add(new_duration).ok_or(StreamError::Overflow)?;
+
+        let (recipient_amount, fee_amount) = if settled > 0 {
+            let fee_bps = storage::get_effective_fee_tier(&env, &stream.token);
+            let fee_amount = if fee_bps > 0 && !is_fee_exempt(&env, &stream.recipient) {
+                settled
+                    .checked_mul(fee_bps as i128)
+                    .ok_or(StreamError::Overflow)?
+                    .checked_add(5_000)
+                    .ok_or(StreamError::Overflow)?
+                    / 10_000
+            } else {
+                0
+            };
+            (settled - fee_amount, fee_amount)
+        } else {
+            (0, 0)
+        };
+
+        // EFFECTS
+        let old_rate = stream.flow_rate;
+        stream.options.total_withdrawn = stream
+            .options
+            .total_withdrawn
+            .checked_add(settled)
+            .ok_or(StreamError::Overflow)?;
+        stream.last_withdraw_time = now;
+        stream.flow_rate = new_flow_rate;
+        stream.end_time = new_end_time;
+        storage::clear_partial_withdrawal_carry(&env, stream_id);
+        save_stream(&env, &stream);
+        if fee_amount > 0 {
+            accumulate_fees(&env, &stream.token, fee_amount);
+        }
+        if settled > 0 {
+            storage::append_withdrawal_record(&env, stream_id, settled, now);
+        }
+
+        // INTERACTIONS
+        ensure_not_paused(&env)?;
+        if recipient_amount > 0 {
+            set_reentrancy_lock(&env);
+            token::Client::new(&env, &stream.token).transfer(
+                &env.current_contract_address(),
+                &stream.recipient,
+                &recipient_amount,
+            );
+            clear_reentrancy_lock(&env);
+        }
+
+        if settled > 0 {
+            events::stream_withdrawn(
+                &env,
+                stream_id,
+                &stream.recipient,
+                settled,
+                now,
+                stream.options.total_withdrawn,
+            );
+        }
+        events::flow_rate_modified(
+            &env,
+            stream_id,
+            old_rate,
+            new_flow_rate,
+            settled,
+            new_end_time,
+            now,
+        );
+
+        Self::debug_check_invariants(&env, Some(stream_id));
+
+        Ok(new_end_time)
     }
 
     /// Modifies flow_rate and end_time of an active stream without cancelling (Issue #628).

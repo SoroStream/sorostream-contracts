@@ -66,6 +66,7 @@ This inventory records the current state. The dormant-file history prompted issu
 | `issue_661_tests.rs` | Dormant |
 | `issue_6_tests.rs` | Wired |
 | `issue_763_tests.rs` | Wired |
+| `issue_78_modify_flow_rate_tests.rs` | Wired |
 | `issue_815_admin_uninitialized_tests.rs` | Wired |
 | `lifecycle_integration_tests.rs` | Dormant |
 | `oracle_rate_adjustment_tests.rs` | Dormant |
