@@ -133,3 +133,37 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+#[test]
+fn test_owner_count_never_underflows_when_removed_down_to_threshold() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let owner4 = Address::generate(&env);
+    let owners = Vec::from_array(
+        &env,
+        [owner1.clone(), owner2.clone(), owner3.clone(), owner4.clone()],
+    );
+
+    c.initialize(&owners, &2u32);
+    assert_eq!(c.owner_count(), 4);
+    assert_eq!(c.get_threshold(), 2);
+
+    // Remove down to 3 owners, then down to exactly the configured threshold (2).
+    c.remove_owner(&owner4);
+    assert_eq!(c.owner_count(), 3);
+
+    c.remove_owner(&owner3);
+    assert_eq!(c.owner_count(), 2);
+
+    // Attempting to remove below the configured threshold is rejected and owner_count remains 2.
+    let res = c.try_remove_owner(&owner2);
+    assert_eq!(res, Err(Ok(MultiSigError::ThresholdExceedsOwners)));
+    assert_eq!(c.owner_count(), 2);
+    assert_eq!(c.get_owners().len(), 2);
+}
+
