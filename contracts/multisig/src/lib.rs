@@ -50,6 +50,9 @@ pub enum IntentStatus {
     Pending,
     Executed,
     Cancelled,
+    /// The threshold was reached but the target invocation failed. The intent
+    /// can be retried via [`MultiSigContract::retry`].
+    Failed,
 }
 
 #[contracttype]
@@ -90,6 +93,7 @@ pub enum MultiSigError {
     DuplicateOwner = 12,
     NotProposer = 13,
     InvalidCalldata = 14,
+    IntentNotFailed = 15,
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -368,30 +372,90 @@ impl MultiSigContract {
         let threshold = get_threshold(&env);
 
         if intent.approval_count >= threshold {
-            intent.status = IntentStatus::Executed;
-            save_intent(&env, &intent);
-
             env.events().publish(
                 (Symbol::new(&env, "ThresholdReached"), intent_id),
                 threshold,
             );
 
             let args = decode_calldata(&env, &intent.calldata)?;
-            let _ = env.invoke_contract::<Val>(
-                &intent.target,
-                &intent.function,
-                args,
-            );
+            match env.try_invoke_contract::<Val>(&intent.target, &intent.function, args) {
+                Ok(_) => {
+                    intent.status = IntentStatus::Executed;
+                    save_intent(&env, &intent);
 
-            env.events().publish(
-                (Symbol::new(&env, "ExecutionCompleted"), intent_id),
-                (),
-            );
+                    env.events().publish(
+                        (Symbol::new(&env, "ExecutionCompleted"), intent_id),
+                        (),
+                    );
+                }
+                Err(e) => {
+                    intent.status = IntentStatus::Failed;
+                    save_intent(&env, &intent);
+
+                    env.events().publish(
+                        (Symbol::new(&env, "ExecutionFailed"), intent_id),
+                        e,
+                    );
+                }
+            }
 
             Ok(true)
         } else {
             save_intent(&env, &intent);
             Ok(false)
+        }
+    }
+
+    /// Retries execution of an intent whose target invocation previously failed.
+    ///
+    /// Any owner may trigger a retry. The intent must be in
+    /// [`IntentStatus::Failed`]. On success the intent transitions to
+    /// [`IntentStatus::Executed`] and `ExecutionCompleted` is emitted; on
+    /// repeated failure it remains `Failed` and `ExecutionFailed` is emitted.
+    ///
+    /// Returns `true` if the retry executed successfully, `false` if the
+    /// invocation failed again.
+    pub fn retry(
+        env: Env,
+        owner: Address,
+        intent_id: u64,
+    ) -> Result<bool, MultiSigError> {
+        owner.require_auth();
+        if !is_owner(&env, &owner) {
+            return Err(MultiSigError::NotOwner);
+        }
+
+        let mut intent = load_intent(&env, intent_id)
+            .ok_or(MultiSigError::IntentNotFound)?;
+
+        if intent.status != IntentStatus::Failed {
+            return Err(MultiSigError::IntentNotFailed);
+        }
+
+        let args = decode_calldata(&env, &intent.calldata)?;
+        match env.try_invoke_contract::<Val>(&intent.target, &intent.function, args) {
+            Ok(_) => {
+                intent.status = IntentStatus::Executed;
+                save_intent(&env, &intent);
+
+                env.events().publish(
+                    (Symbol::new(&env, "ExecutionCompleted"), intent_id),
+                    (),
+                );
+
+                Ok(true)
+            }
+            Err(e) => {
+                // Leave the intent in `Failed` so it remains retryable.
+                save_intent(&env, &intent);
+
+                env.events().publish(
+                    (Symbol::new(&env, "ExecutionFailed"), intent_id),
+                    e,
+                );
+
+                Ok(false)
+            }
         }
     }
 

@@ -2,14 +2,64 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Vec,
+    contract, contractimpl,
+    testutils::{Address as _, Events as _},
+    Address, Env, IntoVal, Symbol, Val, Vec,
 };
 
 fn env_with_auth() -> Env {
     let env = Env::default();
     env.mock_all_auths();
     env
+}
+
+/// Target contract used to exercise the success/failure paths of `approve()`
+/// and `retry()`. The `should_fail` flag is stored in instance storage so a
+/// test can flip it between invocations.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn set_should_fail(env: Env, should_fail: bool) {
+        env.storage().instance().set(&"fail", &should_fail);
+    }
+
+    pub fn run(env: Env) -> u32 {
+        let should_fail: bool = env
+            .storage()
+            .instance()
+            .get(&"fail")
+            .unwrap_or(false);
+        if should_fail {
+            panic!("mock target failure");
+        }
+        42u32
+    }
+}
+
+fn has_event(env: &Env, contract: &Address, topic: Symbol) -> bool {
+    env.events().all().iter().any(|(addr, topics, _)| {
+        if &addr != contract {
+            return false;
+        }
+        let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+        topics == expected
+    })
+}
+
+fn count_event(env: &Env, contract: &Address, topic: Symbol) -> usize {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(addr, topics, _)| {
+            if &addr != contract {
+                return false;
+            }
+            let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+            topics == expected
+        })
+        .count()
 }
 
 #[test]
@@ -132,4 +182,167 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.target, target);
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
+}
+
+#[test]
+fn test_approve_success_marks_executed_and_emits_completed() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let target_id = env.register(MockTarget, ());
+    let target = MockTargetClient::new(&env, &target_id);
+    target.set_should_fail(&false);
+
+    let owner = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+    c.initialize(&owners, &1u32);
+
+    let intent_id = c.propose(
+        &owner,
+        &target_id,
+        &Symbol::new(&env, "run"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+
+    c.approve(&owner, &intent_id);
+
+    let intent = c.get_intent(&intent_id);
+    assert_eq!(intent.status, super::IntentStatus::Executed);
+    assert!(has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
+    assert!(!has_event(&env, &id, Symbol::new(&env, "ExecutionFailed")));
+}
+
+#[test]
+fn test_approve_failure_marks_failed_and_emits_failed() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let target_id = env.register(MockTarget, ());
+    let target = MockTargetClient::new(&env, &target_id);
+    target.set_should_fail(&true);
+
+    let owner = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+    c.initialize(&owners, &1u32);
+
+    let intent_id = c.propose(
+        &owner,
+        &target_id,
+        &Symbol::new(&env, "run"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+
+    c.approve(&owner, &intent_id);
+
+    let intent = c.get_intent(&intent_id);
+    assert_eq!(intent.status, super::IntentStatus::Failed);
+    assert!(has_event(&env, &id, Symbol::new(&env, "ExecutionFailed")));
+    assert!(!has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
+}
+
+#[test]
+fn test_retry_failed_intent_succeeds_and_marks_executed() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let target_id = env.register(MockTarget, ());
+    let target = MockTargetClient::new(&env, &target_id);
+    target.set_should_fail(&true);
+
+    let owner = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+    c.initialize(&owners, &1u32);
+
+    let intent_id = c.propose(
+        &owner,
+        &target_id,
+        &Symbol::new(&env, "run"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+
+    c.approve(&owner, &intent_id);
+    assert_eq!(c.get_intent(&intent_id).status, super::IntentStatus::Failed);
+
+    // Target now succeeds; retry should re-invoke and mark Executed.
+    target.set_should_fail(&false);
+    c.retry(&owner, &intent_id);
+
+    let intent = c.get_intent(&intent_id);
+    assert_eq!(intent.status, super::IntentStatus::Executed);
+    assert!(has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
+    assert_eq!(
+        count_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")),
+        1
+    );
+}
+
+#[test]
+fn test_retry_failed_intent_still_failing_stays_failed() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let target_id = env.register(MockTarget, ());
+    let target = MockTargetClient::new(&env, &target_id);
+    target.set_should_fail(&true);
+
+    let owner = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+    c.initialize(&owners, &1u32);
+
+    let intent_id = c.propose(
+        &owner,
+        &target_id,
+        &Symbol::new(&env, "run"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+
+    c.approve(&owner, &intent_id);
+    c.retry(&owner, &intent_id);
+
+    let intent = c.get_intent(&intent_id);
+    assert_eq!(intent.status, super::IntentStatus::Failed);
+    assert!(!has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
+}
+
+#[test]
+fn test_retry_non_failed_intent_returns_error() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let target_id = env.register(MockTarget, ());
+    let target = MockTargetClient::new(&env, &target_id);
+    target.set_should_fail(&false);
+
+    let owner = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner.clone()]);
+    c.initialize(&owners, &1u32);
+
+    // Pending intent cannot be retried.
+    let pending_id = c.propose(
+        &owner,
+        &target_id,
+        &Symbol::new(&env, "run"),
+        &soroban_sdk::Bytes::new(&env),
+        &1000u64,
+    );
+    let res = c.try_retry(&owner, &pending_id);
+    assert_eq!(res, Err(Ok(super::Error::IntentNotFailed)));
+
+    // Executed intent cannot be retried either.
+    c.approve(&owner, &pending_id);
+    assert_eq!(
+        c.get_intent(&pending_id).status,
+        super::IntentStatus::Executed
+    );
+    let res = c.try_retry(&owner, &pending_id);
+    assert_eq!(res, Err(Ok(super::Error::IntentNotFailed)));
 }
