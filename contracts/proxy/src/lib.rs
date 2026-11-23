@@ -356,6 +356,34 @@ mod test {
         assert_eq!(version, 2u32);
     }
 
+    /// Confirms that `initialize()` can be called by anyone supplying any admin
+    /// address, with no signature requirement whatsoever.
+    ///
+    /// Unlike the factory's `initialize()` / `deploy_stream_contract()`, which
+    /// call `admin.require_auth()`, the proxy's `initialize()` does NOT call
+    /// `admin.require_auth()`. This test documents that asymmetry (see issue
+    /// #976) so the maintainer can decide whether it is intentional or a bug.
+    ///
+    /// Note: `env.mock_all_auths()` is deliberately NOT called here, so any
+    /// `require_auth()` would be enforced; the call still succeeds.
+    #[test]
+    fn test_initialize_requires_no_auth() {
+        let env = Env::default();
+        let contract_id = env.register(ProxyContract, ());
+        let admin = Address::generate(&env);
+        let impl_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let c = ProxyContractClient::new(&env, &contract_id);
+
+        // No auth mocking: this succeeds despite no signature from `admin`.
+        c.initialize(&admin, &impl_hash, &0u32);
+
+        assert_eq!(c.get_admin(), admin);
+        assert_eq!(c.get_impl_hash(), impl_hash);
+        assert_eq!(c.get_storage_version(), 0u32);
+        // No authorization entries were recorded, proving no auth was required.
+        assert!(env.auths().is_empty());
+    }
+
     #[test]
     fn test_double_initialize_fails() {
         let (env, contract_id, admin, impl_hash) = setup();
