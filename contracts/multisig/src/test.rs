@@ -2,14 +2,100 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Vec,
+    contract, contractimpl, symbol_short,
+    testutils::{Address as _, Events},
+    Address, Bytes, Env, TryFromVal, Vec,
 };
+
+/// Minimal execution target: a zero-argument entry point that records that it
+/// was invoked, so tests can observe that `approve()` actually executed.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn ping(env: Env) {
+        let count: u32 = env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0);
+        env.storage().instance().set(&symbol_short!("pings"), &(count + 1));
+    }
+
+    pub fn pings(env: Env) -> u32 {
+        env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0)
+    }
+}
+
+/// Counts events emitted by `contract` whose first topic is `name`.
+fn count_events(env: &Env, contract: &Address, name: &str) -> u32 {
+    let wanted = Symbol::new(env, name);
+    let mut n = 0;
+    for (addr, topics, _) in env.events().all().iter() {
+        if &addr != contract {
+            continue;
+        }
+        if let Some(first) = topics.get(0) {
+            if let Ok(sym) = Symbol::try_from_val(env, &first) {
+                if sym == wanted {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
 
 fn env_with_auth() -> Env {
     let env = Env::default();
     env.mock_all_auths();
     env
+}
+
+/// Target contract used to exercise the success/failure paths of `approve()`
+/// and `retry()`. The `should_fail` flag is stored in instance storage so a
+/// test can flip it between invocations.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn set_should_fail(env: Env, should_fail: bool) {
+        env.storage().instance().set(&"fail", &should_fail);
+    }
+
+    pub fn run(env: Env) -> u32 {
+        let should_fail: bool = env
+            .storage()
+            .instance()
+            .get(&"fail")
+            .unwrap_or(false);
+        if should_fail {
+            panic!("mock target failure");
+        }
+        42u32
+    }
+}
+
+fn has_event(env: &Env, contract: &Address, topic: Symbol) -> bool {
+    env.events().all().iter().any(|(addr, topics, _)| {
+        if &addr != contract {
+            return false;
+        }
+        let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+        topics == expected
+    })
+}
+
+fn count_event(env: &Env, contract: &Address, topic: Symbol) -> usize {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(addr, topics, _)| {
+            if &addr != contract {
+                return false;
+            }
+            let expected: Vec<Val> = Vec::from_array(env, [topic.into_val(env)]);
+            topics == expected
+        })
+        .count()
 }
 
 #[test]
@@ -133,3 +219,37 @@ fn test_get_intent_returns_stored_fields() {
     assert_eq!(intent.status, super::IntentStatus::Pending);
     assert_eq!(intent.approval_count, 0);
 }
+
+#[test]
+fn test_owner_count_never_underflows_when_removed_down_to_threshold() {
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let owner4 = Address::generate(&env);
+    let owners = Vec::from_array(
+        &env,
+        [owner1.clone(), owner2.clone(), owner3.clone(), owner4.clone()],
+    );
+
+    c.initialize(&owners, &2u32);
+    assert_eq!(c.owner_count(), 4);
+    assert_eq!(c.get_threshold(), 2);
+
+    // Remove down to 3 owners, then down to exactly the configured threshold (2).
+    c.remove_owner(&owner4);
+    assert_eq!(c.owner_count(), 3);
+
+    c.remove_owner(&owner3);
+    assert_eq!(c.owner_count(), 2);
+
+    // Attempting to remove below the configured threshold is rejected and owner_count remains 2.
+    let res = c.try_remove_owner(&owner2);
+    assert_eq!(res, Err(Ok(MultiSigError::ThresholdExceedsOwners)));
+    assert_eq!(c.owner_count(), 2);
+    assert_eq!(c.get_owners().len(), 2);
+}
+
