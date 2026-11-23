@@ -562,16 +562,22 @@ impl MultiSigContract {
     }
 
     /// Proposes a new admin. Only an owner may propose (through propose+approve).
+    ///
+    /// # Design Note (Issue #935 & #934)
+    /// Admin-transfer intents are intentionally long-lived with u64::MAX expiry to prevent premature
+    /// expiration while owners vote on governance migration.
+    /// Both proposer and target secondary index lists are updated so the intent is discoverable.
     pub fn propose_transfer_admin(env: Env, new_admin: Address) -> Result<u64, MultiSigError> {
         env.current_contract_address().require_auth();
         let nonce = get_and_increment_nonce(&env);
         let id = next_intent_id(&env);
+        let self_addr = env.current_contract_address();
 
         let intent = Intent {
             id,
             nonce,
-            proposer: env.current_contract_address(),
-            target: env.current_contract_address(),
+            proposer: self_addr.clone(),
+            target: self_addr.clone(),
             function: Symbol::new(&env, "accept_transfer_admin"),
             calldata: Bytes::new(&env),
             status: IntentStatus::Pending,
@@ -579,6 +585,9 @@ impl MultiSigContract {
             approval_count: 0,
         };
         save_intent(&env, &intent);
+
+        append_intent_index(&env, proposer_intents_key(&env, &self_addr), id);
+        append_intent_index(&env, target_intents_key(&env, &self_addr), id);
 
         // Store the proposed admin separately
         env.storage().instance().set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);

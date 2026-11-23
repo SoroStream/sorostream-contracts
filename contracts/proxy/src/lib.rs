@@ -257,6 +257,16 @@ mod test {
         }
     }
 
+    #[contract]
+    struct MockPanickingMigrationContract;
+
+    #[contractimpl]
+    impl MockPanickingMigrationContract {
+        fn migrate(_env: Env, _from: String, _to: String) -> Result<(), MockMigrationError> {
+            panic!("migration panic")
+        }
+    }
+
     fn setup() -> (Env, Address, Address, BytesN<32>) {
         let env = Env::default();
         env.mock_all_auths();
@@ -437,5 +447,16 @@ mod test {
         // because the pending-admin record is gone.
         let result = c.try_accept_admin(&new_admin);
         assert_eq!(result, Err(Ok(ProxyError::NotInitialized)));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_migrate_panics_when_impl_panics() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &0u32);
+
+        let panic_impl = env.register(MockPanickingMigrationContract, ());
+        c.migrate(&panic_impl, &String::from_str(&env, "v1"), &String::from_str(&env, "v2"));
     }
 }
