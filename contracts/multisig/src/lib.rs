@@ -12,15 +12,27 @@
 //!    Other owners cannot unilaterally cancel an intent they did not propose.
 //!
 //! ## Owner management
-//! `add_owner`, `remove_owner`, and `change_threshold` are themselves guarded: callers
-//! must route them through `propose` + `approve` so the multi-sig approves its own
-//! configuration changes.
+//! `add_owner`, `remove_owner`, and `change_threshold` are intended to be routed
+//! through `propose` + `approve` so the multi-sig approves its own configuration
+//! changes. Note, however, that this is a *convention*, not an enforced guarantee:
+//! `propose` places no restriction on `target`, `function`, or `calldata`, so any
+//! owner can propose an intent that calls these methods (or any other method) with
+//! arbitrary arguments.
 //!
-//! Self-targeting intents still enter these same guarded contract methods, so their
+//! The actual security guarantee therefore rests on the approvers: before calling
+//! `approve`, each owner must decode and review the intent's `target`, `function`,
+//! and `calldata` themselves. Nothing in the contract checks that the parameters
+//! an approver reviewed are the ones they are approving — e.g. a `change_threshold`
+//! intent whose calldata encodes an unexpected value will execute as proposed if
+//! enough owners approve without decoding it. Do not treat "guarded" as meaning
+//! more than "routed through the multi-sig" (see issue #887).
+//!
+//! Self-targeting intents still enter these same contract methods, so their
 //! owner-count and threshold checks are unchanged. The generic `approve` execution
 //! path currently supplies calldata as one `Bytes` argument; typed methods such as
 //! these therefore cannot be reached through that path until issue #717 is fixed.
 //! This is an execution limitation, not a confirmed invariant bypass.
+=======
 
 #[cfg(test)]
 mod test;
@@ -42,6 +54,10 @@ const PENDING_ADMIN_KEY: &str = "pending_admin";
 const PROPOSER_INTENTS_KEY: &str = "pi";
 const TARGET_INTENTS_KEY: &str = "ti";
 
+/// Maximum number of intent ids returned by a single paginated index query.
+/// Mirrors the factory contract's `MAX_DEPLOYMENT_PAGE_SIZE`.
+const MAX_INTENT_PAGE_SIZE: u32 = 50;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -50,6 +66,9 @@ pub enum IntentStatus {
     Pending,
     Executed,
     Cancelled,
+    /// The threshold was reached but the target invocation failed. The intent
+    /// can be retried via [`MultiSigContract::retry`].
+    Failed,
 }
 
 #[contracttype]
@@ -90,6 +109,7 @@ pub enum MultiSigError {
     DuplicateOwner = 12,
     NotProposer = 13,
     InvalidCalldata = 14,
+    IntentNotFailed = 15,
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -117,6 +137,7 @@ fn remove_owner_storage(env: &Env, addr: &Address) {
     let cnt: u32 = env.storage().instance().get(&Symbol::new(env, OWNER_COUNT_KEY)).unwrap_or(0);
     env.storage().persistent().remove(&owner_key(env, addr));
     // Compact the slot array (swap-and-pop)
+    let mut found = false;
     for i in 0..cnt {
         let slot: Option<Address> = env.storage().persistent().get(&owner_slot_key(env, i));
         if slot.as_ref() == Some(addr) {
@@ -133,7 +154,37 @@ fn remove_owner_storage(env: &Env, addr: &Address) {
             }
             env.storage().persistent().remove(&owner_slot_key(env, last));
             env.storage().instance().set(&Symbol::new(env, OWNER_COUNT_KEY), &last);
-            return;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return;
+    }
+
+    // Purge the removed owner's approvals from all still-pending intents so a
+    // stale approval no longer counts toward the execution threshold.
+    let intent_cnt: u64 = env
+        .storage()
+        .instance()
+        .get(&Symbol::new(env, INTENT_COUNT_KEY))
+        .unwrap_or(0u64);
+    for id in 0..intent_cnt {
+        let mut intent = match load_intent(env, id) {
+            Some(intent) => intent,
+            None => continue,
+        };
+        if intent.status != IntentStatus::Pending {
+            continue;
+        }
+        if has_approved(env, id, addr) {
+            env.storage().persistent().remove(&approval_key(env, id, addr));
+            intent.approval_count = intent.approval_count.saturating_sub(1);
+            save_intent(env, &intent);
+            env.events().publish(
+                (Symbol::new(env, "ApprovalRevoked"), id),
+                (addr.clone(), intent.approval_count),
+            );
         }
     }
 }
@@ -156,6 +207,29 @@ fn append_intent_index(env: &Env, key: (Symbol, Address), id: u64) {
     let mut list: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
     list.push_back(id);
     env.storage().persistent().set(&key, &list);
+}
+
+/// Returns a bounded page of the intent index stored under `key`.
+///
+/// `limit` is clamped to [`MAX_INTENT_PAGE_SIZE`]. An `offset` at or beyond the
+/// stored length yields an empty vector, so callers never load the full,
+/// unbounded index in a single call.
+fn get_intent_index_page(env: &Env, key: (Symbol, Address), offset: u32, limit: u32) -> Vec<u64> {
+    let mut page = Vec::new(env);
+    let stored: Vec<u64> = match env.storage().persistent().get(&key) {
+        Some(list) => list,
+        None => return page,
+    };
+    let len = stored.len();
+    if offset >= len {
+        return page;
+    }
+    let capped = if limit > MAX_INTENT_PAGE_SIZE { MAX_INTENT_PAGE_SIZE } else { limit };
+    let end = offset.saturating_add(capped).min(len);
+    for i in offset..end {
+        page.push_back(stored.get_unchecked(i));
+    }
+    page
 }
 
 fn get_threshold(env: &Env) -> u32 {
@@ -273,6 +347,19 @@ impl MultiSigContract {
     /// `expiry` is a ledger timestamp after which the intent can no longer be executed.
     /// `calldata` must contain the XDR encoding of the target's `Vec<Val>` arguments,
     /// or be empty for a target function with no arguments.
+    ///
+    /// # Trust assumption (see issue #887)
+    ///
+    /// This function imposes **no restriction** on `target`, `function`, or
+    /// `calldata`: any owner may propose an intent that calls any method on any
+    /// contract with any arguments, including owner-management methods such as
+    /// `add_owner`, `remove_owner`, and `change_threshold`. The contract does not
+    /// verify that the parameters an approver reviewed match what they approve.
+    ///
+    /// Approvers are therefore responsible for decoding and reviewing the intent's
+    /// `target`, `function`, and `calldata` before calling `approve`. Approving an
+    /// intent without decoding its calldata is equivalent to trusting the proposer
+    /// with the resulting state change.
     pub fn propose(
         env: Env,
         proposer: Address,
@@ -376,30 +463,90 @@ impl MultiSigContract {
         let threshold = get_threshold(&env);
 
         if intent.approval_count >= threshold {
-            intent.status = IntentStatus::Executed;
-            save_intent(&env, &intent);
-
             env.events().publish(
                 (Symbol::new(&env, "ThresholdReached"), intent_id),
                 threshold,
             );
 
             let args = decode_calldata(&env, &intent.calldata)?;
-            let _ = env.invoke_contract::<Val>(
-                &intent.target,
-                &intent.function,
-                args,
-            );
+            match env.try_invoke_contract::<Val>(&intent.target, &intent.function, args) {
+                Ok(_) => {
+                    intent.status = IntentStatus::Executed;
+                    save_intent(&env, &intent);
 
-            env.events().publish(
-                (Symbol::new(&env, "ExecutionCompleted"), intent_id),
-                (),
-            );
+                    env.events().publish(
+                        (Symbol::new(&env, "ExecutionCompleted"), intent_id),
+                        (),
+                    );
+                }
+                Err(e) => {
+                    intent.status = IntentStatus::Failed;
+                    save_intent(&env, &intent);
+
+                    env.events().publish(
+                        (Symbol::new(&env, "ExecutionFailed"), intent_id),
+                        e,
+                    );
+                }
+            }
 
             Ok(true)
         } else {
             save_intent(&env, &intent);
             Ok(false)
+        }
+    }
+
+    /// Retries execution of an intent whose target invocation previously failed.
+    ///
+    /// Any owner may trigger a retry. The intent must be in
+    /// [`IntentStatus::Failed`]. On success the intent transitions to
+    /// [`IntentStatus::Executed`] and `ExecutionCompleted` is emitted; on
+    /// repeated failure it remains `Failed` and `ExecutionFailed` is emitted.
+    ///
+    /// Returns `true` if the retry executed successfully, `false` if the
+    /// invocation failed again.
+    pub fn retry(
+        env: Env,
+        owner: Address,
+        intent_id: u64,
+    ) -> Result<bool, MultiSigError> {
+        owner.require_auth();
+        if !is_owner(&env, &owner) {
+            return Err(MultiSigError::NotOwner);
+        }
+
+        let mut intent = load_intent(&env, intent_id)
+            .ok_or(MultiSigError::IntentNotFound)?;
+
+        if intent.status != IntentStatus::Failed {
+            return Err(MultiSigError::IntentNotFailed);
+        }
+
+        let args = decode_calldata(&env, &intent.calldata)?;
+        match env.try_invoke_contract::<Val>(&intent.target, &intent.function, args) {
+            Ok(_) => {
+                intent.status = IntentStatus::Executed;
+                save_intent(&env, &intent);
+
+                env.events().publish(
+                    (Symbol::new(&env, "ExecutionCompleted"), intent_id),
+                    (),
+                );
+
+                Ok(true)
+            }
+            Err(e) => {
+                // Leave the intent in `Failed` so it remains retryable.
+                save_intent(&env, &intent);
+
+                env.events().publish(
+                    (Symbol::new(&env, "ExecutionFailed"), intent_id),
+                    e,
+                );
+
+                Ok(false)
+            }
         }
     }
 
@@ -526,26 +673,34 @@ impl MultiSigContract {
         load_intent(&env, intent_id).ok_or(MultiSigError::IntentNotFound)
     }
 
-    /// Returns the ids of all intents proposed by `proposer` (any status).
+    /// Returns a page of intent ids proposed by `proposer` (any status).
     ///
-    /// Use [`get_intent`] to inspect each intent's status and filter for
-    /// `IntentStatus::Pending` if only live intents are needed.
-    pub fn get_intents_by_proposer(env: Env, proposer: Address) -> Vec<u64> {
-        env.storage()
-            .persistent()
-            .get(&proposer_intents_key(&env, &proposer))
-            .unwrap_or(Vec::new(&env))
+    /// `offset` is the index of the first id to return; `limit` is clamped to
+    /// [`MAX_INTENT_PAGE_SIZE`]. An `offset` beyond the stored length returns an
+    /// empty vector. Use [`get_intent`] to inspect each intent's status and
+    /// filter for `IntentStatus::Pending` if only live intents are needed.
+    pub fn get_intents_by_proposer(
+        env: Env,
+        proposer: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        get_intent_index_page(&env, proposer_intents_key(&env, &proposer), offset, limit)
     }
 
-    /// Returns the ids of all intents targeting `target` (any status).
+    /// Returns a page of intent ids targeting `target` (any status).
     ///
-    /// Use [`get_intent`] to inspect each intent's status and filter for
-    /// `IntentStatus::Pending` if only live intents are needed.
-    pub fn get_intents_by_target(env: Env, target: Address) -> Vec<u64> {
-        env.storage()
-            .persistent()
-            .get(&target_intents_key(&env, &target))
-            .unwrap_or(Vec::new(&env))
+    /// `offset` is the index of the first id to return; `limit` is clamped to
+    /// [`MAX_INTENT_PAGE_SIZE`]. An `offset` beyond the stored length returns an
+    /// empty vector. Use [`get_intent`] to inspect each intent's status and
+    /// filter for `IntentStatus::Pending` if only live intents are needed.
+    pub fn get_intents_by_target(
+        env: Env,
+        target: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<u64> {
+        get_intent_index_page(&env, target_intents_key(&env, &target), offset, limit)
     }
 
     /// Returns whether an owner has already approved a given intent.
@@ -570,16 +725,22 @@ impl MultiSigContract {
     }
 
     /// Proposes a new admin. Only an owner may propose (through propose+approve).
+    ///
+    /// # Design Note (Issue #935 & #934)
+    /// Admin-transfer intents are intentionally long-lived with u64::MAX expiry to prevent premature
+    /// expiration while owners vote on governance migration.
+    /// Both proposer and target secondary index lists are updated so the intent is discoverable.
     pub fn propose_transfer_admin(env: Env, new_admin: Address) -> Result<u64, MultiSigError> {
         env.current_contract_address().require_auth();
         let nonce = get_and_increment_nonce(&env);
         let id = next_intent_id(&env);
+        let self_addr = env.current_contract_address();
 
         let intent = Intent {
             id,
             nonce,
-            proposer: env.current_contract_address(),
-            target: env.current_contract_address(),
+            proposer: self_addr.clone(),
+            target: self_addr.clone(),
             function: Symbol::new(&env, "accept_transfer_admin"),
             calldata: Bytes::new(&env),
             status: IntentStatus::Pending,
@@ -587,6 +748,9 @@ impl MultiSigContract {
             approval_count: 0,
         };
         save_intent(&env, &intent);
+
+        append_intent_index(&env, proposer_intents_key(&env, &self_addr), id);
+        append_intent_index(&env, target_intents_key(&env, &self_addr), id);
 
         // Store the proposed admin separately
         env.storage().instance().set(&Symbol::new(&env, PENDING_ADMIN_KEY), &new_admin);
@@ -665,5 +829,16 @@ mod embedded_test {
         let intent = c.get_intent(&intent_id);
         assert_eq!(intent.status, IntentStatus::Pending);
         assert_eq!(intent.approval_count, 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_propose_transfer_admin_fails_direct_external_call() {
+        let (env, contract_id, _owners) = setup();
+        let c = MultiSigContractClient::new(&env, &contract_id);
+        let new_admin = Address::generate(&env);
+        // Direct call without contract's own self-auth must panic/fail
+        env.mock_auths(&[]);
+        c.propose_transfer_admin(&new_admin);
     }
 }
