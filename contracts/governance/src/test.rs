@@ -145,6 +145,63 @@ fn test_accept_guardian_wrong_caller_fails() {
 }
 
 #[test]
+fn test_propose_guardian_twice_overwrites_pending() {
+    // Issue #895: propose_guardian() unconditionally overwrites
+    // PENDING_GUARDIAN_KEY, so a second proposal silently replaces the first
+    // before either is accepted.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token = default_token(&env);
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    // Propose `first`, then propose `second` before `first` accepts.
+    c.propose_guardian(&first);
+    c.propose_guardian(&second);
+
+    // The second proposal overwrote the first as the only pending guardian.
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY))
+    });
+    assert_eq!(pending, Some(second.clone()));
+
+    // `first` is no longer pending, so accepting as `first` fails.
+    let result = c.try_accept_guardian(&first);
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, GovernanceError::NotAdmin),
+        _ => panic!("expected NotAdmin"),
+    }
+
+    // `second` is the only address accept_guardian will honor.
+    c.accept_guardian(&second);
+
+    let stored: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::GUARDIAN_KEY))
+    });
+    assert_eq!(stored, Some(second));
+
+    // Pending is cleared after acceptance.
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&soroban_sdk::Symbol::new(&env, super::PENDING_GUARDIAN_KEY))
+    });
+    assert!(pending.is_none());
+}
+
+#[test]
 fn test_queue_quorum_boundary_evenly_split() {
     // Issue #824: Test boundary where total_votes exactly equals quorum
     // but votes_for equals votes_against (tie at exactly quorum threshold).
