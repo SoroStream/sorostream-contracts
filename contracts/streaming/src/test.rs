@@ -967,3 +967,62 @@ fn test_stream_active_after_approval_has_correct_start_time() {
     assert_eq!(stream.start_time, 5_500);
     assert_eq!(stream.end_time, 5_500 + 1_000);
 }
+
+// ── Issue #979: shared nonce prevents stream ID collisions ───────────────────
+
+/// `create_stream` and `propose_stream` + `approve_proposal` both derive their
+/// stream IDs from the same monotonic nonce. Even when called with identical
+/// sender/recipient/token/deposit/start_time arguments in the same ledger, the
+/// two creation paths must produce distinct, non-colliding stream IDs.
+#[test]
+fn test_create_and_propose_stream_ids_do_not_collide() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let deposit = 1_000_i128;
+
+    // Path A: direct creation.
+    let id_a = client.create_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &deposit,
+        &start,
+        &(start + 1_000),
+        &false,
+    );
+
+    // Path B: proposal flow with matching sender/recipient/token/deposit.
+    let proposal_id = client.propose_stream(
+        &t.sender,
+        &t.recipient,
+        &t.token,
+        &deposit,
+        &1_000_u64,
+        &false,
+        &t.recipient,
+        &100,
+    );
+    let id_b = client.approve_proposal(&proposal_id);
+
+    // The two IDs must not collide.
+    assert_ne!(id_a, id_b, "stream IDs from distinct paths must differ");
+
+    // Both streams must be retrievable and independent.
+    let stream_a = client.get_stream(&id_a);
+    let stream_b = client.get_stream(&id_b);
+    assert_eq!(stream_a.deposit, deposit);
+    assert_eq!(stream_b.deposit, deposit);
+    assert!(!stream_a.cancelled);
+    assert!(!stream_b.cancelled);
+
+    // The shared nonce must have advanced by exactly two.
+    let stream_count: u64 = t.env.as_contract(&t.contract, || {
+        t.env
+            .storage()
+            .instance()
+            .get(&DataKey::StreamCount)
+            .expect("stream count should be set")
+    });
+    assert_eq!(stream_count, 2, "shared nonce should advance by two");
+}
