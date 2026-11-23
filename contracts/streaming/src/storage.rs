@@ -14,6 +14,29 @@ const LEDGER_THRESHOLD: u32 = 432_000;
 #[cfg(test)]
 const LEDGER_THRESHOLD: u32 = 50;
 
+/// Attempts to derive a stream ID and handle collisions.
+///
+/// Derives a stream ID using the given nonce. If a collision is detected
+/// (stream_id_exists returns true), retries with incrementing nonce values
+/// until a unique ID is found.
+///
+/// Returns the derived stream ID and the final nonce used.
+pub fn derive_stream_id_with_collision_handling(
+    env: &Env,
+    sender: &Address,
+    recipient: &Address,
+    timestamp: u64,
+    initial_nonce: u64,
+) -> u64 {
+    let mut stream_id = derive_stream_id(env, sender, recipient, timestamp, initial_nonce);
+    let mut retry = initial_nonce + 1;
+    while stream_id_exists(env, stream_id) {
+        stream_id = derive_stream_id(env, sender, recipient, timestamp, retry);
+        retry += 1;
+    }
+    stream_id
+}
+
 // ── Stream helpers ────────────────────────────────────────────────────────────
 
 /// Derives a pseudo-random stream ID by hashing (sender ‖ recipient ‖ timestamp ‖ nonce).
@@ -150,4 +173,13 @@ pub fn increment_reputation(env: &Env, sender: &soroban_sdk::Address) {
     env.storage()
         .instance()
         .set(&DataKey::Reputation(sender.clone()), &(score + 1));
+}
+
+pub fn decrement_reputation(env: &Env, sender: &soroban_sdk::Address) {
+    let score = get_reputation(env, sender);
+    // Saturating subtraction prevents underflow to negative values.
+    let updated = score.saturating_sub(1);
+    env.storage()
+        .instance()
+        .set(&DataKey::Reputation(sender.clone()), &updated);
 }
