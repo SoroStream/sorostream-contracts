@@ -202,3 +202,55 @@ fn test_queue_quorum_boundary_evenly_split() {
         "Tied proposal at quorum boundary should be Defeated, not Queued"
     );
 }
+
+#[test]
+fn test_vote_with_zero_balance() {
+    // Issue #890: An address with a zero token balance can still cast a
+    // (zero-weight) vote and is marked as having voted, consuming their one
+    // vote on this proposal for free.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+    env.ledger().set_timestamp(1000);
+
+    let proposer = Address::generate(&env);
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+
+    let prop_id = c.create_proposal(&proposer, &target, &function, &calldata);
+
+    // Voter is never minted any tokens, so their balance is zero.
+    let voter = Address::generate(&env);
+
+    // The zero-balance vote succeeds.
+    let result = c.try_vote(&voter, &prop_id, &true);
+    assert_eq!(result, Ok(Ok(())));
+
+    // Zero weight: no votes were recorded for or against.
+    let proposal = c.get_proposal(&prop_id);
+    assert_eq!(proposal.votes_for, 0);
+    assert_eq!(proposal.votes_against, 0);
+
+    // The voter is marked as having voted, consuming their one vote.
+    let second = c.try_vote(&voter, &prop_id, &true);
+    assert_eq!(second, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // No tokens were locked for the voter.
+    let locked: u64 = env.as_contract(&id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LockedBalance(voter.clone()))
+            .unwrap_or(0)
+    });
+    assert_eq!(locked, 0);
+}
