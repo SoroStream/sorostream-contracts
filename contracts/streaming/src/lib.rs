@@ -134,6 +134,8 @@ impl StreamingContract {
         sender.require_auth();
         sponsor.require_auth();
 
+        assert!(sender != env.current_contract_address(), "Error::InvalidSender: sender must not be the contract itself");
+
         assert!(end_time > start_time, "end_time must be after start_time");
         assert!(deposit > 0, "deposit must be positive");
 
@@ -361,6 +363,8 @@ impl StreamingContract {
         approval_window_ledgers: u32,
     ) -> u64 {
         sender.require_auth();
+
+        assert!(sender != env.current_contract_address(), "Error::InvalidSender: sender must not be the contract itself");
 
         assert!(duration > 0, "duration must be positive");
         assert!(deposit > 0, "deposit must be positive");

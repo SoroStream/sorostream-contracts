@@ -180,6 +180,25 @@ fn test_sponsor_stream_requires_sponsor_authentication() {
 }
 
 #[test]
+#[should_panic(expected = "Error::InvalidSender")]
+fn sponsor_stream_rejects_contract_as_sender() {
+    let t = TestEnv::new();
+    let sponsor = Address::generate(&t.env);
+    t.client().sponsor_stream(
+        &t.contract, &t.recipient, &t.token, &1_000, &t.now(), &(t.now() + 100), &false, &sponsor,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error::InvalidSender")]
+fn propose_stream_rejects_contract_as_sender() {
+    let t = TestEnv::new();
+    t.client().propose_stream(
+        &t.contract, &t.recipient, &t.token, &1_000, &100, &false, &Address::generate(&t.env), &10,
+    );
+}
+
+#[test]
 fn test_claim_returns_correct_amount_at_midpoint() {
     let t = TestEnv::new();
     let client = t.client();
