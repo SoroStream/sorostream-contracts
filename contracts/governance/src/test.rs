@@ -204,9 +204,10 @@ fn test_queue_quorum_boundary_evenly_split() {
 }
 
 #[test]
-fn test_queue_tie_votes_for_equals_votes_against() {
-    // Issue #892: queue() defeats a proposal when
-    // `votes_for <= votes_against`, so an exact tie must resolve as Defeated.
+fn test_withdraw_vote_tokens_twice_fails_with_no_vote_to_withdraw() {
+    // Issue #983: withdraw_vote_tokens removes the locked_balance_key entry
+    // immediately after reading it, so a second withdrawal for the same
+    // voter/proposal pair must fail with NoVoteToWithdraw.
     let env = env_with_auth();
     let id = env.register(GovernanceContract, ());
     let c = GovernanceContractClient::new(&env, &id);
@@ -217,43 +218,46 @@ fn test_queue_tie_votes_for_equals_votes_against() {
     let token = env
         .register_stellar_asset_contract_v2(token_admin.clone())
         .address();
-    let quorum = 4u64;
 
-    c.initialize(&admin, &guardian, &token, &0u64, &quorum, &0u64, &0u64);
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
     env.ledger().set_timestamp(1000);
 
     let target = Address::generate(&env);
     let function = soroban_sdk::Symbol::new(&env, "dummy");
     let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
-
     let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
 
-    // Each voter's weight equals their token balance: mint 1 unit each.
-    let voter1 = Address::generate(&env);
-    let voter2 = Address::generate(&env);
-    let voter3 = Address::generate(&env);
-    let voter4 = Address::generate(&env);
+    let voter = Address::generate(&env);
     let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
-    for voter in [&voter1, &voter2, &voter3, &voter4] {
-        stellar_asset.mint(voter, &1);
-    }
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    stellar_asset.mint(&voter, &100);
 
-    c.vote(&voter1, &prop_id, &true); // vote_for
-    c.vote(&voter2, &prop_id, &true); // vote_for
-    c.vote(&voter3, &prop_id, &false); // vote_against
-    c.vote(&voter4, &prop_id, &false); // vote_against
+    c.vote(&voter, &prop_id, &true);
+    assert_eq!(token_client.balance(&voter), 0);
+    assert_eq!(token_client.balance(&id), 100);
 
-    // Advance past the voting period and queue: the call succeeds, but the
-    // exact tie (votes_for == votes_against) resolves as Defeated.
-    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
-    let result = c.try_queue(&prop_id);
-    assert_eq!(result, Ok(Ok(())));
-
+    // Move past vote_end so withdrawal is permitted.
     let proposal = c.get_proposal(&prop_id);
-    assert_eq!(
-        proposal.status,
-        ProposalStatus::Defeated,
-        "Tied proposal (votes_for == votes_against) should be Defeated, not Queued"
-    );
-    assert_eq!(proposal.eta, 0, "Defeated proposal must not have an ETA");
+    env.ledger().set_timestamp(proposal.vote_end + 1);
+
+    // First withdrawal succeeds and returns the escrowed tokens.
+    c.withdraw_vote_tokens(&voter, &prop_id);
+    assert_eq!(token_client.balance(&voter), 100);
+    assert_eq!(token_client.balance(&id), 0);
+
+    // The locked balance entry has been removed from persistent storage.
+    let locked: Option<u64> = env.as_contract(&id, || {
+        env.storage()
+            .persistent()
+            .get(&super::locked_balance_key(&env, prop_id, &voter))
+    });
+    assert!(locked.is_none());
+
+    // Second withdrawal for the same voter/proposal fails.
+    let result = c.try_withdraw_vote_tokens(&voter, &prop_id);
+    assert_eq!(result, Err(Ok(GovernanceError::NoVoteToWithdraw)));
+
+    // Balances are unchanged by the failed second call.
+    assert_eq!(token_client.balance(&voter), 100);
+    assert_eq!(token_client.balance(&id), 0);
 }
