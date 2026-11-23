@@ -250,6 +250,15 @@ impl StreamingContract {
     /// is exactly the previous `end_time` (not `now`), preserving correct
     /// accounting. The sender must maintain enough token allowance for this
     /// renewal; any caller may then trigger it.
+    ///
+    /// Note on back-to-back renewals:
+    /// `renew()` has no rate-limiting cap or minimum elapsed cooldown between renewal cycles
+    /// beyond `env.ledger().timestamp() >= stream.end_time`. If a stream's duration is short or
+    /// multiple renewal intervals have elapsed, `renew()` may be invoked repeatedly in rapid
+    /// succession as long as the sender's allowance and token balance remain sufficient for each
+    /// fresh deposit pull via `transfer_from`. This allows streams that fell behind real time
+    /// to catch up to the current ledger timestamp without requiring manual contract interventions.
+    ///
     /// Emits `StreamRenewed` with participants, token, flushed vested amount,
     /// renewed deposit, and the next cycle's start and end times.
     pub fn renew(env: Env, stream_id: u64) {
