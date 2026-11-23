@@ -34,6 +34,19 @@ fn owner_management_methods_preserve_their_invariants() {
 }
 
 #[test]
+fn single_owner_threshold_cannot_exceed_one() {
+    let env = Env::default();
+    let contract_id = env.register(MultiSigContract, ());
+    let client = MultiSigContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+
+    assert_eq!(
+        client.try_initialize(&vec![&env, owner], &2),
+        Err(Ok(MultiSigError::InvalidThreshold))
+    );
+}
+
+#[test]
 fn self_targeting_intent_records_the_method_whose_invariants_apply() {
     let (env, contract_id, owner, _) = setup();
     let client = MultiSigContractClient::new(&env, &contract_id);

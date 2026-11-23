@@ -200,7 +200,11 @@ impl ProxyContract {
         if read_storage_version(&env) != expected_storage_version {
             return Err(ProxyError::StorageVersionMismatch);
         }
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+        env.events().publish(
+            (Symbol::new(&env, "ProxyWasmUpgraded"),),
+            (new_wasm_hash, expected_storage_version),
+        );
         Ok(())
     }
 
