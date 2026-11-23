@@ -384,6 +384,11 @@ impl GovernanceContract {
             );
         }
 
+        env.events().publish(
+            (Symbol::new(&env, "VoteWithdrawn"), proposal_id),
+            (voter, balance),
+        );
+
         Ok(())
     }
 

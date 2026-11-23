@@ -202,3 +202,96 @@ fn test_queue_quorum_boundary_evenly_split() {
         "Tied proposal at quorum boundary should be Defeated, not Queued"
     );
 }
+
+#[test]
+fn test_withdraw_vote_tokens_emits_event() {
+    // Issue #891: withdraw_vote_tokens must publish a VoteWithdrawn event so
+    // off-chain indexers can observe voters reclaiming their escrowed tokens.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+    env.ledger().set_timestamp(1000);
+
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
+
+    let voter = Address::generate(&env);
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    stellar_asset.mint(&voter, &10);
+
+    c.vote(&voter, &prop_id, &true);
+
+    // Advance past the voting period so the escrow can be withdrawn.
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+
+    let balance = c.withdraw_vote_tokens(&voter, &prop_id);
+
+    let events = env.events().all();
+    let expected_topics = soroban_sdk::vec![
+        &env,
+        soroban_sdk::Symbol::new(&env, "VoteWithdrawn").into_val(&env),
+        prop_id.into_val(&env),
+    ];
+    let expected_data = (voter.clone(), balance).into_val(&env);
+    let expected_event = (id.clone(), expected_topics, expected_data);
+    assert!(
+        events.contains(&expected_event),
+        "expected a VoteWithdrawn event with topics (VoteWithdrawn, proposal_id) and data (voter, balance)"
+    );
+}
+
+#[test]
+fn test_withdraw_vote_tokens_without_escrow_fails_and_emits_no_event() {
+    // Issue #891: withdrawing with no escrow must fail with NoVoteToWithdraw
+    // and must not emit a VoteWithdrawn event.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+    env.ledger().set_timestamp(1000);
+
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
+
+    let voter = Address::generate(&env);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+
+    let result = c.try_withdraw_vote_tokens(&voter, &prop_id);
+    assert!(result.is_err());
+    match result {
+        Err(Ok(e)) => assert_eq!(e, GovernanceError::NoVoteToWithdraw),
+        _ => panic!("expected NoVoteToWithdraw"),
+    }
+
+    let events = env.events().all();
+    let withdrawn_topic = soroban_sdk::Symbol::new(&env, "VoteWithdrawn").into_val(&env);
+    let emitted = events.iter().any(|(_, topics, _)| {
+        topics.len() > 0 && topics.get(0).unwrap() == withdrawn_topic
+    });
+    assert!(
+        !emitted,
+        "no VoteWithdrawn event should be emitted when there is no escrow to withdraw"
+    );
+}
