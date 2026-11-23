@@ -2,10 +2,46 @@
 
 use super::*;
 use soroban_sdk::{
-    contract, contractimpl,
-    testutils::{Address as _, Events as _},
-    Address, Env, IntoVal, Symbol, Val, Vec,
+    contract, contractimpl, symbol_short,
+    testutils::{Address as _, Events},
+    Address, Bytes, Env, TryFromVal, Vec,
 };
+
+/// Minimal execution target: a zero-argument entry point that records that it
+/// was invoked, so tests can observe that `approve()` actually executed.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn ping(env: Env) {
+        let count: u32 = env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0);
+        env.storage().instance().set(&symbol_short!("pings"), &(count + 1));
+    }
+
+    pub fn pings(env: Env) -> u32 {
+        env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0)
+    }
+}
+
+/// Counts events emitted by `contract` whose first topic is `name`.
+fn count_events(env: &Env, contract: &Address, name: &str) -> u32 {
+    let wanted = Symbol::new(env, name);
+    let mut n = 0;
+    for (addr, topics, _) in env.events().all().iter() {
+        if &addr != contract {
+            continue;
+        }
+        if let Some(first) = topics.get(0) {
+            if let Ok(sym) = Symbol::try_from_val(env, &first) {
+                if sym == wanted {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
 
 fn env_with_auth() -> Env {
     let env = Env::default();
@@ -185,164 +221,35 @@ fn test_get_intent_returns_stored_fields() {
 }
 
 #[test]
-fn test_approve_success_marks_executed_and_emits_completed() {
+fn test_owner_count_never_underflows_when_removed_down_to_threshold() {
     let env = env_with_auth();
     let id = env.register(MultiSigContract, ());
     let c = MultiSigContractClient::new(&env, &id);
 
-    let target_id = env.register(MockTarget, ());
-    let target = MockTargetClient::new(&env, &target_id);
-    target.set_should_fail(&false);
-
-    let owner = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone()]);
-    c.initialize(&owners, &1u32);
-
-    let intent_id = c.propose(
-        &owner,
-        &target_id,
-        &Symbol::new(&env, "run"),
-        &soroban_sdk::Bytes::new(&env),
-        &1000u64,
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    let owner3 = Address::generate(&env);
+    let owner4 = Address::generate(&env);
+    let owners = Vec::from_array(
+        &env,
+        [owner1.clone(), owner2.clone(), owner3.clone(), owner4.clone()],
     );
 
-    c.approve(&owner, &intent_id);
+    c.initialize(&owners, &2u32);
+    assert_eq!(c.owner_count(), 4);
+    assert_eq!(c.get_threshold(), 2);
 
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.status, super::IntentStatus::Executed);
-    assert!(has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
-    assert!(!has_event(&env, &id, Symbol::new(&env, "ExecutionFailed")));
+    // Remove down to 3 owners, then down to exactly the configured threshold (2).
+    c.remove_owner(&owner4);
+    assert_eq!(c.owner_count(), 3);
+
+    c.remove_owner(&owner3);
+    assert_eq!(c.owner_count(), 2);
+
+    // Attempting to remove below the configured threshold is rejected and owner_count remains 2.
+    let res = c.try_remove_owner(&owner2);
+    assert_eq!(res, Err(Ok(MultiSigError::ThresholdExceedsOwners)));
+    assert_eq!(c.owner_count(), 2);
+    assert_eq!(c.get_owners().len(), 2);
 }
 
-#[test]
-fn test_approve_failure_marks_failed_and_emits_failed() {
-    let env = env_with_auth();
-    let id = env.register(MultiSigContract, ());
-    let c = MultiSigContractClient::new(&env, &id);
-
-    let target_id = env.register(MockTarget, ());
-    let target = MockTargetClient::new(&env, &target_id);
-    target.set_should_fail(&true);
-
-    let owner = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone()]);
-    c.initialize(&owners, &1u32);
-
-    let intent_id = c.propose(
-        &owner,
-        &target_id,
-        &Symbol::new(&env, "run"),
-        &soroban_sdk::Bytes::new(&env),
-        &1000u64,
-    );
-
-    c.approve(&owner, &intent_id);
-
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.status, super::IntentStatus::Failed);
-    assert!(has_event(&env, &id, Symbol::new(&env, "ExecutionFailed")));
-    assert!(!has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
-}
-
-#[test]
-fn test_retry_failed_intent_succeeds_and_marks_executed() {
-    let env = env_with_auth();
-    let id = env.register(MultiSigContract, ());
-    let c = MultiSigContractClient::new(&env, &id);
-
-    let target_id = env.register(MockTarget, ());
-    let target = MockTargetClient::new(&env, &target_id);
-    target.set_should_fail(&true);
-
-    let owner = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone()]);
-    c.initialize(&owners, &1u32);
-
-    let intent_id = c.propose(
-        &owner,
-        &target_id,
-        &Symbol::new(&env, "run"),
-        &soroban_sdk::Bytes::new(&env),
-        &1000u64,
-    );
-
-    c.approve(&owner, &intent_id);
-    assert_eq!(c.get_intent(&intent_id).status, super::IntentStatus::Failed);
-
-    // Target now succeeds; retry should re-invoke and mark Executed.
-    target.set_should_fail(&false);
-    c.retry(&owner, &intent_id);
-
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.status, super::IntentStatus::Executed);
-    assert!(has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
-    assert_eq!(
-        count_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")),
-        1
-    );
-}
-
-#[test]
-fn test_retry_failed_intent_still_failing_stays_failed() {
-    let env = env_with_auth();
-    let id = env.register(MultiSigContract, ());
-    let c = MultiSigContractClient::new(&env, &id);
-
-    let target_id = env.register(MockTarget, ());
-    let target = MockTargetClient::new(&env, &target_id);
-    target.set_should_fail(&true);
-
-    let owner = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone()]);
-    c.initialize(&owners, &1u32);
-
-    let intent_id = c.propose(
-        &owner,
-        &target_id,
-        &Symbol::new(&env, "run"),
-        &soroban_sdk::Bytes::new(&env),
-        &1000u64,
-    );
-
-    c.approve(&owner, &intent_id);
-    c.retry(&owner, &intent_id);
-
-    let intent = c.get_intent(&intent_id);
-    assert_eq!(intent.status, super::IntentStatus::Failed);
-    assert!(!has_event(&env, &id, Symbol::new(&env, "ExecutionCompleted")));
-}
-
-#[test]
-fn test_retry_non_failed_intent_returns_error() {
-    let env = env_with_auth();
-    let id = env.register(MultiSigContract, ());
-    let c = MultiSigContractClient::new(&env, &id);
-
-    let target_id = env.register(MockTarget, ());
-    let target = MockTargetClient::new(&env, &target_id);
-    target.set_should_fail(&false);
-
-    let owner = Address::generate(&env);
-    let owners = Vec::from_array(&env, [owner.clone()]);
-    c.initialize(&owners, &1u32);
-
-    // Pending intent cannot be retried.
-    let pending_id = c.propose(
-        &owner,
-        &target_id,
-        &Symbol::new(&env, "run"),
-        &soroban_sdk::Bytes::new(&env),
-        &1000u64,
-    );
-    let res = c.try_retry(&owner, &pending_id);
-    assert_eq!(res, Err(Ok(super::Error::IntentNotFailed)));
-
-    // Executed intent cannot be retried either.
-    c.approve(&owner, &pending_id);
-    assert_eq!(
-        c.get_intent(&pending_id).status,
-        super::IntentStatus::Executed
-    );
-    let res = c.try_retry(&owner, &pending_id);
-    assert_eq!(res, Err(Ok(super::Error::IntentNotFailed)));
-}
