@@ -374,6 +374,14 @@ impl MultiSigContract {
         }
         decode_calldata(&env, &calldata)?;
 
+        // Reject an expiry that is not strictly in the future. Otherwise the
+        // intent would be dead on arrival: `approve` rejects it immediately
+        // because `now > intent.expiry` would already hold.
+        let now = env.ledger().timestamp();
+        if expiry <= now {
+            return Err(MultiSigError::IntentExpired);
+        }
+
         let nonce = get_and_increment_nonce(&env);
         let id = next_intent_id(&env);
 
