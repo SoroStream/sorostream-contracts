@@ -2,9 +2,46 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Vec,
+    contract, contractimpl, symbol_short,
+    testutils::{Address as _, Events},
+    Address, Bytes, Env, TryFromVal, Vec,
 };
+
+/// Minimal execution target: a zero-argument entry point that records that it
+/// was invoked, so tests can observe that `approve()` actually executed.
+#[contract]
+pub struct MockTarget;
+
+#[contractimpl]
+impl MockTarget {
+    pub fn ping(env: Env) {
+        let count: u32 = env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0);
+        env.storage().instance().set(&symbol_short!("pings"), &(count + 1));
+    }
+
+    pub fn pings(env: Env) -> u32 {
+        env.storage().instance().get(&symbol_short!("pings")).unwrap_or(0)
+    }
+}
+
+/// Counts events emitted by `contract` whose first topic is `name`.
+fn count_events(env: &Env, contract: &Address, name: &str) -> u32 {
+    let wanted = Symbol::new(env, name);
+    let mut n = 0;
+    for (addr, topics, _) in env.events().all().iter() {
+        if &addr != contract {
+            continue;
+        }
+        if let Some(first) = topics.get(0) {
+            if let Ok(sym) = Symbol::try_from_val(env, &first) {
+                if sym == wanted {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
 
 fn env_with_auth() -> Env {
     let env = Env::default();
