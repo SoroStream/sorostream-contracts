@@ -168,11 +168,48 @@ impl ProxyContract {
     }
 
     /// Returns the current implementation WASM hash.
+    ///
+    /// Returns `Err(ProxyError::NotInitialized)` when the proxy has not yet
+    /// been initialised.
+    ///
+    /// ## Asymmetry with `get_storage_version`
+    ///
+    /// `get_storage_version` has a **different** uninitialized behaviour: it
+    /// returns a bare `u32` defaulting to `0` rather than an error (see its
+    /// own doc comment).  The asymmetry is intentional:
+    ///
+    /// * The implementation hash has no sensible default — an absent hash
+    ///   means the proxy is genuinely not configured, and callers must know
+    ///   this.
+    /// * The storage version *does* have a sensible default of `0`: before
+    ///   any explicit version is set, the layout is "version 0".
+    ///
+    /// Integrators querying an uninitialized proxy should use
+    /// `get_impl_storage_info`, which surfaces the same `NotInitialized`
+    /// error and therefore forces handling of the uninitialized case for
+    /// both fields together.
     pub fn get_impl_hash(env: Env) -> Result<BytesN<32>, ProxyError> {
         read_impl_hash(&env).ok_or(ProxyError::NotInitialized)
     }
 
     /// Returns the current storage layout version.
+    ///
+    /// ## Default-to-zero before initialisation
+    ///
+    /// Unlike `get_impl_hash`, this function returns a bare `u32` with **no
+    /// error path**.  Before `initialize` has been called, it returns `0`.
+    ///
+    /// This is intentional: a storage version of `0` is a meaningful,
+    /// well-defined state ("layout version zero / unversioned") that is used
+    /// by `upgrade`'s `expected_storage_version` check.  Wrapping it in
+    /// `Result` would force every caller to unwrap a value that is never
+    /// actually absent.
+    ///
+    /// **Warning for integrators:** a return value of `0` does **not** imply
+    /// the proxy has been initialized.  Use `get_impl_hash` (which returns
+    /// `Err(NotInitialized)` when unset) or `get_impl_storage_info` (which
+    /// checks both fields atomically) to determine whether the proxy is
+    /// properly configured before treating a `0` storage version as valid.
     pub fn get_storage_version(env: Env) -> u32 {
         read_storage_version(&env)
     }
@@ -246,6 +283,29 @@ impl ProxyContract {
     /// Forwards a `migrate(from_version, to_version)` call to the implementation.
     /// The implementation is responsible for idempotency guards.
     /// `to_version` must differ from `from_version` to ensure a meaningful migration.
+    ///
+    /// ## Version-string vs stored storage version
+    ///
+    /// `from_version` and `to_version` are **caller-supplied strings** that
+    /// describe the logical schema migration (e.g. `"1.0"` → `"2.0"`).  They
+    /// are forwarded verbatim to the implementation contract's `migrate`
+    /// function and are not validated against the proxy's own stored
+    /// `STORAGE_VERSION_KEY` (a `u32` bumped by `upgrade`).
+    ///
+    /// This means an admin *can* call `migrate` with version strings that do
+    /// not correspond to the numeric storage version currently recorded by the
+    /// proxy.  For example, the proxy might have `storage_version = 2` while
+    /// the caller supplies `from_version = "v1.0"` and `to_version = "v3.0"`.
+    /// The proxy cannot detect this disconnect; the implementation contract
+    /// itself must validate the strings it receives if it wishes to enforce
+    /// ordering.
+    ///
+    /// **Recommended practice:** Keep the numeric storage version (`u32`) and
+    /// the string versions used in migration calls consistent.  For example,
+    /// always call `upgrade(..., expected: N, new: N+1)` before calling
+    /// `migrate("N", "N+1")`.  Consider parsing version strings in the
+    /// implementation and cross-checking against the proxy's stored version
+    /// via `get_storage_version` off-chain before submitting the transaction.
     pub fn migrate(
         env: Env,
         impl_contract: Address,
@@ -266,7 +326,7 @@ impl ProxyContract {
                 soroban_sdk::IntoVal::into_val(&to_version, &env),
             ],
         );
-        if !matches!(migration_result, Ok(Ok(()))) {
+        if !matches!(migration_result, Ok(())) {
             return Err(ProxyError::MigrationFailed);
         }
         env.events().publish(
@@ -648,5 +708,111 @@ mod test {
         // B should be accepted successfully
         c.accept_admin(&admin_b);
         assert_eq!(c.get_admin(), admin_b);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue: get_impl_hash / get_storage_version asymmetry on uninitialized proxy
+    // -----------------------------------------------------------------------
+
+    /// `get_impl_hash` returns `Err(NotInitialized)` on an uninitialized proxy,
+    /// while `get_storage_version` returns `0`.  This test documents both
+    /// behaviours in one place so integrators understand that a `0` storage
+    /// version does **not** mean the proxy is initialized.
+    #[test]
+    fn test_uninitialized_proxy_get_impl_hash_vs_get_storage_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProxyContract, ());
+        let c = ProxyContractClient::new(&env, &contract_id);
+
+        // get_impl_hash must signal the uninitialized state explicitly.
+        let hash_result = c.try_get_impl_hash();
+        assert_eq!(hash_result, Err(Ok(ProxyError::NotInitialized)));
+
+        // get_storage_version silently returns 0 — this is the documented
+        // default; it does NOT mean the proxy is initialized.
+        let version = c.get_storage_version();
+        assert_eq!(version, 0u32);
+    }
+
+    /// `get_impl_storage_info` requires both fields to be set, so it correctly
+    /// surfaces `NotInitialized` even though `get_storage_version` alone would
+    /// return 0.  Integrators should prefer `get_impl_storage_info` to avoid
+    /// misinterpreting a default-zero storage version as a valid initialized
+    /// state.
+    #[test]
+    fn test_uninitialized_proxy_get_impl_storage_info_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProxyContract, ());
+        let c = ProxyContractClient::new(&env, &contract_id);
+
+        let result = c.try_get_impl_storage_info();
+        assert_eq!(result, Err(Ok(ProxyError::NotInitialized)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue: migrate() version strings not cross-checked against stored u32
+    // -----------------------------------------------------------------------
+
+    /// `migrate` accepts caller-supplied string versions that have no enforced
+    /// relationship to the proxy's numeric `storage_version`.  This test
+    /// confirms that migrate succeeds even when the string versions do not
+    /// correspond to the proxy's current numeric storage version, documenting
+    /// the disconnect integrators must be aware of.
+    #[test]
+    fn test_migrate_string_versions_independent_of_stored_numeric_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ProxyContract, ());
+        let impl_id = env.register(OneShotMigrationContract, ());
+        let admin = Address::generate(&env);
+        let impl_hash = BytesN::from_array(&env, &[1u8; 32]);
+        let c = ProxyContractClient::new(&env, &contract_id);
+
+        // Initialize with storage_version = 5.
+        c.initialize(&admin, &impl_hash, &5u32);
+        assert_eq!(c.get_storage_version(), 5u32);
+
+        // Call migrate with string versions that bear no relation to 5.
+        // The proxy does not validate these strings against STORAGE_VERSION_KEY.
+        let from_v = String::from_str(&env, "v1.0");
+        let to_v = String::from_str(&env, "v99.0");
+        // Should succeed: proxy forwards the strings as-is, only the
+        // implementation can reject them, and OneShotMigrationContract accepts any.
+        c.migrate(&impl_id, &from_v, &to_v);
+
+        // The numeric storage version is unchanged — migrate() never touches it.
+        assert_eq!(c.get_storage_version(), 5u32);
+    }
+
+    /// Demonstrates that the proxy has no idempotency guard of its own for
+    /// `migrate()` — it is entirely the implementation contract's responsibility
+    /// to reject repeat migration calls.  The proxy forwards any version strings
+    /// it is given; only the implementation can enforce ordering or one-time
+    /// semantics.
+    #[test]
+    fn test_migrate_idempotency_is_implementations_responsibility() {
+        let (env, contract_id, admin, impl_hash) = setup();
+        let impl_id = env.register(OneShotMigrationContract, ());
+        let c = ProxyContractClient::new(&env, &contract_id);
+        c.initialize(&admin, &impl_hash, &1u32);
+
+        let v1 = String::from_str(&env, "v1");
+        let v2 = String::from_str(&env, "v2");
+        let v3 = String::from_str(&env, "v3");
+
+        // First migration: the implementation accepts it and sets its flag.
+        c.migrate(&impl_id, &v1, &v2);
+
+        // Second migration with new version strings: the proxy has no memory of
+        // having already called migrate, so it forwards the call.  The
+        // implementation rejects it because its idempotency flag is set.
+        // The failure (whether it surfaces as a typed ProxyError or a host-level
+        // panic) proves the proxy itself imposes no idempotency constraint.
+        let result = c.try_migrate(&impl_id, &v2, &v3);
+        assert!(result.is_err(),
+            "second migrate must fail because the implementation's idempotency \
+             flag is set; the proxy has no guard of its own");
     }
 }

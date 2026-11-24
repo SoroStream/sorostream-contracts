@@ -31,6 +31,9 @@ pub enum TreasuryError {
     Overflow = 10,
     InvalidLpPoolAddress = 11,
     LpPoolIsTreasuryContract = 12,
+    /// The proposed new admin is already the current admin.
+    /// Mirrors the equivalent guard in the factory contract.
+    NewAdminSameAsCurrent = 13,
 }
 
 fn read_admin(env: &Env) -> Option<Address> {
@@ -115,8 +118,21 @@ impl TreasuryContract {
     /// Records `new_admin` as the pending admin. Only the current admin may call this.
     ///
     /// The transfer only takes effect once `new_admin` calls `accept_admin`.
+    ///
+    /// Returns [`TreasuryError::NewAdminSameAsCurrent`] when `new_admin` is
+    /// already the current admin, mirroring the equivalent guard in the factory
+    /// contract.  Silently overwriting the pending-admin slot with the current
+    /// admin's own address would leave the contract in a superficially valid
+    /// state where `accept_admin` could be called by the current admin and
+    /// have no visible effect — which is confusing and unnecessary.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
+        // Guard: reject proposals where new_admin is already the current admin.
+        // The factory contract has the same check (FactoryError::NewAdminSameAsCurrent).
+        let current_admin = read_admin(&env).ok_or(TreasuryError::NotInitialized)?;
+        if new_admin == current_admin {
+            return Err(TreasuryError::NewAdminSameAsCurrent);
+        }
         validate_treasury_address(&env, &new_admin)?;
         env.storage()
             .instance()
@@ -177,6 +193,23 @@ impl TreasuryContract {
     ///
     /// This only updates the recorded balance; the tokens must already be held by the
     /// contract for [`Self::withdraw_treasury`] to move them out.
+    ///
+    /// ## Multi-token behaviour
+    ///
+    /// `deposit` accepts **any** `Address` as the token; there is no allowlist.
+    /// Balances accumulate per-token in isolated storage slots, so depositing
+    /// multiple different token types is safe.
+    ///
+    /// **However**, the split/distribution settings — `treasury_bps` (set via
+    /// [`Self::set_treasury_split`]) and `lp_pool` (set via [`Self::set_lp_pool`])
+    /// — are **global**, not per-token.  When [`Self::distribute`] is called for
+    /// a given token it always applies the single globally-configured ratio and
+    /// routes the LP share to the single globally-configured pool address.
+    ///
+    /// Operators distributing **multiple token types** that require different
+    /// destination addresses or split ratios must therefore call
+    /// [`Self::set_treasury_split`] and/or [`Self::set_lp_pool`] between
+    /// successive [`Self::distribute`] calls, one token at a time.
     pub fn deposit(env: Env, token: Address, amount: i128) -> Result<(), TreasuryError> {
         if amount < 0 {
             return Err(TreasuryError::InvalidAmount);
@@ -316,6 +349,14 @@ impl TreasuryContract {
     ///
     /// - `treasury_bps` of `total` goes to `destination`.
     /// - The remainder goes to the LP pool (must be configured via `set_lp_pool`).
+    ///
+    /// ## Global split
+    ///
+    /// The split ratio (`treasury_bps`) and LP pool address are **global** — the
+    /// same values apply regardless of which token is being distributed.  If you
+    /// need different ratios or destinations for different tokens, update
+    /// [`Self::set_treasury_split`] and/or [`Self::set_lp_pool`] before calling
+    /// `distribute` for each token.
     ///
     /// Emits `FeeDistributed` with `(token, treasury_amount, lp_amount)`.
     pub fn distribute(env: Env, token: Address, destination: Address) -> Result<(i128, i128), TreasuryError> {
@@ -495,24 +536,20 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+        // Mint tokens directly to treasury (deposit only records the balance;
+        // actual token transfer to the contract must happen before calling deposit).
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
 
         assert_eq!(c.get_balance(&t.token_id), 0);
 
-        // User deposits tokens into treasury
-        c.deposit(&t.user, &t.token_id, &1000);
+        c.deposit(&t.token_id, &1000);
         assert_eq!(c.get_balance(&t.token_id), 1000);
 
-        // Verify tokens were transferred from user to treasury
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 9000);
-
         let treasury_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id);
-        assert_eq!(treasury_balance, 1000);
+        assert_eq!(treasury_balance, 10_000); // token balance unchanged by deposit()
 
         // Another deposit
-        c.deposit(&t.user, &t.token_id, &500);
+        c.deposit(&t.token_id, &500);
         assert_eq!(c.get_balance(&t.token_id), 1500);
     }
 
@@ -532,14 +569,12 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user first (since deposit will transfer from user to treasury)
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+        // Mint tokens directly to treasury then record via deposit().
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
-        // User deposits tokens
-        c.deposit(&t.user, &t.token_id, &10_000);
-
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 0);
+        let user_balance_before = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(user_balance_before, 0);
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
@@ -567,7 +602,9 @@ mod test {
         assert_eq!(treasury_balance_before, 10_000);
         assert_eq!(user_balance_before, 0);
 
-        // A zero-amount withdrawal is a no-op: it must not fail or alter balances.
+        // A zero-amount withdrawal succeeds and is a balance no-op.
+        // No token transfer occurs (the token contract rejects zero transfers),
+        // and consequently no TreasuryWithdrawn event is emitted.
         c.withdraw_treasury(&t.token_id, &0, &t.user);
 
         assert_eq!(c.get_balance(&t.token_id), treasury_balance_before);
@@ -576,10 +613,9 @@ mod test {
             user_balance_before
         );
 
+        // No event is emitted for a zero-amount withdrawal.
         let events = withdrawal_events(&t.env);
-        assert_eq!(events.len(), 1);
-        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
-        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
+        assert_eq!(events.len(), 0);
     }
 
     #[test]
@@ -605,11 +641,9 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user first
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
-
-        // User deposits
-        c.deposit(&t.user, &t.token_id, &10_000);
+        // Mint tokens directly to treasury then record via deposit().
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
@@ -800,7 +834,158 @@ mod test {
         let result = c.try_accept_admin(&pending_admin);
         assert_eq!(result, Err(Ok(TreasuryError::NoPendingAdmin)));
     }
-}
+
+    // -----------------------------------------------------------------------
+    // Issue: treasury propose_admin same-admin guard (mirrors factory)
+    // -----------------------------------------------------------------------
+
+    /// Proposing the current admin as the new admin must be rejected with
+    /// `TreasuryError::NewAdminSameAsCurrent`, mirroring the guard that
+    /// `FactoryError::NewAdminSameAsCurrent` provides in the factory contract.
+    /// Without this guard the pending-admin slot would be overwritten with the
+    /// current admin's own address, which is a no-op that could mislead
+    /// integrators checking the pending-admin state.
+    #[test]
+    fn test_propose_admin_same_as_current_is_rejected() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let result = c.try_propose_admin(&t.admin);
+        assert_eq!(result, Err(Ok(TreasuryError::NewAdminSameAsCurrent)));
+    }
+
+    /// A valid propose followed by a re-propose of the *current* admin (not
+    /// the pending one) must still be rejected.  The pending-admin slot must
+    /// remain unchanged (pointing to the previously-proposed address).
+    #[test]
+    fn test_propose_admin_same_as_current_does_not_clobber_pending_admin() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // First, legitimately propose a new admin.
+        let new_admin = Address::generate(&t.env);
+        c.propose_admin(&new_admin);
+
+        // Now try to propose the *current* admin — must be rejected.
+        let result = c.try_propose_admin(&t.admin);
+        assert_eq!(result, Err(Ok(TreasuryError::NewAdminSameAsCurrent)));
+
+        // The original pending proposal must still be intact.
+        c.accept_admin(&new_admin);
+        assert_eq!(c.get_admin(), Some(new_admin));
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue: treasury deposit() / distribute() use a global split (not per-token)
+    // -----------------------------------------------------------------------
+
+    /// Demonstrates that `treasury_bps` and `lp_pool` are global settings,
+    /// not per-token.  Depositing two different tokens and distributing each
+    /// in turn applies the same ratio and routes LP shares to the same pool
+    /// for both tokens.
+    ///
+    /// Operators who need different ratios or destinations for different tokens
+    /// must call `set_treasury_split` and/or `set_lp_pool` between consecutive
+    /// `distribute` calls.
+    #[test]
+    fn test_distribute_uses_global_split_for_all_tokens() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let treasury_id = env.register(TreasuryContract, ());
+
+        // Deploy two independent token contracts.
+        let token_admin = Address::generate(&env);
+        let token_a_id = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        let token_b_id = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+
+        let admin = Address::generate(&env);
+        let lp_pool = Address::generate(&env);
+        let destination = Address::generate(&env);
+
+        let c = TreasuryContractClient::new(&env, &treasury_id);
+        c.initialize(&admin);
+
+        // 50 / 50 global split, single LP pool for all tokens.
+        c.set_treasury_split(&5_000u32);
+        c.set_lp_pool(&lp_pool);
+
+        // Mint and deposit token A.
+        StellarAssetClient::new(&env, &token_a_id).mint(&treasury_id, &10_000);
+        c.deposit(&token_a_id, &10_000);
+
+        // Mint and deposit token B.
+        StellarAssetClient::new(&env, &token_b_id).mint(&treasury_id, &4_000);
+        c.deposit(&token_b_id, &4_000);
+
+        // Distribute token A — same global split applies.
+        let (ta, la) = c.distribute(&token_a_id, &destination);
+        assert_eq!((ta, la), (5_000, 5_000));
+        assert_eq!(TokenClient::new(&env, &token_a_id).balance(&destination), 5_000);
+        assert_eq!(TokenClient::new(&env, &token_a_id).balance(&lp_pool), 5_000);
+
+        // Distribute token B — same global split and same LP pool.
+        let (tb, lb) = c.distribute(&token_b_id, &destination);
+        assert_eq!((tb, lb), (2_000, 2_000));
+        assert_eq!(TokenClient::new(&env, &token_b_id).balance(&destination), 2_000);
+        assert_eq!(TokenClient::new(&env, &token_b_id).balance(&lp_pool), 2_000);
+
+        // Both token A and token B balances are cleared after distribution.
+        assert_eq!(c.get_balance(&token_a_id), 0);
+        assert_eq!(c.get_balance(&token_b_id), 0);
+    }
+
+    /// Verifies that changing the global split between two distribute() calls
+    /// correctly applies the new ratio to the second token only.
+    /// This is the documented multi-token workflow when different ratios are needed.
+    #[test]
+    fn test_distribute_multi_token_with_split_reconfiguration_between_calls() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let treasury_id = env.register(TreasuryContract, ());
+
+        let token_admin = Address::generate(&env);
+        let token_a_id = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        let token_b_id = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+
+        let admin = Address::generate(&env);
+        let lp_pool = Address::generate(&env);
+        let destination = Address::generate(&env);
+
+        let c = TreasuryContractClient::new(&env, &treasury_id);
+        c.initialize(&admin);
+        c.set_lp_pool(&lp_pool);
+
+        // Deposit both tokens upfront.
+        StellarAssetClient::new(&env, &token_a_id).mint(&treasury_id, &10_000);
+        c.deposit(&token_a_id, &10_000);
+        StellarAssetClient::new(&env, &token_b_id).mint(&treasury_id, &8_000);
+        c.deposit(&token_b_id, &8_000);
+
+        // Distribute token A with a 70/30 split.
+        c.set_treasury_split(&7_000u32);
+        let (ta, la) = c.distribute(&token_a_id, &destination);
+        assert_eq!((ta, la), (7_000, 3_000));
+
+        // Reconfigure to a 25/75 split before distributing token B.
+        c.set_treasury_split(&2_500u32);
+        let (tb, lb) = c.distribute(&token_b_id, &destination);
+        assert_eq!((tb, lb), (2_000, 6_000));
+
+        assert_eq!(c.get_balance(&token_a_id), 0);
+        assert_eq!(c.get_balance(&token_b_id), 0);
+    }
 
     #[test]
     fn test_set_lp_pool_reconfigured_after_distribution_routes_to_new_pool() {
