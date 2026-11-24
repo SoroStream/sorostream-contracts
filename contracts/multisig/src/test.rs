@@ -501,3 +501,44 @@ fn test_owner_count_never_underflows_when_removed_down_to_threshold() {
     assert_eq!(c.get_owners().len(), 2);
 }
 
+#[test]
+fn test_set_admin_clears_stale_pending_admin() {
+    // Issue #883: set_admin must clear any stale pending_admin set via propose_transfer_admin
+    let env = env_with_auth();
+    let id = env.register(MultiSigContract, ());
+    let c = MultiSigContractClient::new(&env, &id);
+
+    let owner1 = Address::generate(&env);
+    let owners = Vec::from_array(&env, [owner1.clone()]);
+    c.initialize(&owners, &1u32);
+
+    let pending_admin = Address::generate(&env);
+    c.propose_transfer_admin(&pending_admin);
+
+    // Verify pending_admin is currently set
+    let pending: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, super::PENDING_ADMIN_KEY))
+    });
+    assert_eq!(pending, Some(pending_admin));
+
+    // Calling set_admin overrides admin and clears pending_admin
+    let new_admin = Address::generate(&env);
+    c.set_admin(&new_admin);
+    assert_eq!(c.get_admin(), Some(new_admin));
+
+    // Pending admin is now cleared
+    let pending_after: Option<Address> = env.as_contract(&id, || {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, super::PENDING_ADMIN_KEY))
+    });
+    assert_eq!(pending_after, None);
+
+    // Attempting to accept transfer fails because no pending admin exists
+    let res = c.try_accept_transfer_admin();
+    assert_eq!(res, Err(Ok(MultiSigError::NoPendingAdminTransfer)));
+}
+
+

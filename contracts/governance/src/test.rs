@@ -318,3 +318,35 @@ fn test_withdraw_vote_tokens_twice_fails_with_no_vote_to_withdraw() {
     assert_eq!(token_client.balance(&voter), 100);
     assert_eq!(token_client.balance(&id), 0);
 }
+
+#[test]
+fn test_create_proposal_proposer_balance_exceeds_u64_max() {
+    // Issue #893: create_proposal converts proposer balance via
+    // u64::try_from(balance).map_err(|_| GovernanceError::InvalidParam)?
+    // Confirm create_proposal is rejected as InvalidParam when proposer balance > u64::MAX
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    c.initialize(&admin, &guardian, &token, &100u64, &10u64, &0u64, &0u64);
+
+    let proposer = Address::generate(&env);
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    let excess_balance: i128 = (u64::MAX as i128) + 1;
+    stellar_asset.mint(&proposer, &excess_balance);
+
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+
+    let result = c.try_create_proposal(&proposer, &target, &function, &calldata);
+    assert_eq!(result, Err(Ok(GovernanceError::InvalidParam)));
+}
+

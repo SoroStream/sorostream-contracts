@@ -32,7 +32,6 @@
 //! path currently supplies calldata as one `Bytes` argument; typed methods such as
 //! these therefore cannot be reached through that path until issue #717 is fixed.
 //! This is an execution limitation, not a confirmed invariant bypass.
-=======
 
 #[cfg(test)]
 mod test;
@@ -110,6 +109,7 @@ pub enum MultiSigError {
     NotProposer = 13,
     InvalidCalldata = 14,
     IntentNotFailed = 15,
+    NoPendingAdminTransfer = 16,
 }
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
@@ -717,6 +717,7 @@ impl MultiSigContract {
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
         env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &new_admin);
+        env.storage().instance().remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
         env.events().publish(
             (Symbol::new(&env, "AdminSet"),),
             new_admin,
