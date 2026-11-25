@@ -524,10 +524,41 @@ mod test {
     }
 
     #[test]
-    fn test_withdraw_treasury() {
+    fn test_distribute_overflow_boundary_near_max_bps() {
+        // Test multiple treasury_bps values near 10_000
+        for bps in [10_000u32, 9_999u32, 9_900u32, 5_000u32] {
+            let t = setup();
+            let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+            c.initialize(&t.admin);
+            c.set_treasury_split(&bps);
+
+            let bps_i128 = bps as i128;
+            let boundary = i128::MAX / bps_i128;
+
+            // Exactly at the boundary, checked_mul does NOT overflow
+            assert!(boundary.checked_mul(bps_i128).is_some());
+
+            // At boundary + 1, checked_mul overflows i128::MAX
+            let overflowing_total = boundary + 1;
+            assert!(overflowing_total.checked_mul(bps_i128).is_none());
+
+            c.deposit(&t.token_id, &overflowing_total);
+            assert_eq!(c.get_balance(&t.token_id), overflowing_total);
+
+            // Confirms that checked_mul overflow triggers failure (.expect("treasury distribution overflow"))
+            // rather than silently wrapping.
+            let result = c.try_distribute(&t.token_id, &t.user);
+            assert!(result.is_err(), "distribute must fail when checked_mul overflows at bps={bps}");
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_distribute_panics_on_overflow_boundary() {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
+        c.set_treasury_split(&10_000);
 
         // Mint tokens to treasury
         StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
