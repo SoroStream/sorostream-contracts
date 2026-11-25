@@ -1285,3 +1285,61 @@ fn test_get_proposal_returns_not_found_after_approval() {
         Err(Ok(StreamingError::ProposalNotFound)),
     ));
 }
+
+// ── Issue #944: one-shot streams earn reputation on natural completion ──────
+
+#[test]
+fn test_reputation_increments_when_one_shot_stream_is_fully_claimed() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+    let stream_id = client.create_stream(
+        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
+    );
+
+    // A partial claim before the end does not count as completion.
+    t.set_time(start + 400);
+    client.claim(&stream_id);
+    assert_eq!(client.get_reputation(&t.sender), 0);
+
+    // Claiming the rest after end_time completes the stream.
+    t.set_time(end);
+    client.claim(&stream_id);
+    assert_eq!(client.get_reputation(&t.sender), 1);
+}
+
+#[test]
+fn test_reputation_not_credited_by_claim_for_auto_renew_streams() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+    let stream_id = client.create_stream(
+        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &true,
+    );
+
+    // Fully claiming an auto-renew stream does not credit; renew() does.
+    t.set_time(end);
+    client.claim(&stream_id);
+    assert_eq!(client.get_reputation(&t.sender), 0);
+
+    t.approve_renewals(&t.sender, 1_000);
+    client.renew(&stream_id);
+    assert_eq!(client.get_reputation(&t.sender), 1);
+}
+
+#[test]
+fn test_reputation_not_credited_for_cancelled_one_shot_stream() {
+    let t = TestEnv::new();
+    let client = t.client();
+    let start = t.now();
+    let end = start + 1_000;
+    let stream_id = client.create_stream(
+        &t.sender, &t.recipient, &t.token, &1_000_i128, &start, &end, &false,
+    );
+
+    t.set_time(start + 500);
+    client.cancel(&stream_id);
+    assert_eq!(client.get_reputation(&t.sender), 0);
+}
