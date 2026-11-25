@@ -380,10 +380,12 @@ impl TreasuryContract {
         }
 
         let treasury_bps = read_treasury_split_bps(&env);
+        // Issue #922: surface overflow as `TreasuryError::Overflow` rather
+        // than panicking, matching `deposit`'s `checked_add` → `?` pattern.
         let treasury_amount = total
             .checked_mul(treasury_bps as i128)
             .and_then(|amount| amount.checked_div(10_000))
-            .expect("treasury distribution overflow");
+            .ok_or(TreasuryError::Overflow)?;
         let lp_amount = total - treasury_amount;
 
         let lp_pool = if lp_amount > 0 {

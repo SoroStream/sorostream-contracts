@@ -318,3 +318,140 @@ fn test_withdraw_vote_tokens_twice_fails_with_no_vote_to_withdraw() {
     assert_eq!(token_client.balance(&voter), 100);
     assert_eq!(token_client.balance(&id), 0);
 }
+
+#[test]
+fn test_veto_by_proposer_who_is_not_guardian_is_rejected(
+) {
+    // Issue #919: `veto()` rejects any caller who is not the guardian with
+    // `GovernanceError::NotGuardian`. Being the proposer grants no special
+    // veto rights — this test pins that invariant by having the proposer
+    // (a distinct address from the guardian) attempt to veto their own
+    // queued proposal.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let proposer = Address::generate(&env);
+    assert_ne!(
+        proposer, guardian,
+        "test setup error: proposer and guardian must be distinct addresses"
+    );
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+    env.ledger().set_timestamp(1000);
+
+    // Fund the proposer so `create_proposal` clears the threshold check
+    // (threshold is 0 here, but minting makes the intent explicit).
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    stellar_asset.mint(&proposer, &1);
+
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+    let prop_id = c.create_proposal(&proposer, &target, &function, &calldata);
+
+    // Drive the proposal through voting into Queued so veto has a
+    // non-terminal proposal to act on. Mint to the proposer again (balance
+    // was escrowed during their own vote, if any) and cast one vote_for.
+    c.vote(&proposer, &prop_id, &true);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+    c.queue(&prop_id);
+    let queued = c.get_proposal(&prop_id);
+    assert_eq!(queued.status, ProposalStatus::Queued);
+
+    // The proposer attempts to veto their own proposal — must fail with
+    // NotGuardian. Any other outcome means `veto()` is granting veto
+    // authority to the proposer, which the guardian-only check forbids.
+    let result = c.try_veto(&proposer, &prop_id);
+    assert_eq!(result, Err(Ok(GovernanceError::NotGuardian)));
+
+    // Status unchanged; the failed veto did not advance the proposal state.
+    let unchanged = c.get_proposal(&prop_id);
+    assert_eq!(unchanged.status, ProposalStatus::Queued);
+
+    // Control check: the guardian CAN veto the same proposal, proving the
+    // rejection above was specifically about the caller's identity and not
+    // about the proposal being in an unvetoable state.
+    c.veto(&guardian, &prop_id);
+    let vetoed = c.get_proposal(&prop_id);
+    assert_eq!(vetoed.status, ProposalStatus::Vetoed);
+}
+
+#[test]
+fn test_queue_with_zero_quorum_snapshot_passes_on_any_positive_margin() {
+    // Issue #921: `create_proposal` snapshots the governance-wide `quorum`
+    // onto the proposal at creation time. If `quorum == 0` at creation,
+    // `queue()`'s `total_votes < proposal.quorum` check is always false,
+    // so the proposal can queue with any positive margin — including a
+    // proposal where only one voter voted_for.
+    //
+    // Pins that:
+    //   - the quorum check is NOT re-read at queue() time (raising the
+    //     governance-wide quorum after creation does not retroactively
+    //     block queuing);
+    //   - the 0-vs-0 case still Defeats, because `votes_for <= votes_against`
+    //     catches the tie.
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+
+    // Initialize with quorum = 0 so proposals created now snapshot a
+    // zero quorum requirement.
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+    env.ledger().set_timestamp(1000);
+
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "dummy");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+    let prop_id = c.create_proposal(&admin, &target, &function, &calldata);
+
+    // Confirm the snapshot really did capture quorum = 0.
+    let created = c.get_proposal(&prop_id);
+    assert_eq!(created.quorum, 0);
+
+    // One voter votes_for with balance 1; total_votes = 1, > 0 = quorum.
+    let voter = Address::generate(&env);
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    stellar_asset.mint(&voter, &1);
+    c.vote(&voter, &prop_id, &true);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+    let result = c.try_queue(&prop_id);
+    assert_eq!(result, Ok(Ok(())));
+    let queued = c.get_proposal(&prop_id);
+    assert_eq!(
+        queued.status,
+        ProposalStatus::Queued,
+        "Proposal with zero-quorum snapshot and positive margin must queue"
+    );
+
+    // Second proposal: still zero-quorum, but nobody votes. `votes_for (0)
+    // <= votes_against (0)` catches the tie and resolves to Defeated.
+    env.ledger().set_timestamp(2000);
+    let zero_votes_id = c.create_proposal(&admin, &target, &function, &calldata);
+    let zero_created = c.get_proposal(&zero_votes_id);
+    assert_eq!(zero_created.quorum, 0);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + 1_000_000);
+    let result = c.try_queue(&zero_votes_id);
+    assert_eq!(result, Ok(Ok(())));
+    let zero_queued = c.get_proposal(&zero_votes_id);
+    assert_eq!(
+        zero_queued.status,
+        ProposalStatus::Defeated,
+        "Zero-quorum proposal with zero votes is a 0-vs-0 tie and must Defeat"
+    );
+}
