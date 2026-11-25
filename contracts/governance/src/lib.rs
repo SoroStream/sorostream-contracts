@@ -295,6 +295,34 @@ impl GovernanceContract {
     /// Vote weight equals the voter's token balance when voting. Those tokens are
     /// held in escrow until the voting period ends, preventing them from being
     /// transferred and counted again through another address.
+    ///
+    /// # Reputation-free voting model (#920)
+    ///
+    /// SoroStream governance is deliberately **reputation-free**: a voter's
+    /// weight is their current token balance at the moment they call `vote`,
+    /// not a snapshot captured at [`create_proposal`] time. This differs from
+    /// snapshot-based governance (Compound Bravo, OpenZeppelin Governor,
+    /// Aragon) in two integrator-visible ways:
+    ///
+    /// 1. **Post-creation acquisitions count.** A voter who buys the token
+    ///    *after* `create_proposal` has run but before `vote_end` votes with
+    ///    their post-acquisition balance, not with whatever balance they
+    ///    held at `vote_start`.
+    /// 2. **The same tokens can vote on several proposals concurrently.**
+    ///    Escrow is **per-proposal**, keyed by `(proposal_id, voter)`. Once
+    ///    the voter has transferred their balance into the contract for
+    ///    proposal A, the balance in their account returns to zero — but if
+    ///    they re-fund their wallet during A's voting window they can vote
+    ///    on proposal B with that re-funded balance. There is no global
+    ///    lock across concurrently-active proposals.
+    ///
+    /// Integrators expecting one-token-one-vote-total semantics (the usual
+    /// assumption from OZ-style governance) MUST serialize their proposals
+    /// so no two active voting windows overlap, OR layer a snapshot of
+    /// token balances into their UI/indexer to enforce the invariant
+    /// off-chain. On-chain, this contract allows the behaviour above by
+    /// design and will not be changed to a snapshot model without an
+    /// explicit migration proposal.
     pub fn vote(
         env: Env,
         voter: Address,

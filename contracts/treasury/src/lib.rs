@@ -31,6 +31,9 @@ pub enum TreasuryError {
     Overflow = 10,
     InvalidLpPoolAddress = 11,
     LpPoolIsTreasuryContract = 12,
+    /// The proposed new admin is already the current admin.
+    /// Mirrors the equivalent guard in the factory contract.
+    NewAdminSameAsCurrent = 13,
 }
 
 fn read_admin(env: &Env) -> Option<Address> {
@@ -115,8 +118,21 @@ impl TreasuryContract {
     /// Records `new_admin` as the pending admin. Only the current admin may call this.
     ///
     /// The transfer only takes effect once `new_admin` calls `accept_admin`.
+    ///
+    /// Returns [`TreasuryError::NewAdminSameAsCurrent`] when `new_admin` is
+    /// already the current admin, mirroring the equivalent guard in the factory
+    /// contract.  Silently overwriting the pending-admin slot with the current
+    /// admin's own address would leave the contract in a superficially valid
+    /// state where `accept_admin` could be called by the current admin and
+    /// have no visible effect — which is confusing and unnecessary.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
+        // Guard: reject proposals where new_admin is already the current admin.
+        // The factory contract has the same check (FactoryError::NewAdminSameAsCurrent).
+        let current_admin = read_admin(&env).ok_or(TreasuryError::NotInitialized)?;
+        if new_admin == current_admin {
+            return Err(TreasuryError::NewAdminSameAsCurrent);
+        }
         validate_treasury_address(&env, &new_admin)?;
         env.storage()
             .instance()
@@ -163,9 +179,18 @@ impl TreasuryContract {
         Ok(())
     }
 
-    /// Sets or updates the treasury address. Rejects zero address.
+    /// Sets or updates the treasury address. Only admin may call this.
+    ///
+    /// Rejects the zero/burn address and the treasury contract's own address
+    /// (to prevent self-referential transfers).
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
+        if is_zero_address(&env, &treasury) {
+            return Err(TreasuryError::InvalidTreasuryAddress);
+        }
+        if treasury == env.current_contract_address() {
+            return Err(TreasuryError::InvalidTreasuryAddress);
+        }
         validate_treasury_address(&env, &treasury)?;
         env.storage()
             .instance()
@@ -177,6 +202,23 @@ impl TreasuryContract {
     ///
     /// This only updates the recorded balance; the tokens must already be held by the
     /// contract for [`Self::withdraw_treasury`] to move them out.
+    ///
+    /// ## Multi-token behaviour
+    ///
+    /// `deposit` accepts **any** `Address` as the token; there is no allowlist.
+    /// Balances accumulate per-token in isolated storage slots, so depositing
+    /// multiple different token types is safe.
+    ///
+    /// **However**, the split/distribution settings — `treasury_bps` (set via
+    /// [`Self::set_treasury_split`]) and `lp_pool` (set via [`Self::set_lp_pool`])
+    /// — are **global**, not per-token.  When [`Self::distribute`] is called for
+    /// a given token it always applies the single globally-configured ratio and
+    /// routes the LP share to the single globally-configured pool address.
+    ///
+    /// Operators distributing **multiple token types** that require different
+    /// destination addresses or split ratios must therefore call
+    /// [`Self::set_treasury_split`] and/or [`Self::set_lp_pool`] between
+    /// successive [`Self::distribute`] calls, one token at a time.
     pub fn deposit(env: Env, token: Address, amount: i128) -> Result<(), TreasuryError> {
         if amount < 0 {
             return Err(TreasuryError::InvalidAmount);
@@ -317,6 +359,14 @@ impl TreasuryContract {
     /// - `treasury_bps` of `total` goes to `destination`.
     /// - The remainder goes to the LP pool (must be configured via `set_lp_pool`).
     ///
+    /// ## Global split
+    ///
+    /// The split ratio (`treasury_bps`) and LP pool address are **global** — the
+    /// same values apply regardless of which token is being distributed.  If you
+    /// need different ratios or destinations for different tokens, update
+    /// [`Self::set_treasury_split`] and/or [`Self::set_lp_pool`] before calling
+    /// `distribute` for each token.
+    ///
     /// Emits `FeeDistributed` with `(token, treasury_amount, lp_amount)`.
     pub fn distribute(env: Env, token: Address, destination: Address) -> Result<(i128, i128), TreasuryError> {
         check_admin(&env)?;
@@ -330,10 +380,12 @@ impl TreasuryContract {
         }
 
         let treasury_bps = read_treasury_split_bps(&env);
+        // Issue #922: surface overflow as `TreasuryError::Overflow` rather
+        // than panicking, matching `deposit`'s `checked_add` → `?` pattern.
         let treasury_amount = total
             .checked_mul(treasury_bps as i128)
             .and_then(|amount| amount.checked_div(10_000))
-            .expect("treasury distribution overflow");
+            .ok_or(TreasuryError::Overflow)?;
         let lp_amount = total - treasury_amount;
 
         let lp_pool = if lp_amount > 0 {
@@ -495,24 +547,12 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
-
         assert_eq!(c.get_balance(&t.token_id), 0);
 
-        // User deposits tokens into treasury
-        c.deposit(&t.user, &t.token_id, &1000);
+        c.deposit(&t.token_id, &1000);
         assert_eq!(c.get_balance(&t.token_id), 1000);
 
-        // Verify tokens were transferred from user to treasury
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 9000);
-
-        let treasury_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id);
-        assert_eq!(treasury_balance, 1000);
-
-        // Another deposit
-        c.deposit(&t.user, &t.token_id, &500);
+        c.deposit(&t.token_id, &500);
         assert_eq!(c.get_balance(&t.token_id), 1500);
     }
 
@@ -527,19 +567,48 @@ mod test {
     }
 
     #[test]
-    fn test_withdraw_treasury() {
+    fn test_distribute_overflow_boundary_near_max_bps() {
+        // Test multiple treasury_bps values near 10_000
+        for bps in [10_000u32, 9_999u32, 9_900u32, 5_000u32] {
+            let t = setup();
+            let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+            c.initialize(&t.admin);
+            c.set_treasury_split(&bps);
+
+            let bps_i128 = bps as i128;
+            let boundary = i128::MAX / bps_i128;
+
+            // Exactly at the boundary, checked_mul does NOT overflow
+            assert!(boundary.checked_mul(bps_i128).is_some());
+
+            // At boundary + 1, checked_mul overflows i128::MAX
+            let overflowing_total = boundary + 1;
+            assert!(overflowing_total.checked_mul(bps_i128).is_none());
+
+            c.deposit(&t.token_id, &overflowing_total);
+            assert_eq!(c.get_balance(&t.token_id), overflowing_total);
+
+            // Confirms that checked_mul overflow triggers failure (.expect("treasury distribution overflow"))
+            // rather than silently wrapping.
+            let result = c.try_distribute(&t.token_id, &t.user);
+            assert!(result.is_err(), "distribute must fail when checked_mul overflows at bps={bps}");
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_distribute_panics_on_overflow_boundary() {
         let t = setup();
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
+        c.set_treasury_split(&10_000);
 
-        // Mint tokens to user first (since deposit will transfer from user to treasury)
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
+        // Mint tokens to treasury
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
-        // User deposits tokens
-        c.deposit(&t.user, &t.token_id, &10_000);
-
-        let user_balance = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
-        assert_eq!(user_balance, 0);
+        let initial_user = TokenClient::new(&t.env, &t.token_id).balance(&t.user);
+        assert_eq!(initial_user, 0);
 
         c.withdraw_treasury(&t.token_id, &3000, &t.user);
 
@@ -567,19 +636,21 @@ mod test {
         assert_eq!(treasury_balance_before, 10_000);
         assert_eq!(user_balance_before, 0);
 
-        // A zero-amount withdrawal is a no-op: it must not fail or alter balances.
+        // A zero-amount withdrawal succeeds and is a balance no-op.
+        // No token transfer occurs (the token contract rejects zero transfers),
+        // and consequently no TreasuryWithdrawn event is emitted.
         c.withdraw_treasury(&t.token_id, &0, &t.user);
+
+        let events = withdrawal_events(&t.env);
+        assert_eq!(events.len(), 1);
+        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
+        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
 
         assert_eq!(c.get_balance(&t.token_id), treasury_balance_before);
         assert_eq!(
             TokenClient::new(&t.env, &t.token_id).balance(&t.user),
             user_balance_before
         );
-
-        let events = withdrawal_events(&t.env);
-        assert_eq!(events.len(), 1);
-        let payload: (Address, i128, Address) = events[0].1.clone().into_val(&t.env);
-        assert_eq!(payload, (t.token_id.clone(), 0, t.user.clone()));
     }
 
     #[test]
@@ -605,11 +676,9 @@ mod test {
         let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
         c.initialize(&t.admin);
 
-        // Mint tokens to user first
-        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.user, &10_000);
-
-        // User deposits
-        c.deposit(&t.user, &t.token_id, &10_000);
+        // Mint tokens to treasury first
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &10_000);
+        c.deposit(&t.token_id, &10_000);
 
         let withdrawn = c.withdraw_all(&t.token_id, &t.user);
         assert_eq!(withdrawn, 10_000);
@@ -690,6 +759,17 @@ mod test {
         c.initialize(&t.admin);
         let result = c.try_set_treasury(&t.treasury_id);
         assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_set_treasury_succeeds_with_valid_address() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let treasury_wallet = Address::generate(&t.env);
+        let result = c.try_set_treasury(&treasury_wallet);
+        assert_eq!(result, Ok(Ok(())));
     }
 
     #[test]
@@ -800,7 +880,114 @@ mod test {
         let result = c.try_accept_admin(&pending_admin);
         assert_eq!(result, Err(Ok(TreasuryError::NoPendingAdmin)));
     }
-}
+
+    #[test]
+    fn test_withdraw_all_fails_when_recorded_balance_exceeds_actual_token_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // Actual on-chain balance transferred/minted to the contract is only 50
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &50);
+
+        // But internal accounting records a deposit of 100, causing get_balance to diverge
+        c.deposit(&t.token_id, &100);
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+
+        // Attempting to withdraw_all attempts to transfer the full recorded balance (100) via token::Client.
+        // Because the contract holds only 50 tokens, the token::Client.transfer call fails
+        // and rolls back rather than silently succeeding with insufficient real funds.
+        let result = c.try_withdraw_all(&t.token_id, &t.user);
+        assert!(result.is_err());
+
+        // Internal accounting balance is rolled back and remains intact
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        // On-chain funds were not moved
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.user), 0);
+        // No withdrawal events were published
+        assert!(withdrawal_events(&t.env).is_empty());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_withdraw_all_panics_when_recorded_balance_exceeds_actual_token_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &50);
+        c.deposit(&t.token_id, &100);
+
+        // Direct call panics when the underlying token transfer fails
+        c.withdraw_all(&t.token_id, &t.user);
+    }
+
+    #[test]
+    fn test_withdraw_all_fails_when_contract_holds_zero_real_tokens() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // No tokens were minted or transferred to the treasury contract (real balance = 0).
+        // Internal accounting records a deposit of 100.
+        c.deposit(&t.token_id, &100);
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            0
+        );
+
+        let result = c.try_withdraw_all(&t.token_id, &t.user);
+        assert!(result.is_err());
+
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            0
+        );
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.user), 0);
+        assert!(withdrawal_events(&t.env).is_empty());
+    }
+
+    #[test]
+    fn test_withdraw_treasury_fails_when_recorded_balance_exceeds_actual_token_balance() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        // Actual on-chain balance held is 50
+        StellarAssetClient::new(&t.env, &t.token_id).mint(&t.treasury_id, &50);
+
+        // Internal accounting ledger recorded is 100
+        c.deposit(&t.token_id, &100);
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+
+        // Amount requested is 75, which is <= recorded balance (100) so treasury internal
+        // check passes, but > real on-chain balance (50), so token::Client.transfer fails.
+        let result = c.try_withdraw_treasury(&t.token_id, &75, &t.user);
+        assert!(result.is_err());
+
+        // State is rolled back
+        assert_eq!(c.get_balance(&t.token_id), 100);
+        assert_eq!(
+            TokenClient::new(&t.env, &t.token_id).balance(&t.treasury_id),
+            50
+        );
+        assert_eq!(TokenClient::new(&t.env, &t.token_id).balance(&t.user), 0);
+        assert!(withdrawal_events(&t.env).is_empty());
+    }
 
     #[test]
     fn test_set_lp_pool_reconfigured_after_distribution_routes_to_new_pool() {
