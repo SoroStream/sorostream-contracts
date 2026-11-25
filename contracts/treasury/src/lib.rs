@@ -31,6 +31,9 @@ pub enum TreasuryError {
     Overflow = 10,
     InvalidLpPoolAddress = 11,
     LpPoolIsTreasuryContract = 12,
+    /// The proposed new admin is already the current admin.
+    /// Mirrors the equivalent guard in the factory contract.
+    NewAdminSameAsCurrent = 13,
 }
 
 fn read_admin(env: &Env) -> Option<Address> {
@@ -115,8 +118,21 @@ impl TreasuryContract {
     /// Records `new_admin` as the pending admin. Only the current admin may call this.
     ///
     /// The transfer only takes effect once `new_admin` calls `accept_admin`.
+    ///
+    /// Returns [`TreasuryError::NewAdminSameAsCurrent`] when `new_admin` is
+    /// already the current admin, mirroring the equivalent guard in the factory
+    /// contract.  Silently overwriting the pending-admin slot with the current
+    /// admin's own address would leave the contract in a superficially valid
+    /// state where `accept_admin` could be called by the current admin and
+    /// have no visible effect — which is confusing and unnecessary.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
+        // Guard: reject proposals where new_admin is already the current admin.
+        // The factory contract has the same check (FactoryError::NewAdminSameAsCurrent).
+        let current_admin = read_admin(&env).ok_or(TreasuryError::NotInitialized)?;
+        if new_admin == current_admin {
+            return Err(TreasuryError::NewAdminSameAsCurrent);
+        }
         validate_treasury_address(&env, &new_admin)?;
         env.storage()
             .instance()
@@ -186,6 +202,23 @@ impl TreasuryContract {
     ///
     /// This only updates the recorded balance; the tokens must already be held by the
     /// contract for [`Self::withdraw_treasury`] to move them out.
+    ///
+    /// ## Multi-token behaviour
+    ///
+    /// `deposit` accepts **any** `Address` as the token; there is no allowlist.
+    /// Balances accumulate per-token in isolated storage slots, so depositing
+    /// multiple different token types is safe.
+    ///
+    /// **However**, the split/distribution settings — `treasury_bps` (set via
+    /// [`Self::set_treasury_split`]) and `lp_pool` (set via [`Self::set_lp_pool`])
+    /// — are **global**, not per-token.  When [`Self::distribute`] is called for
+    /// a given token it always applies the single globally-configured ratio and
+    /// routes the LP share to the single globally-configured pool address.
+    ///
+    /// Operators distributing **multiple token types** that require different
+    /// destination addresses or split ratios must therefore call
+    /// [`Self::set_treasury_split`] and/or [`Self::set_lp_pool`] between
+    /// successive [`Self::distribute`] calls, one token at a time.
     pub fn deposit(env: Env, token: Address, amount: i128) -> Result<(), TreasuryError> {
         if amount < 0 {
             return Err(TreasuryError::InvalidAmount);
@@ -325,6 +358,14 @@ impl TreasuryContract {
     ///
     /// - `treasury_bps` of `total` goes to `destination`.
     /// - The remainder goes to the LP pool (must be configured via `set_lp_pool`).
+    ///
+    /// ## Global split
+    ///
+    /// The split ratio (`treasury_bps`) and LP pool address are **global** — the
+    /// same values apply regardless of which token is being distributed.  If you
+    /// need different ratios or destinations for different tokens, update
+    /// [`Self::set_treasury_split`] and/or [`Self::set_lp_pool`] before calling
+    /// `distribute` for each token.
     ///
     /// Emits `FeeDistributed` with `(token, treasury_amount, lp_amount)`.
     pub fn distribute(env: Env, token: Address, destination: Address) -> Result<(i128, i128), TreasuryError> {
@@ -593,7 +634,9 @@ mod test {
         assert_eq!(treasury_balance_before, 10_000);
         assert_eq!(user_balance_before, 0);
 
-        // A zero-amount withdrawal is a no-op: it must not fail or alter balances.
+        // A zero-amount withdrawal succeeds and is a balance no-op.
+        // No token transfer occurs (the token contract rejects zero transfers),
+        // and consequently no TreasuryWithdrawn event is emitted.
         c.withdraw_treasury(&t.token_id, &0, &t.user);
 
         let events = withdrawal_events(&t.env);
