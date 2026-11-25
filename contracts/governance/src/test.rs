@@ -2,8 +2,8 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env,
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, IntoVal, TryFromVal,
 };
 
 fn env_with_auth() -> Env {
@@ -99,6 +99,28 @@ fn test_guardian_two_step_transfer() {
 }
 
 #[test]
+fn test_accept_guardian_replay_after_success_fails() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    let new_guardian = Address::generate(&env);
+    c.propose_guardian(&new_guardian);
+    c.accept_guardian(&new_guardian);
+
+    let replay = c.try_accept_guardian(&new_guardian);
+    assert_eq!(replay, Err(Ok(GovernanceError::NotInitialized)));
+}
+
+#[test]
 fn test_accept_guardian_without_proposal_fails() {
     let env = env_with_auth();
     let id = env.register(GovernanceContract, ());
@@ -142,6 +164,33 @@ fn test_accept_guardian_wrong_caller_fails() {
         Err(Ok(e)) => assert_eq!(e, GovernanceError::NotAdmin),
         _ => panic!("expected NotAdmin"),
     }
+}
+
+#[test]
+fn test_cancel_after_voting_period_is_rejected() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &0u64, &0u64);
+
+    env.ledger().set_timestamp(1_000);
+    let target = Address::generate(&env);
+    let function = soroban_sdk::Symbol::new(&env, "noop");
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::new(&env);
+    let proposal_id = c.create_proposal(&admin, &target, &function, &calldata);
+    let proposal = c.get_proposal(&proposal_id);
+
+    env.ledger().set_timestamp(proposal.vote_end + 1);
+    let result = c.try_cancel_proposal(&admin, &proposal_id);
+    assert_eq!(result, Err(Ok(GovernanceError::VotingNotActive)));
+    assert_eq!(c.get_proposal(&proposal_id).status, ProposalStatus::Active);
 }
 
 #[test]
@@ -258,6 +307,65 @@ fn test_queue_quorum_boundary_evenly_split() {
         ProposalStatus::Defeated,
         "Tied proposal at quorum boundary should be Defeated, not Queued"
     );
+}
+
+#[test]
+fn test_execute_failed_proposal_can_be_retried_successfully() {
+    let env = env_with_auth();
+    let id = env.register(GovernanceContract, ());
+    let c = GovernanceContractClient::new(&env, &id);
+
+    let admin = Address::generate(&env);
+    let guardian = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    c.initialize(&admin, &guardian, &token, &0u64, &0u64, &1u64, &1u64);
+    env.ledger().set_timestamp(1_000);
+
+    // The first execution targets accept_guardian before any pending transfer
+    // exists, so it fails. The admin then creates the pending transfer and the
+    // same proposal succeeds on its second execution.
+    let new_guardian = Address::generate(&env);
+    let calldata: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::from_array(
+        &env,
+        [new_guardian.clone().into_val(&env)],
+    );
+    let prop_id = c.create_proposal(
+        &admin,
+        &id,
+        &soroban_sdk::Symbol::new(&env, "accept_guardian"),
+        &calldata,
+    );
+
+    let stellar_asset = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    stellar_asset.mint(&admin, &1);
+    c.vote(&admin, &prop_id, &true);
+    let proposal = c.get_proposal(&prop_id);
+    env.ledger().set_timestamp(proposal.vote_end + 1);
+    c.queue(&prop_id);
+    let queued = c.get_proposal(&prop_id);
+    env.ledger().set_timestamp(queued.eta);
+
+    let first = c.try_execute(&prop_id);
+    assert_eq!(first, Err(Ok(GovernanceError::InvokeFailed)));
+    assert_eq!(c.get_proposal(&prop_id).status, ProposalStatus::Failed);
+
+    c.propose_guardian(&new_guardian);
+    c.execute(&prop_id);
+    assert_eq!(c.get_proposal(&prop_id).status, ProposalStatus::Executed);
+
+    let executed_event = env.events().all().iter().any(|(address, topics, _)| {
+        if address != id {
+            return false;
+        }
+        topics
+            .get(0)
+            .and_then(|topic| soroban_sdk::Symbol::try_from_val(&env, &topic).ok())
+            == Some(soroban_sdk::Symbol::new(&env, "ProposalExecuted"))
+    });
+    assert!(executed_event);
 }
 
 #[test]
