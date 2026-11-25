@@ -563,6 +563,11 @@ impl GovernanceContract {
         if proposal.status != ProposalStatus::Active {
             return Err(GovernanceError::ProposalNotActive);
         }
+        // Once the voting window has closed, the proposal must be resolved by
+        // queue() as Queued or Defeated rather than withdrawn by its proposer.
+        if env.ledger().timestamp() > proposal.vote_end {
+            return Err(GovernanceError::VotingNotActive);
+        }
 
         proposal.status = ProposalStatus::Cancelled;
         save_proposal(&env, &proposal);
@@ -587,7 +592,13 @@ impl GovernanceContract {
             .unwrap_or(0u64)
     }
 
-    /// Updates the guardian address. Only admin may call this.
+    /// Updates the guardian address immediately. Only admin may call this.
+    ///
+    /// # Warning
+    /// This is an intentionally unsafe, single-step recovery path: a typo is
+    /// applied immediately and can lock out the intended guardian. Routine
+    /// transfers should use [`propose_guardian`] followed by
+    /// [`accept_guardian`] so the new address must confirm the handoff.
     pub fn set_guardian(env: Env, new_guardian: Address) -> Result<(), GovernanceError> {
         check_admin(&env);
         env.storage().instance().set(&Symbol::new(&env, GUARDIAN_KEY), &new_guardian);
