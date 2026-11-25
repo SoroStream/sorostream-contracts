@@ -163,9 +163,18 @@ impl TreasuryContract {
         Ok(())
     }
 
-    /// Sets or updates the treasury address. Rejects zero address.
+    /// Sets or updates the treasury address. Only admin may call this.
+    ///
+    /// Rejects the zero/burn address and the treasury contract's own address
+    /// (to prevent self-referential transfers).
     pub fn set_treasury(env: Env, treasury: Address) -> Result<(), TreasuryError> {
         check_admin(&env)?;
+        if is_zero_address(&env, &treasury) {
+            return Err(TreasuryError::InvalidTreasuryAddress);
+        }
+        if treasury == env.current_contract_address() {
+            return Err(TreasuryError::InvalidTreasuryAddress);
+        }
         validate_treasury_address(&env, &treasury)?;
         env.storage()
             .instance()
@@ -674,6 +683,17 @@ mod test {
         c.initialize(&t.admin);
         let result = c.try_set_treasury(&t.treasury_id);
         assert_eq!(result, Err(Ok(TreasuryError::InvalidTreasuryAddress)));
+    }
+
+    #[test]
+    fn test_set_treasury_succeeds_with_valid_address() {
+        let t = setup();
+        let c = TreasuryContractClient::new(&t.env, &t.treasury_id);
+        c.initialize(&t.admin);
+
+        let treasury_wallet = Address::generate(&t.env);
+        let result = c.try_set_treasury(&treasury_wallet);
+        assert_eq!(result, Ok(Ok(())));
     }
 
     #[test]
