@@ -153,3 +153,82 @@ fn propose_rejects_calldata_that_decodes_as_non_vec_val() {
         "empty calldata must still be accepted"
     );
 }
+
+
+// ── #939: swap-and-pop keeps the owner slots consistent across removals ─────
+
+/// True when `owners` holds exactly `expected`, each once, in any order.
+fn same_owner_set(owners: &Vec<Address>, expected: &[&Address]) -> bool {
+    if owners.len() as usize != expected.len() {
+        return false;
+    }
+    expected.iter().all(|addr| owners.iter().filter(|o| o == *addr).count() == 1)
+}
+
+#[test]
+fn sequential_removals_keep_owner_slots_consistent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(MultiSigContract, ());
+    let client = MultiSigContractClient::new(&env, &contract_id);
+
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let d = Address::generate(&env);
+    let e = Address::generate(&env);
+    client.initialize(&vec![&env, a.clone(), b.clone(), c.clone(), d.clone(), e.clone()], &2);
+
+    // Remove a non-last owner (slot 1: `e` is swapped into it), then another
+    // non-last owner (slot 0: the new last owner, `d`, is swapped into it).
+    client.remove_owner(&b);
+    assert_eq!(client.get_owners(), vec![&env, a.clone(), e.clone(), c.clone(), d.clone()]);
+    client.remove_owner(&a);
+
+    let owners = client.get_owners();
+    assert_eq!(owners, vec![&env, d.clone(), e.clone(), c.clone()]);
+    assert_eq!(client.owner_count(), 3);
+
+    // Exactly the remaining set: no stale entries, no duplicates.
+    assert!(same_owner_set(&owners, &[&c, &d, &e]));
+    assert!(!client.is_owner(&a));
+    assert!(!client.is_owner(&b));
+
+    // A third removal (of the last slot) and a re-add still keep slots dense.
+    client.remove_owner(&c);
+    client.add_owner(&a);
+    assert_eq!(client.get_owners(), vec![&env, d.clone(), e.clone(), a.clone()]);
+    assert_eq!(client.owner_count(), 3);
+}
+
+// ── #940: a self-targeting `add_owner` intent through propose() + approve() ─
+
+#[test]
+fn self_targeting_add_owner_intent_runs_through_propose_and_approve() {
+    use soroban_sdk::xdr::ToXdr;
+    use soroban_sdk::IntoVal;
+
+    let (env, contract_id, owner1, owner2) = setup();
+    let client = MultiSigContractClient::new(&env, &contract_id);
+    let new_owner = Address::generate(&env);
+
+    // add_owner(new_owner) encoded as the XDR of its argument list.
+    let args: Vec<Val> = vec![&env, new_owner.into_val(&env)];
+    let calldata = args.to_xdr(&env);
+
+    let id = client.propose(
+        &owner1,
+        &contract_id,
+        &Symbol::new(&env, "add_owner"),
+        &calldata,
+        &(env.ledger().timestamp() + 1_000),
+    );
+
+    assert!(!client.approve(&owner1, &id));
+    assert!(!client.is_owner(&new_owner));
+    assert!(client.approve(&owner2, &id), "the second approval reaches the 2-of-2 threshold");
+
+    assert!(client.is_owner(&new_owner), "the self-targeting intent must add the owner");
+    assert_eq!(client.owner_count(), 3);
+    assert_eq!(client.get_intent(&id).status, IntentStatus::Executed);
+}

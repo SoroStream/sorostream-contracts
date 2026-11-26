@@ -185,6 +185,11 @@ impl StreamingContract {
     /// Claim all vested tokens up to the current timestamp.
     /// Emits `StreamWithdrawn` with recipient, token, claim amount, and updated
     /// cumulative claimed amount; the stream ID is the second event topic.
+    ///
+    /// When this claim completes a one-shot stream (`auto_renew == false`), i.e.
+    /// the stream has ended and its whole deposit is now claimed, the sender's
+    /// reputation is credited (#944). Auto-renewing streams are credited by
+    /// `renew` instead, so a cycle is never counted twice.
     pub fn claim(env: Env, stream_id: u64) -> i128 {
         let mut stream = storage::get_stream(&env, stream_id);
         stream.recipient.require_auth();
@@ -197,6 +202,14 @@ impl StreamingContract {
         stream.claimed += claimable;
         storage::save_stream(&env, stream_id, &stream);
 
+        // Natural completion of a one-shot stream: ended and fully claimed.
+        // `claimed` reaches `deposit` at most once ("nothing to claim" stops
+        // later calls), so this credits each stream exactly once.
+        let completed = !stream.auto_renew
+            && env.ledger().timestamp() >= stream.end_time
+            && stream.claimed >= stream.deposit;
+        let sender = stream.sender.clone();
+
         token::Client::new(&env, &stream.token).transfer(
             &env.current_contract_address(),
             &stream.recipient,
@@ -206,6 +219,9 @@ impl StreamingContract {
             (Symbol::new(&env, "StreamWithdrawn"), stream_id),
             (stream.recipient, stream.token, claimable, stream.claimed),
         );
+        if completed {
+            storage::increment_reputation(&env, &sender);
+        }
         claimable
     }
 
@@ -325,8 +341,14 @@ impl StreamingContract {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Return the reputation score for a sender address.
-    /// Score increments on each stream that reaches natural completion
-    /// (via `renew`) without being cancelled.
+    ///
+    /// The score increments once for each stream cycle that completes naturally
+    /// without being cancelled (#944):
+    /// - one-shot streams (`auto_renew == false`): when `claim` withdraws the
+    ///   last of the deposit after `end_time`;
+    /// - auto-renewing streams: on each successful `renew`.
+    ///
+    /// `cancel` decrements it.
     pub fn get_reputation(env: Env, sender: Address) -> u64 {
         storage::get_reputation(&env, &sender)
     }

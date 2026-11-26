@@ -27,11 +27,13 @@
 //! enough owners approve without decoding it. Do not treat "guarded" as meaning
 //! more than "routed through the multi-sig" (see issue #887).
 //!
-//! Self-targeting intents still enter these same contract methods, so their
-//! owner-count and threshold checks are unchanged. The generic `approve` execution
-//! path currently supplies calldata as one `Bytes` argument; typed methods such as
-//! these therefore cannot be reached through that path until issue #717 is fixed.
-//! This is an execution limitation, not a confirmed invariant bypass.
+//! Self-targeting intents (target == this contract) run the same owner-count and
+//! threshold checks as the public methods. Soroban forbids contract re-entry, so
+//! `approve`/`retry` dispatch them internally rather than through
+//! `try_invoke_contract` (#940): `add_owner`, `remove_owner`, `change_threshold`
+//! and `accept_transfer_admin` are supported, with calldata encoding the typed
+//! argument list (`Vec<Val>` XDR). Calldata that does not fit the function makes
+//! `approve` return `InvalidCalldata`, which reverts the approval.
 
 #[cfg(test)]
 mod test;
@@ -39,7 +41,7 @@ mod test;
 use soroban_sdk::{
     contract, contractimpl, contracterror, contracttype,
     xdr::FromXdr,
-    Address, Bytes, Env, Symbol, Val, Vec,
+    Address, Bytes, Env, Symbol, TryFromVal, Val, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -279,11 +281,108 @@ fn mark_approved(env: &Env, intent_id: u64, owner: &Address) {
         .set(&approval_key(env, intent_id, owner), &true);
 }
 
+/// Decodes an intent's calldata into the argument list passed to the target.
+///
+/// This only checks that `calldata` is well-formed XDR for a `Vec<Val>`
+/// (#941). It cannot check that the decoded values match the target
+/// function's real parameters (their count, order or types), because a
+/// generic cross-contract caller has no access to the target's signature. An
+/// intent whose calldata is well-formed but semantically wrong is accepted by
+/// `propose`, collects approvals normally, and only fails when `approve`
+/// invokes the target (the intent is then marked `Failed`).
+///
+/// Passing this check at `propose` time is therefore necessary, not
+/// sufficient: approvers must still decode the calldata and compare it with
+/// the target function's signature before approving.
 fn decode_calldata(env: &Env, calldata: &Bytes) -> Result<Vec<Val>, MultiSigError> {
     if calldata.len() == 0 {
         return Ok(Vec::new(env));
     }
     Vec::<Val>::from_xdr(env, calldata).map_err(|_| MultiSigError::InvalidCalldata)
+}
+
+// ── Owner management (shared by the public methods and self-dispatch) ───────
+
+fn add_owner_impl(env: &Env, new_owner: &Address) -> Result<(), MultiSigError> {
+    if is_owner(env, new_owner) {
+        return Err(MultiSigError::OwnerAlreadyExists);
+    }
+    add_owner_storage(env, new_owner);
+    env.events().publish((Symbol::new(env, "OwnerAdded"),), new_owner.clone());
+    Ok(())
+}
+
+fn remove_owner_impl(env: &Env, owner: &Address) -> Result<(), MultiSigError> {
+    if !is_owner(env, owner) {
+        return Err(MultiSigError::OwnerNotFound);
+    }
+    let new_count = owner_count(env).saturating_sub(1);
+    if get_threshold(env) > new_count {
+        return Err(MultiSigError::ThresholdExceedsOwners);
+    }
+    remove_owner_storage(env, owner);
+    env.events().publish((Symbol::new(env, "OwnerRemoved"),), owner.clone());
+    Ok(())
+}
+
+fn change_threshold_impl(env: &Env, new_threshold: u32) -> Result<(), MultiSigError> {
+    if new_threshold == 0 || new_threshold > owner_count(env) {
+        return Err(MultiSigError::InvalidThreshold);
+    }
+    env.storage().instance().set(&Symbol::new(env, THRESHOLD_KEY), &new_threshold);
+    env.events().publish((Symbol::new(env, "ThresholdChanged"),), new_threshold);
+    Ok(())
+}
+
+fn accept_transfer_admin_impl(env: &Env) -> Result<(), MultiSigError> {
+    let pending = read_pending_admin(env).ok_or(MultiSigError::NoPendingAdminTransfer)?;
+    env.storage().instance().set(&Symbol::new(env, ADMIN_KEY), &pending);
+    env.storage().instance().remove(&Symbol::new(env, PENDING_ADMIN_KEY));
+    env.events().publish((Symbol::new(env, "AdminTransferAccepted"),), pending);
+    Ok(())
+}
+
+fn single_arg<T: TryFromVal<Env, Val>>(env: &Env, args: &Vec<Val>) -> Result<T, MultiSigError> {
+    if args.len() != 1 {
+        return Err(MultiSigError::InvalidCalldata);
+    }
+    T::try_from_val(env, &args.get(0).ok_or(MultiSigError::InvalidCalldata)?)
+        .map_err(|_| MultiSigError::InvalidCalldata)
+}
+
+/// Executes an intent whose target is this multisig itself (#940).
+///
+/// Soroban forbids contract re-entry, so `try_invoke_contract` on the
+/// current contract address always fails. Self-targeting intents are
+/// dispatched to the owner-management implementations directly instead; they
+/// keep the same owner-count and threshold checks as the public methods.
+///
+/// The outer `Err` means the calldata does not fit the function (wrong
+/// argument count or type, or an unsupported function); `approve` returns it,
+/// which reverts the approval. The inner `Err` is the method's own failure,
+/// which marks the intent `Failed` like a failed external call.
+fn execute_self_call(
+    env: &Env,
+    function: &Symbol,
+    args: &Vec<Val>,
+) -> Result<Result<(), MultiSigError>, MultiSigError> {
+    if *function == Symbol::new(env, "add_owner") {
+        let owner: Address = single_arg(env, args)?;
+        Ok(add_owner_impl(env, &owner))
+    } else if *function == Symbol::new(env, "remove_owner") {
+        let owner: Address = single_arg(env, args)?;
+        Ok(remove_owner_impl(env, &owner))
+    } else if *function == Symbol::new(env, "change_threshold") {
+        let threshold: u32 = single_arg(env, args)?;
+        Ok(change_threshold_impl(env, threshold))
+    } else if *function == Symbol::new(env, "accept_transfer_admin") {
+        if !args.is_empty() {
+            return Err(MultiSigError::InvalidCalldata);
+        }
+        Ok(accept_transfer_admin_impl(env))
+    } else {
+        Err(MultiSigError::InvalidCalldata)
+    }
 }
 
 fn read_admin(env: &Env) -> Option<Address> {
@@ -360,6 +459,11 @@ impl MultiSigContract {
     /// `target`, `function`, and `calldata` before calling `approve`. Approving an
     /// intent without decoding its calldata is equivalent to trusting the proposer
     /// with the resulting state change.
+    ///
+    /// `propose` rejects calldata that is not valid `Vec<Val>` XDR
+    /// (`InvalidCalldata`), but it cannot tell whether the decoded arguments fit
+    /// `function`'s parameters (#941). A mismatch surfaces only at execution,
+    /// when `approve` marks the intent `Failed`.
     pub fn propose(
         env: Env,
         proposer: Address,
@@ -469,6 +573,27 @@ impl MultiSigContract {
             );
 
             let args = decode_calldata(&env, &intent.calldata)?;
+            if intent.target == env.current_contract_address() {
+                match execute_self_call(&env, &intent.function, &args)? {
+                    Ok(()) => {
+                        intent.status = IntentStatus::Executed;
+                        save_intent(&env, &intent);
+                        env.events().publish(
+                            (Symbol::new(&env, "ExecutionCompleted"), intent_id),
+                            (),
+                        );
+                    }
+                    Err(err) => {
+                        intent.status = IntentStatus::Failed;
+                        save_intent(&env, &intent);
+                        env.events().publish(
+                            (Symbol::new(&env, "ExecutionFailed"), intent_id),
+                            err,
+                        );
+                    }
+                }
+                return Ok(true);
+            }
             match env.try_invoke_contract::<Val>(&intent.target, &intent.function, args) {
                 Ok(_) => {
                     intent.status = IntentStatus::Executed;
@@ -524,6 +649,27 @@ impl MultiSigContract {
         }
 
         let args = decode_calldata(&env, &intent.calldata)?;
+        if intent.target == env.current_contract_address() {
+            return match execute_self_call(&env, &intent.function, &args)? {
+                Ok(()) => {
+                    intent.status = IntentStatus::Executed;
+                    save_intent(&env, &intent);
+                    env.events().publish(
+                        (Symbol::new(&env, "ExecutionCompleted"), intent_id),
+                        (),
+                    );
+                    Ok(true)
+                }
+                Err(err) => {
+                    save_intent(&env, &intent);
+                    env.events().publish(
+                        (Symbol::new(&env, "ExecutionFailed"), intent_id),
+                        err,
+                    );
+                    Ok(false)
+                }
+            };
+        }
         match env.try_invoke_contract::<Val>(&intent.target, &intent.function, args) {
             Ok(_) => {
                 intent.status = IntentStatus::Executed;
@@ -588,15 +734,7 @@ impl MultiSigContract {
     /// Adds a new owner. Must be called via the multi-sig (propose + approve).
     pub fn add_owner(env: Env, new_owner: Address) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
-        if is_owner(&env, &new_owner) {
-            return Err(MultiSigError::OwnerAlreadyExists);
-        }
-        add_owner_storage(&env, &new_owner);
-        env.events().publish(
-            (Symbol::new(&env, "OwnerAdded"),),
-            new_owner,
-        );
-        Ok(())
+        add_owner_impl(&env, &new_owner)
     }
 
     /// Removes an existing owner. Must be called via the multi-sig (propose + approve).
@@ -604,33 +742,13 @@ impl MultiSigContract {
     /// The threshold must remain reachable after removal.
     pub fn remove_owner(env: Env, owner: Address) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
-        if !is_owner(&env, &owner) {
-            return Err(MultiSigError::OwnerNotFound);
-        }
-        let new_count = owner_count(&env).saturating_sub(1);
-        if get_threshold(&env) > new_count {
-            return Err(MultiSigError::ThresholdExceedsOwners);
-        }
-        remove_owner_storage(&env, &owner);
-        env.events().publish(
-            (Symbol::new(&env, "OwnerRemoved"),),
-            owner,
-        );
-        Ok(())
+        remove_owner_impl(&env, &owner)
     }
 
     /// Changes the approval threshold. Must be called via the multi-sig (propose + approve).
     pub fn change_threshold(env: Env, new_threshold: u32) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
-        if new_threshold == 0 || new_threshold > owner_count(&env) {
-            return Err(MultiSigError::InvalidThreshold);
-        }
-        env.storage().instance().set(&Symbol::new(&env, THRESHOLD_KEY), &new_threshold);
-        env.events().publish(
-            (Symbol::new(&env, "ThresholdChanged"),),
-            new_threshold,
-        );
-        Ok(())
+        change_threshold_impl(&env, new_threshold)
     }
 
     /// Returns whether an address is an owner.
@@ -768,15 +886,7 @@ impl MultiSigContract {
     /// Called internally by the approve process.
     pub fn accept_transfer_admin(env: Env) -> Result<(), MultiSigError> {
         env.current_contract_address().require_auth();
-        let pending = read_pending_admin(&env)
-            .ok_or(MultiSigError::NoPendingAdminTransfer)?;
-        env.storage().instance().set(&Symbol::new(&env, ADMIN_KEY), &pending);
-        env.storage().instance().remove(&Symbol::new(&env, PENDING_ADMIN_KEY));
-        env.events().publish(
-            (Symbol::new(&env, "AdminTransferAccepted"),),
-            pending,
-        );
-        Ok(())
+        accept_transfer_admin_impl(&env)
     }
 }
 
